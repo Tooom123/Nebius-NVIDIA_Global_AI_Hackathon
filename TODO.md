@@ -32,9 +32,15 @@ each major implementation (per project convention).
 - [ ] Confirmation UI
   - [x] Minimal CLI confirm gate
   - [ ] (stretch) lightweight overlay if time allows
-- [ ] Automated execution
-  - [ ] `SkillRunner.run` replay via pyautogui
-  - [ ] Visual verification hook between steps (screenshot → Nemotron check)
+- [x] Automated execution
+  - [x] `SkillRunner.run` replay via pyautogui — extended `ActionEvent` with
+        replay metadata (click coords, key name, scroll delta); still never
+        records literal typed characters, only special keys, so plain-char
+        key presses correctly abort replay rather than guessing content
+  - [x] Visual verification hook between steps (`verify_step` callback takes a
+        screenshot and can abort the run — wiring an actual Nemotron-backed
+        check happens in the demo-scenario step). Unit-tested with a stubbed
+        `pyautogui`; unverified against a live display in this sandbox
 - [ ] Demo scenario
   - [ ] Pick and script the single demonstrable scenario end-to-end
   - [ ] Wire `heypeer/main.py` into a runnable demo loop

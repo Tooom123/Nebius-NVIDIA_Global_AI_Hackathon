@@ -26,6 +26,11 @@ class SkillMemory:
                     app_name=a["app_name"],
                     window_title=a["window_title"],
                     timestamp=a["timestamp"],
+                    x=a.get("x"),
+                    y=a.get("y"),
+                    key_name=a.get("key_name"),
+                    scroll_dx=a.get("scroll_dx"),
+                    scroll_dy=a.get("scroll_dy"),
                 )
                 for a in entry.get("actions", [])
             ]

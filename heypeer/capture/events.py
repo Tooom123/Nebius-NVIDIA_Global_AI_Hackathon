@@ -1,7 +1,10 @@
 """Abstracted action-event types produced by the activity capture layer.
 
-Capture only records event *types* and the active app/window — never keystroke
-content — so the raw stream is safe to keep in memory and reason about locally.
+Capture records event types, the active app/window, and the minimal
+replay-relevant metadata (click coordinates, key names, scroll deltas) needed to
+physically redo an action later — but never the *content* a user typed (e.g. the
+text entered into a field), so the stream stays safe to keep in memory and
+reason about locally.
 """
 
 from dataclasses import dataclass, field
@@ -23,3 +26,9 @@ class ActionEvent:
     app_name: str
     window_title: str
     timestamp: float = field(default_factory=time)
+    # Replay metadata — populated depending on `type`, left None otherwise.
+    x: int | None = None
+    y: int | None = None
+    key_name: str | None = None
+    scroll_dx: int | None = None
+    scroll_dy: int | None = None
