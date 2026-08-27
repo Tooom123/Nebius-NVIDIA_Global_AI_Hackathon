@@ -41,9 +41,18 @@ each major implementation (per project convention).
         screenshot and can abort the run — wiring an actual Nemotron-backed
         check happens in the demo-scenario step). Unit-tested with a stubbed
         `pyautogui`; unverified against a live display in this sandbox
-- [ ] Demo scenario
-  - [ ] Pick and script the single demonstrable scenario end-to-end
-  - [ ] Wire `heypeer/main.py` into a runnable demo loop
+- [x] Demo scenario — end-to-end wiring done in `heypeer/main.py`
+  - [x] `HeyPeer` class wires capture -> detector -> memory, and on wake word:
+        instruction -> Nemotron intent -> lookup skill -> confirm -> replay
+        with Nemotron screen verification between steps. Unit-tested with
+        mocked Nemotron/pyautogui/confirm (confirmed run, declined run, and
+        unknown-intent paths all covered).
+  - [ ] Pick the actual concrete demo scenario (which app/task) — needs a
+        real machine with display + mic to choose and rehearse; not doable in
+        this sandbox
+  - [ ] Wire real audio capture + screenshotting for `on_wake_word` (currently
+        takes typed text as an instruction stand-in, per the plan's
+        "text first" validation step) and swap in `NemotronClient.interpret`
 - [ ] Submission polish
   - [ ] README install/run instructions kept accurate as pieces land
   - [ ] Ethics/privacy section accurate

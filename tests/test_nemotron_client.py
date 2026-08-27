@@ -61,3 +61,21 @@ def test_interpret_text_unknown_intent_has_no_skill_id() -> None:
 
     assert intent.action == "unknown"
     assert intent.skill_id is None
+
+
+def test_verify_screen_returns_ok_flag() -> None:
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"ok": False})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        result = client.verify_screen(b"fake-png-bytes", expected_context="click Save button")
+
+    assert result is False

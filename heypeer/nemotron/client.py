@@ -16,6 +16,15 @@ from openai import OpenAI
 from heypeer.config import Settings
 from heypeer.nemotron.intent import Intent
 
+VERIFY_SYSTEM_PROMPT = """\
+You are Hey Peer, a personal automation assistant currently replaying a
+learned skill step by step. You are given a screenshot of the current screen
+and a short description of what the next action expects to see. Respond with
+ONLY a JSON object: {"ok": <true or false>}. Use false if the screen doesn't
+look like a state where the expected next action would make sense (e.g. an
+unexpected dialog, a different app in focus, an error message).
+"""
+
 SYSTEM_PROMPT = """\
 You are Hey Peer, a personal automation assistant. The user has just spoken a \
 command after saying the wake word "Hey Peer". You are given: (1) the user's \
@@ -71,6 +80,29 @@ class NemotronClient:
             response_format={"type": "json_object"},
         )
         return _parse_intent(response.choices[0].message.content)
+
+    def verify_screen(self, screenshot_png: bytes, expected_context: str) -> bool:
+        """Visual verification hook used by SkillRunner between replay steps."""
+        image_b64 = base64.b64encode(screenshot_png).decode()
+        response = self._client.chat.completions.create(
+            model=self.settings.nemotron_model_id,
+            messages=[
+                {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Expected next action: {expected_context}"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                        },
+                    ],
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(response.choices[0].message.content)
+        return bool(data.get("ok", False))
 
     def interpret(
         self, audio_clip_path: str, screenshot_path: str, skill_context: list[dict]
