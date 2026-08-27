@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/skills/*.json
+data/skills/*.db
+data/wakeword/*.onnx
+data/wakeword/samples/
+.DS_Store

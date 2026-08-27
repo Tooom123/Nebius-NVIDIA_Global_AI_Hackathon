@@ -1,0 +1,17 @@
+[project]
+name = "heypeer"
+version = "0.1.0"
+description = "Always-listening personal assistant that learns and replays repetitive digital habits, powered by Nemotron 3 Nano Omni on Nebius Token Factory."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["heypeer*"]
