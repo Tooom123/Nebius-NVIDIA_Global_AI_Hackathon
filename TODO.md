@@ -13,9 +13,11 @@ each major implementation (per project convention).
   - [x] Real-time runtime listener (mic → openWakeWord embeddings → ONNX
         classifier → callback), `process_chunk` unit-tested; `start()`'s live
         mic loop needs real hardware to verify
-- [ ] Activity capture (minimal, scoped to one demo scenario)
-  - [ ] Cross-platform-ish active app/window watcher
-  - [ ] Mouse/keyboard event listener emitting `ActionEvent`s (no keystroke content)
+- [x] Activity capture (minimal, scoped to one demo scenario)
+  - [x] Cross-platform active app/window watcher (pywinctl)
+  - [x] Mouse/keyboard event listener emitting `ActionEvent`s (pynput, no
+        keystroke content), unit-tested for the focus-change logic; the live
+        `start()` listener loop needs a real input device/WM to verify
 - [ ] Pattern detection + skill memory
   - [ ] Sliding-window repeated-sequence detector (implement `PatternDetector.observe`)
   - [ ] Wire detector output into `SkillMemory`
