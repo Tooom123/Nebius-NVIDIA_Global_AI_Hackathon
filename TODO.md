@@ -54,9 +54,13 @@ each major implementation (per project convention).
         takes typed text as an instruction stand-in, per the plan's
         "text first" validation step) and swap in `NemotronClient.interpret`
 - [ ] Submission polish
-  - [ ] README install/run instructions kept accurate as pieces land
-  - [ ] Ethics/privacy section accurate
-  - [ ] 3-min demo video (outside coding scope — flag as manual follow-up)
+  - [x] README install/run instructions kept accurate as pieces land
+  - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay
+        metadata and the plain-char-key refusal)
+  - [ ] 3-min demo video (outside coding scope — manual follow-up)
+  - [ ] Nebius/NVIDIA tool feedback write-up for submission (manual follow-up)
+  - [ ] Hosted demo URL or test build (manual follow-up — needs a real machine
+        with mic/display and a live Nebius API key)
 
 ## Environment notes (this sandbox)
 

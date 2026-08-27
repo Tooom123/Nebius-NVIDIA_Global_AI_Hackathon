@@ -54,12 +54,14 @@ See [CONTEXT.md](CONTEXT.md) for the full project rationale and design notes.
 
 ```
 heypeer/
-├── wakeword/       # openWakeWord model, training pipeline, real-time listener
-├── capture/        # lightweight activity capture (active app/window, action events)
-├── patterns/       # repeated-sequence detection + skill memory (JSON/SQLite)
-├── nemotron/        # Nebius Token Factory client for Nemotron 3 Nano Omni
-├── confirmation/   # user confirmation UI (CLI/overlay)
+├── wakeword/       # openWakeWord training pipeline (Piper samples, augmentation,
+│                   # training) + real-time ONNX-based listener
+├── capture/        # active app/window watcher + abstracted input-event listener
+├── patterns/       # repeated-sequence detector + JSON-backed skill memory
+├── nemotron/       # Nebius Token Factory client for Nemotron 3 Nano Omni
+├── confirmation/   # user confirmation gate (CLI)
 ├── executor/       # automated replay of skills via pyautogui + visual checks
+├── main.py         # wires every stage into the end-to-end demo loop
 └── config.py       # shared configuration (env vars, paths, model ids)
 ```
 
@@ -68,6 +70,8 @@ heypeer/
 - Python 3.10+
 - A [Nebius AI Studio / Token Factory](https://studio.nebius.ai/) API key with access
   to `nvidia/nemotron-3-nano-omni` (or the current model id on the platform)
+- A microphone and display (for the wake-word listener and skill replay,
+  respectively) — not required to run the test suite
 
 ## Setup
 
@@ -84,15 +88,44 @@ cp .env.example .env   # fill in NEBIUS_API_KEY
 python -m heypeer.main
 ```
 
-(See individual module docstrings under `heypeer/` for how to run each stage —
-wake-word training, pattern detection, and the demo loop — independently.)
+This starts the activity watcher (learning skills from repeated action sequences)
+and listens for "Hey Peer". If no trained wake-word model exists yet at
+`data/wakeword/hey_peer.onnx`, it falls back to manual activation: press Enter to
+simulate the wake word and type the instruction you'd otherwise speak.
+
+To train the real wake-word model:
+
+```bash
+python -m heypeer.wakeword.generate_samples --voices <piper-voice.onnx> ...
+python -m heypeer.wakeword.augment
+python -m heypeer.wakeword.train --positive-dir ... --negative-dir ...
+```
+
+See each script's docstring for details.
+
+## Status
+
+Built incrementally during the hackathon, one commit per stage — see
+[TODO.md](TODO.md) for the detailed build log and what's still open.
+
+All core stages are implemented and unit-tested (`pytest`, 16 tests): wake-word
+training/inference, activity capture, pattern detection, the Nemotron client, user
+confirmation, and skill execution. What's *not* verified is anything needing real
+hardware this dev environment didn't have — a microphone, a display, real Piper
+voices, or a live Nebius API key — so those paths are code-complete but only
+verified via mocks. Concretely: `WakeWordListener.start()`'s live mic loop,
+`ActivityWatcher.start()`'s live input loop, `SkillRunner`'s actual pyautogui calls,
+and any real (non-mocked) Nebius API round-trip.
 
 ## Ethics & privacy notes
 
 - The wake-word detector runs **entirely locally**; no audio leaves the machine
   unless "Hey Peer" is detected.
-- Only abstracted action events (app/window focus, input event types) are captured,
-  never keystroke content.
+- Captured input events carry only what's needed to detect and replay a pattern
+  (event type, app/window, click coordinates, special key names like Enter/Tab,
+  scroll deltas) — never the literal characters typed into a field. Plain
+  character key presses are recorded as a generic marker and the executor
+  refuses to replay them, so no automation can ever retype captured content.
 - **No automation ever runs without explicit user confirmation** of what will be done
   and how many times.
 
