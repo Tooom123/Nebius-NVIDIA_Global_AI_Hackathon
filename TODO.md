@@ -18,9 +18,11 @@ each major implementation (per project convention).
   - [x] Mouse/keyboard event listener emitting `ActionEvent`s (pynput, no
         keystroke content), unit-tested for the focus-change logic; the live
         `start()` listener loop needs a real input device/WM to verify
-- [ ] Pattern detection + skill memory
-  - [ ] Sliding-window repeated-sequence detector (implement `PatternDetector.observe`)
-  - [ ] Wire detector output into `SkillMemory`
+- [x] Pattern detection + skill memory
+  - [x] Sliding-window repeated-sequence detector (implement `PatternDetector.observe`)
+  - [x] Wire detector output into `SkillMemory` (also fixed `SkillMemory` to
+        actually (de)serialize `ActionEvent`s — it previously stored them
+        raw, which would have broken once real actions were produced)
 - [ ] Nemotron 3 Nano Omni via Nebius Token Factory
   - [ ] OpenAI-compatible client call (text-first, per plan step 4)
   - [ ] Extend to audio clip + screenshot (omni input) once text path is verified
