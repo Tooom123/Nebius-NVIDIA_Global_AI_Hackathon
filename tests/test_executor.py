@@ -1,5 +1,6 @@
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -69,3 +70,64 @@ def test_run_rejects_plain_character_key_press(fake_pyautogui: MagicMock) -> Non
 
     with pytest.raises(ExecutionAborted):
         runner.run(skill, n_repetitions=1)
+
+
+def test_run_replays_file_move_skill_on_next_matching_files(tmp_path: Path) -> None:
+    source_dir = tmp_path / "Downloads"
+    dest_dir = tmp_path / "Invoices"
+    source_dir.mkdir()
+    dest_dir.mkdir()
+
+    for name in ["invoice_0.pdf", "invoice_1.pdf", "invoice_2.pdf", "invoice_3.pdf", "notes.txt"]:
+        (source_dir / name).write_text("x")
+
+    skill = Skill(
+        id="sort_invoices",
+        name="Move .pdf into Invoices",
+        actions=[
+            ActionEvent(
+                type=ActionType.FILE_MOVE,
+                app_name="",
+                window_title=str(dest_dir),
+                src_path=str(source_dir / "invoice_0.pdf"),
+                dest_path=str(dest_dir / "invoice_0.pdf"),
+            )
+        ],
+    )
+    # invoice_0.pdf was already moved when the pattern was first observed —
+    # simulate that by removing it from source_dir up front.
+    (source_dir / "invoice_0.pdf").unlink()
+
+    runner = SkillRunner(step_delay=0)
+    runner.run(skill, n_repetitions=2)
+
+    moved = sorted(p.name for p in dest_dir.iterdir())
+    remaining = sorted(p.name for p in source_dir.iterdir())
+    assert moved == ["invoice_1.pdf", "invoice_2.pdf"]
+    assert remaining == ["invoice_3.pdf", "notes.txt"]
+
+
+def test_run_file_move_skill_aborts_if_not_enough_matching_files(tmp_path: Path) -> None:
+    source_dir = tmp_path / "Downloads"
+    dest_dir = tmp_path / "Invoices"
+    source_dir.mkdir()
+    dest_dir.mkdir()
+    (source_dir / "invoice_1.pdf").write_text("x")
+
+    skill = Skill(
+        id="sort_invoices",
+        name="Move .pdf into Invoices",
+        actions=[
+            ActionEvent(
+                type=ActionType.FILE_MOVE,
+                app_name="",
+                window_title=str(dest_dir),
+                src_path=str(source_dir / "invoice_0.pdf"),
+                dest_path=str(dest_dir / "invoice_0.pdf"),
+            )
+        ],
+    )
+
+    runner = SkillRunner(step_delay=0)
+    with pytest.raises(ExecutionAborted):
+        runner.run(skill, n_repetitions=5)

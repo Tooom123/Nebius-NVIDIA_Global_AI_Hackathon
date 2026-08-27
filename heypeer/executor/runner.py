@@ -1,9 +1,16 @@
 """Replays a Skill's actions via pyautogui, with an optional visual check
 between steps to catch UI drift before it causes a wrong action.
+
+FILE_MOVE skills are replayed differently: rather than pyautogui clicks, the
+executor moves the next matching files (same directory + extension the
+pattern was first observed on) directly via shutil — no window position or
+screen state dependency at all.
 """
 
+import shutil
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from heypeer.capture.events import ActionEvent, ActionType
 from heypeer.patterns.skill import Skill
@@ -51,7 +58,34 @@ class SkillRunner:
         elif action.type in (ActionType.APP_FOCUS, ActionType.WINDOW_TITLE_CHANGE):
             pass  # Informational only — nothing to replay.
 
+    def _run_file_move_skill(self, skill: Skill, n_repetitions: int) -> None:
+        first = skill.actions[0]
+        if not first.src_path or not first.dest_path:
+            raise ExecutionAborted(f"File-move skill missing paths: {first}")
+
+        source_dir = Path(first.src_path).parent
+        dest_dir = Path(first.dest_path).parent
+        extension = Path(first.src_path).suffix.lower()
+
+        candidates = sorted(
+            p
+            for p in source_dir.iterdir()
+            if p.is_file() and (not extension or p.suffix.lower() == extension)
+        )
+        if len(candidates) < n_repetitions:
+            raise ExecutionAborted(
+                f"Only {len(candidates)} matching file(s) left in {source_dir}, "
+                f"need {n_repetitions}"
+            )
+
+        for path in candidates[:n_repetitions]:
+            shutil.move(str(path), str(dest_dir / path.name))
+
     def run(self, skill: Skill, n_repetitions: int) -> None:
+        if skill.actions and all(a.type == ActionType.FILE_MOVE for a in skill.actions):
+            self._run_file_move_skill(skill, n_repetitions)
+            return
+
         for _ in range(n_repetitions):
             for action in skill.actions:
                 if self.verify_step is not None:

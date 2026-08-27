@@ -18,6 +18,7 @@ class ActionType(str, Enum):
     KEY_PRESS = "key_press"
     SCROLL = "scroll"
     WINDOW_TITLE_CHANGE = "window_title_change"
+    FILE_MOVE = "file_move"
 
 
 @dataclass(frozen=True)
@@ -32,3 +33,8 @@ class ActionEvent:
     key_name: str | None = None
     scroll_dx: int | None = None
     scroll_dy: int | None = None
+    # FILE_MOVE only: the file's path before/after a move or rename. Recording
+    # a file path isn't "typed content" — replay needs to know which file
+    # moved where, exactly like it needs click coordinates for a CLICK.
+    src_path: str | None = None
+    dest_path: str | None = None

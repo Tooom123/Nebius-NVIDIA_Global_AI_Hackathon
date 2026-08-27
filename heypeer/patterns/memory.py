@@ -20,18 +20,11 @@ class SkillMemory:
     def _load(self) -> None:
         raw = json.loads(self.path.read_text())
         for entry in raw:
+            # ActionEvent's optional replay-metadata fields evolve independently
+            # of this store, so reconstruct it from whatever keys are present
+            # rather than naming each one here.
             actions = [
-                ActionEvent(
-                    type=ActionType(a["type"]),
-                    app_name=a["app_name"],
-                    window_title=a["window_title"],
-                    timestamp=a["timestamp"],
-                    x=a.get("x"),
-                    y=a.get("y"),
-                    key_name=a.get("key_name"),
-                    scroll_dx=a.get("scroll_dx"),
-                    scroll_dy=a.get("scroll_dy"),
-                )
+                ActionEvent(**{**a, "type": ActionType(a["type"])})
                 for a in entry.get("actions", [])
             ]
             self._skills[entry["id"]] = Skill(

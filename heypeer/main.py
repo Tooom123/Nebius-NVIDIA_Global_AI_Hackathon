@@ -9,8 +9,10 @@ SkillRunner replays it, with Nemotron re-checking the screen between steps.
 """
 
 from collections.abc import Callable
+from pathlib import Path
 
 from heypeer.capture.events import ActionEvent
+from heypeer.capture.file_watcher import FileOpWatcher
 from heypeer.capture.watcher import ActivityWatcher
 from heypeer.config import SKILLS_DIR, load_settings
 from heypeer.confirmation.cli import confirm
@@ -38,6 +40,7 @@ class HeyPeer:
         memory: SkillMemory,
         detector: PatternDetector,
         nemotron: NemotronClient,
+        watched_dir: Path | None = None,
         get_instruction: GetInstruction = _default_get_instruction,
     ) -> None:
         self.memory = memory
@@ -45,6 +48,11 @@ class HeyPeer:
         self.nemotron = nemotron
         self.get_instruction = get_instruction
         self.watcher = ActivityWatcher(on_event=self._on_capture_event)
+        self.file_watcher = (
+            FileOpWatcher(watched_dir, on_event=self._on_capture_event)
+            if watched_dir is not None
+            else None
+        )
 
     def _on_capture_event(self, event: ActionEvent) -> None:
         skill = self.detector.observe(event)
@@ -93,11 +101,15 @@ def main() -> None:
         memory=memory,
         detector=PatternDetector(),
         nemotron=NemotronClient(settings),
+        watched_dir=settings.watched_dir,
     )
 
     print(f"Hey Peer starting. {len(memory.all())} skill(s) in memory.")
     print(f"Nemotron model: {settings.nemotron_model_id}")
+    print(f"Watching for file moves in: {settings.watched_dir}")
     peer.watcher.start()
+    if peer.file_watcher is not None:
+        peer.file_watcher.start()
 
     try:
         from heypeer.wakeword.listener import WakeWordListener, default_model_path
@@ -116,6 +128,8 @@ def main() -> None:
             peer.on_wake_word()
     finally:
         peer.watcher.stop()
+        if peer.file_watcher is not None:
+            peer.file_watcher.stop()
 
 
 if __name__ == "__main__":

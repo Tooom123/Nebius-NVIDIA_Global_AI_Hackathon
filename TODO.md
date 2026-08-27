@@ -47,12 +47,29 @@ each major implementation (per project convention).
         with Nemotron screen verification between steps. Unit-tested with
         mocked Nemotron/pyautogui/confirm (confirmed run, declined run, and
         unknown-intent paths all covered).
-  - [ ] Pick the actual concrete demo scenario (which app/task) — needs a
-        real machine with display + mic to choose and rehearse; not doable in
-        this sandbox
+  - [x] Concrete demo scenario chosen: **file sorting** — moving files (e.g.
+        PDFs) out of a watched folder (default `~/Downloads`) into another
+        folder, repeated a few times, then "Hey Peer, do 4 more".
+  - [x] File-move capture + replay, built specifically for this scenario:
+        - `ActionType.FILE_MOVE` + `ActionEvent.src_path`/`dest_path` (still
+          never records typed content — a file path isn't keystroke content)
+        - `FileOpWatcher` (watchdog) emits a FILE_MOVE event straight from the
+          OS's own move/rename notification — no click-coordinate guessing
+        - `PatternDetector` groups FILE_MOVE events by (dest dir, extension)
+          instead of literal filename, and allows a period-1 repeat (a single
+          file move recurring) to count as a pattern — a repeat other event
+          types intentionally ignore, since a single click/keypress recurring
+          is usually noise
+        - `SkillRunner` replays FILE_MOVE skills via `shutil.move` on the next
+          N still-present files matching the same folder+extension, instead
+          of pyautogui — robust to window position/state, unlike click replay
+        - All unit-tested, including a real (non-mocked) file move observed
+          through `watchdog` on this sandbox's filesystem
   - [ ] Wire real audio capture + screenshotting for `on_wake_word` (currently
         takes typed text as an instruction stand-in, per the plan's
         "text first" validation step) and swap in `NemotronClient.interpret`
+  - [ ] Rehearse the full flow on a real machine with a Downloads-like folder
+        and a live Nebius API key
 - [ ] Submission polish
   - [x] README install/run instructions kept accurate as pieces land
   - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay

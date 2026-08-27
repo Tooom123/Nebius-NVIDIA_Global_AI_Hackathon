@@ -1,7 +1,7 @@
 """Shared configuration loaded from environment variables."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,6 +19,7 @@ class Settings:
     nebius_api_key: str
     nebius_base_url: str
     nemotron_model_id: str
+    watched_dir: Path = field(default_factory=lambda: Path.home() / "Downloads")
 
 
 def load_settings() -> Settings:
@@ -29,5 +30,8 @@ def load_settings() -> Settings:
         ),
         nemotron_model_id=os.environ.get(
             "NEMOTRON_MODEL_ID", "nvidia/nemotron-3-nano-omni"
+        ),
+        watched_dir=Path(
+            os.environ.get("HEYPEER_WATCHED_DIR", str(Path.home() / "Downloads"))
         ),
     )

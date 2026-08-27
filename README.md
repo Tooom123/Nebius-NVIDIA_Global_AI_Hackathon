@@ -20,14 +20,25 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
    (`{action, skill_id, n_repetitions, ...}`).
 4. The user is shown exactly what will be done and must explicitly confirm before
    anything executes.
-5. Once confirmed, the matched skill is replayed via mouse/keyboard automation, with a
-   lightweight visual check between steps to catch UI drift.
+5. Once confirmed, the matched skill is replayed — via direct filesystem operations
+   for file-organizing skills, or mouse/keyboard automation with a visual check
+   between steps for anything else.
 
 ## Why
 
 Repetitive multi-app busywork (data entry, file sorting, form submission) is common
 and tedious. Hey Peer learns these patterns passively and lets the user delegate them
 with a single voice command, without ever acting without explicit confirmation.
+
+## Demo scenario: file sorting
+
+The concrete scenario this build targets: the user moves a few files (e.g. PDFs) out
+of a watched folder (`~/Downloads` by default) into another folder a few times. Hey
+Peer notices the repeated pattern — same source folder, same file extension, same
+destination — and learns it as a skill. Saying "Hey Peer, do 4 more" replays it by
+moving the next 4 matching files straight through the filesystem (`shutil.move`), not
+by simulating clicks — so it's robust to the file manager window being anywhere on
+screen, or not even open.
 
 ## Architecture
 
@@ -56,11 +67,13 @@ See [CONTEXT.md](CONTEXT.md) for the full project rationale and design notes.
 heypeer/
 ├── wakeword/       # openWakeWord training pipeline (Piper samples, augmentation,
 │                   # training) + real-time ONNX-based listener
-├── capture/        # active app/window watcher + abstracted input-event listener
+├── capture/        # active app/window watcher, abstracted input-event listener,
+│                   # and a watchdog-based file-move watcher (demo scenario)
 ├── patterns/       # repeated-sequence detector + JSON-backed skill memory
 ├── nemotron/       # Nebius Token Factory client for Nemotron 3 Nano Omni
 ├── confirmation/   # user confirmation gate (CLI)
-├── executor/       # automated replay of skills via pyautogui + visual checks
+├── executor/       # automated replay: pyautogui for input skills, direct
+│                   # filesystem ops (shutil) for file-move skills
 ├── main.py         # wires every stage into the end-to-end demo loop
 └── config.py       # shared configuration (env vars, paths, model ids)
 ```
@@ -88,10 +101,11 @@ cp .env.example .env   # fill in NEBIUS_API_KEY
 python -m heypeer.main
 ```
 
-This starts the activity watcher (learning skills from repeated action sequences)
-and listens for "Hey Peer". If no trained wake-word model exists yet at
-`data/wakeword/hey_peer.onnx`, it falls back to manual activation: press Enter to
-simulate the wake word and type the instruction you'd otherwise speak.
+This starts the activity watcher and the file-move watcher (default: `~/Downloads`,
+override with `HEYPEER_WATCHED_DIR`), learning skills from repeated action sequences
+or repeated file moves. It then listens for "Hey Peer". If no trained wake-word model
+exists yet at `data/wakeword/hey_peer.onnx`, it falls back to manual activation: press
+Enter to simulate the wake word and type the instruction you'd otherwise speak.
 
 To train the real wake-word model:
 
@@ -108,14 +122,16 @@ See each script's docstring for details.
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 16 tests): wake-word
-training/inference, activity capture, pattern detection, the Nemotron client, user
-confirmation, and skill execution. What's *not* verified is anything needing real
-hardware this dev environment didn't have — a microphone, a display, real Piper
-voices, or a live Nebius API key — so those paths are code-complete but only
-verified via mocks. Concretely: `WakeWordListener.start()`'s live mic loop,
-`ActivityWatcher.start()`'s live input loop, `SkillRunner`'s actual pyautogui calls,
-and any real (non-mocked) Nebius API round-trip.
+All core stages are implemented and unit-tested (`pytest`, 21 tests): wake-word
+training/inference, activity capture, file-move capture/detection/replay for the
+demo scenario, pattern detection, the Nemotron client, user confirmation, and skill
+execution. What's *not* verified is anything needing real hardware this dev
+environment didn't have — a microphone, a display, real Piper voices, or a live
+Nebius API key — so those paths are code-complete but only verified via mocks.
+Concretely: `WakeWordListener.start()`'s live mic loop, `ActivityWatcher.start()`'s
+live input loop, `SkillRunner`'s pyautogui-based replay path (the file-move replay
+path *is* verified — it only touches the filesystem), and any real (non-mocked)
+Nebius API round-trip.
 
 ## Ethics & privacy notes
 
