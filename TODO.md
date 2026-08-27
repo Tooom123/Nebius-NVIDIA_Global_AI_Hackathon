@@ -23,10 +23,12 @@ each major implementation (per project convention).
   - [x] Wire detector output into `SkillMemory` (also fixed `SkillMemory` to
         actually (de)serialize `ActionEvent`s — it previously stored them
         raw, which would have broken once real actions were produced)
-- [ ] Nemotron 3 Nano Omni via Nebius Token Factory
-  - [ ] OpenAI-compatible client call (text-first, per plan step 4)
-  - [ ] Extend to audio clip + screenshot (omni input) once text path is verified
-  - [ ] Parse structured intent (`{action, skill_id, n_repetitions}`)
+- [x] Nemotron 3 Nano Omni via Nebius Token Factory
+  - [x] OpenAI-compatible client call (text-first, per plan step 4) — unit
+        tested with a mocked OpenAI client (no real API key in this sandbox)
+  - [x] Extend to audio clip + screenshot (omni input) — `interpret()` sends
+        base64 audio + screenshot; unverified against the live API here
+  - [x] Parse structured intent (`{action, skill_id, n_repetitions}`)
 - [ ] Confirmation UI
   - [x] Minimal CLI confirm gate
   - [ ] (stretch) lightweight overlay if time allows

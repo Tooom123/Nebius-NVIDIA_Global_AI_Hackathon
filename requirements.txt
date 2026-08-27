@@ -12,5 +12,6 @@ pyautogui>=0.9.54
 pillow>=10.0.0
 opencv-python>=4.9.0
 requests>=2.31.0
+openai>=1.0.0
 python-dotenv>=1.0.0
 pydantic>=2.6.0
