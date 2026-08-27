@@ -1,6 +1,10 @@
-openwakeword>=0.6.0
+openwakeword>=0.4.0
 onnxruntime>=1.17.0
 pyaudio>=0.2.14
+soundfile>=0.12.1
+scikit-learn>=1.4.0
+skl2onnx>=1.16.0
+piper-tts>=1.2.0
 numpy>=1.26.0
 pyautogui>=0.9.54
 pillow>=10.0.0

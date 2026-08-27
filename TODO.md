@@ -4,12 +4,15 @@ Working list for the hackathon build-out. Check off as each lands; commit + push
 each major implementation (per project convention).
 
 - [x] Project scaffold: license, README, package skeleton, skill memory + test
-- [ ] Wake word "Hey Peer"
-  - [ ] Piper TTS sample-generation script (synthetic "Hey Peer" utterances)
-  - [ ] openWakeWord training script (features + small CNN, ONNX export)
-  - [ ] Real-time runtime listener (mic → openWakeWord → callback), with a
-        pretrained fallback model so the runtime path works before custom
-        training is run
+- [x] Wake word "Hey Peer"
+  - [x] Piper TTS sample-generation script (synthetic "Hey Peer" utterances)
+  - [x] openWakeWord training script (embed → MLP classifier head → ONNX export),
+        verified end-to-end with a synthetic tone-vs-noise fixture (no Piper
+        voices available in this sandbox, so real "Hey Peer" audio wasn't
+        generated here — script is ready to run once voices are downloaded)
+  - [x] Real-time runtime listener (mic → openWakeWord embeddings → ONNX
+        classifier → callback), `process_chunk` unit-tested; `start()`'s live
+        mic loop needs real hardware to verify
 - [ ] Activity capture (minimal, scoped to one demo scenario)
   - [ ] Cross-platform-ish active app/window watcher
   - [ ] Mouse/keyboard event listener emitting `ActionEvent`s (no keystroke content)
