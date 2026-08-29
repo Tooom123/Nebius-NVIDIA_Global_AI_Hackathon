@@ -160,11 +160,16 @@ python -m heypeer.main --cli
 This always runs with capture and voice activation both on, falls back to
 pressing Enter to simulate the wake word if no trained model is available, and
 still shows a real (detached) tray icon so "Quitter" works as a stop button
-instead of Task Manager. Both modes also open a small always-on-top debug
-window (`heypeer/tray/debug_window.py`) logging each interaction live — wake
-word detected, instruction heard, resolved intent, confirmation, result —
-since that's easier to read than console output interleaved with the
-wake-word debug dB meter's live-redrawn line.
+instead of Task Manager. Both modes also open a small always-on-top
+conversation window (`heypeer/tray/debug_window.py`) — a glassmorphism-styled
+page (`heypeer/tray/webui/conversation.html`) rendered via `pywebview`
+(the OS's own web view, WebView2 on Windows) with a pulsing orb that reacts to
+state and live mic level, above a scrolling transcript of the conversation —
+logging each interaction live: wake word detected, instruction heard, resolved
+intent, confirmation, result. It runs in its own OS process (not just a
+thread) specifically so that if window creation ever hangs or fails on some
+machine, the rest of Hey Peer keeps running unaffected instead of the whole
+app freezing with it.
 
 To regenerate the wake-word model (voices aren't committed — download them first):
 
@@ -232,6 +237,11 @@ environment doesn't have:
   everything so far is synthetic-Piper-voice evaluation
 - The tray "Demander à Hey Peer..." dialog's actual on-screen appearance (fixed
   the threading bug behind it, but haven't seen it render for real)
+- The pywebview conversation window's actual rendered appearance — this
+  sandbox has no GTK/WebKit backend for pywebview to use at all (attempting a
+  real, non-mocked `DebugWindow()` here hangs rather than rendering anything),
+  so unlike most of this project's GUI code, even non-visual construction
+  couldn't be exercised here; needs a real run on the user's Windows machine
 - The recolored-arrow cursor's actual on-screen shape/color — verified logically
   for both the monochrome and color-cursor extraction paths, not yet seen render
 - **Ctrl+C does not reliably stop the tray app on Windows** — this is a pystray/

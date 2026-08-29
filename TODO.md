@@ -364,6 +364,44 @@ real UI" — an actual interaction design):
       on wake-word detection and closes after, rather than one persistent
       window — and reusing/replacing the "Demander à Hey Peer..." tkinter
       dialog (manual-trigger-only today) with this one (wake-word-triggered).
+- [x] **Conversation window rebuilt on pywebview, replacing Tkinter** — done
+      2026-08-29, per explicit user feedback that the Tkinter Canvas version
+      "n'est pas viable pour un produit final" (not viable for a final
+      product). `heypeer/tray/debug_window.py` now loads a real HTML/CSS/JS
+      page (`heypeer/tray/webui/conversation.html`) through `pywebview` (the
+      OS's own web view — WebView2 on Windows, no extra runtime to ship),
+      which gets actual modern CSS for free: a glassmorphism card
+      (`backdrop-filter: blur`), a pulsing orb whose color/breathing/size
+      react to state and live mic level via a `--level` CSS custom
+      property, and a scrolling transcript of message bubbles (right-aligned/
+      tinted for what the user said). Same public API kept
+      (`log`/`set_level`/`set_state`) so `main.py` didn't need to change.
+      **Real finding while building this**: constructing the window on a
+      background *thread* (the original plan, matching the old Tk approach)
+      hung the **entire interpreter** in this project's Linux dev sandbox —
+      `webview.create_window()` never returned, and no other thread made
+      progress either, consistent with the native call blocking without
+      releasing the GIL (most likely cause here: no GTK/WebKit backend
+      installed in this sandbox). Whether this specific failure mode can
+      also happen on Windows/WebView2 is unverified, but a hang that can
+      freeze the whole app is a real regression risk regardless of cause —
+      so the window now runs in its own **`multiprocessing.Process`**
+      instead of a thread, driven by a `multiprocessing.Queue` of JS
+      snippets to evaluate. `Process.start()` returns to the caller
+      immediately no matter what the child ends up doing, so even if window
+      creation hangs or fails on some machine, the rest of Hey Peer keeps
+      running unaffected — verified: `DebugWindow()` now returns in ~10ms in
+      this sandbox (previously: indefinite hang), with no zombie process
+      left behind. Verified: full test suite (79 tests) passes with
+      `webview`/`multiprocessing.Process` mocked. **Not verified**: what the
+      page actually looks like rendered for real (no GTK/WebKit backend here
+      to render it, and no Windows machine in this environment) — this is a
+      bigger unverified gap than usual for this project's GUI code, since
+      even a real (non-visual) construction couldn't be exercised here at
+      all. Needs a real run on the user's Windows machine to confirm (a) the
+      window appears, (b) the glassmorphism/orb look as intended, (c) the
+      orb animates smoothly with voice level, (d) transcript bubbles render
+      correctly.
 - [x] **Spoken confirmation (TTS)** — done 2026-08-30, alongside (not instead
       of) the existing text confirm prompt. `heypeer/tray/tts.py` wraps Piper
       (already a dependency, chosen specifically for "léger" — local, fast on
