@@ -150,15 +150,21 @@ reliably working to quiet this. The detection threshold defaults to `0.9` (not
 openWakeWord's usual `0.5`) — see `heypeer/wakeword/train.py`'s module docstring
 for the evaluation behind that choice — override with `HEYPEER_WAKEWORD_THRESHOLD`.
 
-For a headless dev box without a tray host (no display), use the foreground
-console loop instead:
+For debugging with the console visible (or on a headless box without a tray
+host), use the foreground console loop instead:
 
 ```bash
 python -m heypeer.main --cli
 ```
 
-This always runs with capture and voice activation both on, and falls back to
-pressing Enter to simulate the wake word if no trained model is available.
+This always runs with capture and voice activation both on, falls back to
+pressing Enter to simulate the wake word if no trained model is available, and
+still shows a real (detached) tray icon so "Quitter" works as a stop button
+instead of Task Manager. Both modes also open a small always-on-top debug
+window (`heypeer/tray/debug_window.py`) logging each interaction live — wake
+word detected, instruction heard, resolved intent, confirmation, result —
+since that's easier to read than console output interleaved with the
+wake-word debug dB meter's live-redrawn line.
 
 To regenerate the wake-word model (voices aren't committed — download them first):
 
@@ -183,7 +189,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 48 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 54 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), user confirmation, skill execution, and the tray

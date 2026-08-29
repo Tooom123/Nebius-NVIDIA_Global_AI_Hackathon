@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from heypeer.capture.events import ActionEvent, ActionType
-from heypeer.main import HeyPeer
+from heypeer.main import _SHUTDOWN, HeyPeer
 from heypeer.nemotron.intent import Intent
 from heypeer.patterns.detector import PatternDetector
 from heypeer.patterns.memory import SkillMemory
@@ -191,3 +191,47 @@ def test_move_file_intent_cancelled_does_not_move(tmp_path: Path) -> None:
 
     assert (watched_dir / "facture.pdf").exists()
     assert not (watched_dir / "Archives").exists()
+
+
+def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: Path) -> None:
+    """Regression test: the wake-word audio thread's on_detected callback
+    must stay cheap and non-blocking. Handling the instruction inline (i.e.
+    calling get_instruction()/input() from that thread) was found to not
+    actually wait for keyboard input on Windows."""
+    nemotron = MagicMock()
+    get_instruction = MagicMock(return_value="do it 4 more times")
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=get_instruction,
+    )
+
+    peer._on_wake_detected()
+
+    get_instruction.assert_not_called()
+    assert peer._detections.get_nowait() is None
+
+
+def test_on_quit_enqueues_shutdown_sentinel(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+
+    peer._on_quit()
+
+    assert peer._detections.get_nowait() is _SHUTDOWN
+
+
+def test_log_prints_and_forwards_to_debug_window(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    debug_window = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory, detector=PatternDetector(), nemotron=nemotron, debug_window=debug_window
+    )
+
+    peer._log("hello")
+
+    debug_window.log.assert_called_once_with("hello")
