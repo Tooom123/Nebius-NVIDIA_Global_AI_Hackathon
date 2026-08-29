@@ -216,7 +216,7 @@ class HeyPeer:
 
     def _run_move_file_intent(self, intent: Intent) -> None:
         if self.watched_dir is None:
-            print("No watched directory configured — can't resolve a direct file move.")
+            print("No watched directory configured - can't resolve a direct file move.")
             return
 
         src_path = self.watched_dir / intent.src_filename
@@ -292,7 +292,7 @@ def run_cli() -> None:
         if peer._wake_thread is not None:
             peer._wake_thread.join(timeout=0.5)
         if peer._wake_listener is None:
-            print('Wake-word listener unavailable — press Enter to simulate "Hey Peer".')
+            print('Wake-word listener unavailable - press Enter to simulate "Hey Peer".')
             while True:
                 input()
                 peer.on_wake_word()
