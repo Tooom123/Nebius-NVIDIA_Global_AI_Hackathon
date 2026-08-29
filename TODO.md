@@ -252,15 +252,79 @@ Requested by the user before signing off for the night on 2026-08-29:
         `generate_negatives`, `augment`, `train` — see each script's
         docstring; voices need re-downloading via
         `piper.download_voices.download_voice`, not committed.
-- [ ] **A real UI**, beyond the tray icon — user wants something to look at
-      and interact with beyond menu items. Needs a design conversation before
-      coding: candidates are (a) a small always-available window (system
-      tray icon click -> panel) showing status/last actions, (b) a proper
+
+### Live wake-word test on real hardware (2026-08-29, later that night)
+
+**"Hey Peer" was detected for real, on the user's actual voice, score 1.00,
+repeatedly.** First real confirmation the whole trained pipeline works outside
+synthetic evaluation. Getting there took four more real bugs, each only
+visible once the previous one was fixed and exposed the next:
+1. Console mojibake (`▒` characters) swallowing the actual diagnostic text —
+   not just em dashes this time, accented characters too (`é`, `É`), in the
+   user's MINGW64/Git Bash terminal specifically. Every console `print()`
+   string project-wide is now plain ASCII; tray labels (rendered via Win32
+   Unicode APIs, different risk profile) were left accented.
+2. `onnxruntime.NoSuchFile` loading `melspectrogram.onnx` — see the real
+   wake-word section above; fixed by `_ensure_openwakeword_models()`.
+3. `run_cli()` exiting almost instantly once the listener actually
+   succeeded — nothing kept the process alive on the success path (the
+   `while True: input()` fallback loop was accidentally the only thing doing
+   that, and it's skipped when the listener works). Fixed with
+   `peer._wake_thread.join()` on success.
+4. **CPU load switched to openWakeWord's incremental streaming API**
+   (`AudioFeatures.__call__`/`get_features`) instead of calling
+   `embed_clips()` on the entire ~1.5s rolling window every single 80ms
+   chunk — the user flagged the always-on listener as noticeably heavy, and
+   measured per-chunk cost dropped to ~1.1ms after the change (from
+   reprocessing ~24000 samples worth of melspec+embeddings every chunk to
+   reprocessing ~1280). This is the actual mechanism real always-listening
+   engines (Hey Siri, Alexa, OK Google) rely on — process only what's new,
+   keep a rolling feature buffer, never recompute the whole window.
+
+### Requested next: real voice command + a real UI
+
+The user was explicit that wake-word detection alone doesn't make sense
+without also being able to *speak* the instruction — right now
+`_default_get_instruction()` still requires typing after "Hey Peer" fires.
+Also asked for a proper UI, sketched out concretely this time (not just "a
+real UI" — an actual interaction design):
+
+- [ ] **Voice command capture + interpretation** — record a few seconds of
+      audio right after wake-word detection and route it through
+      `NemotronClient.interpret()` (already built, accepts an audio clip +
+      screenshot + skill context — never actually exercised end-to-end,
+      only `interpret_text()` has been) instead of `input()`. Natural fit
+      given Nemotron 3 Nano Omni is multimodal audio+vision+text already —
+      no separate STT engine needed in principle. Needs: a short recording
+      window (VAD-based end-of-speech detection, or a fixed few seconds),
+      saving it as a wav, and wiring `HeyPeer._handle_instruction` to accept
+      an audio path instead of/alongside text.
+- [ ] **Corner popup UI on wake-word detection** — a modern light-mode
+      floating window appears in a screen corner the moment "Hey Peer"
+      fires, live-transcribing what's said (like OS dictation UI), closing
+      once the instruction is captured. Needs a design pass: candidates are
+      a lightweight always-on-top Tk/PyQt window, or a small local web view.
+      Should reuse/replace the existing "Demander à Hey Peer..." tkinter
+      dialog rather than duplicate it — that one is manual-trigger-only
+      today, this one is wake-word-triggered.
+- [ ] **Spoken confirmation (TTS)** — instead of (or alongside) the current
+      text confirmation prompt, Hey Peer should *say* what it's about to do
+      and wait for a spoken/typed yes before acting. Needs a TTS engine —
+      Piper is already a project dependency (used for wake-word training
+      data) and can also do live synthesis, worth trying first before adding
+      another dependency.
+- [ ] **Tray icon stays minimal** per the user's explicit preference: just
+      the ON/OFF toggle (green/gray light) it already is — the popup UI
+      above is a separate window, not an expansion of the tray menu itself.
+
+- [ ] **A real UI**, beyond the tray icon — see the corner-popup design above,
+      which supersedes the vaguer version of this item from the previous
+      planning round. Still open regardless of scope: (b) a proper
       confirmation dialog instead of the console `input()` prompt (the CLI
-      confirm gate was always meant as an MVP stand-in), (c) a
-      settings/onboarding screen (watched dir, API key check, wake-word
-      status) so the user isn't hand-editing `.env`. Pick scope with the
-      user before building.
+      confirm gate was always meant as an MVP stand-in — likely subsumed by
+      the spoken-confirmation item above), (c) a settings/onboarding screen
+      (watched dir, API key check, wake-word status) so the user isn't
+      hand-editing `.env`.
 - [ ] **Skill log / inspection** — right now skills only live in
       `data/skills/skills.json` with no way to list, inspect, rename, or
       delete them short of hand-editing the JSON. After a few days of

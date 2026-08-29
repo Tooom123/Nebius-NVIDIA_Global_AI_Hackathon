@@ -29,8 +29,8 @@ class FileOpWatcher:
     def start(self) -> None:
         if not self.watch_dir.is_dir():
             print(
-                f"[heypeer] Dossier surveillé introuvable ({self.watch_dir}) - "
-                "détection de tri de fichiers désactivée pour cette session."
+                f"[heypeer] Dossier surveille introuvable ({self.watch_dir}) - "
+                "detection de tri de fichiers desactivee pour cette session."
             )
             return
 

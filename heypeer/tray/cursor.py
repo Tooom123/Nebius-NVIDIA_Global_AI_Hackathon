@@ -299,8 +299,8 @@ class CursorIndicator:
         self._active = active
         if not self._supported:
             print(
-                "[heypeer] Indicateur de curseur coloré non supporté sur "
-                f"{platform.system()} — ignoré (Windows uniquement pour l'instant)."
+                "[heypeer] Indicateur de curseur colore non supporte sur "
+                f"{platform.system()} - ignore (Windows uniquement pour l'instant)."
             )
             return
         self._apply_windows(active)

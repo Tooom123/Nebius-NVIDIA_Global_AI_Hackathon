@@ -292,9 +292,9 @@ def run_tray() -> None:
     atexit.register(peer.cursor.reset)
     peer.start_capture()
     peer.tray.set_auto_mode(True)
-    print("Apprentissage de skills actif en arrière-plan.")
-    print("Icône dans la zone de notification. Mode auto (écoute vocale) : ON.")
-    print('Menu "Demander à Hey Peer..." disponible pour tester sans micro.')
+    print("Apprentissage de skills actif en arriere-plan.")
+    print("Icone dans la zone de notification. Mode auto (ecoute vocale) : ON.")
+    print('Menu "Demander a Hey Peer..." disponible pour tester sans micro.')
     peer.tray.run()
 
 
@@ -325,7 +325,7 @@ def run_cli() -> None:
             # always took the "unavailable" branch above instead, whose own
             # `while True` loop accidentally kept the process alive, masking
             # this).
-            print('Écoute vocale active - Ctrl+C pour quitter.')
+            print('Ecoute vocale active - Ctrl+C pour quitter.')
             peer._wake_thread.join()
     finally:
         peer._on_quit()
