@@ -17,6 +17,7 @@ rolling feature buffer internally, cutting the per-chunk work roughly to the
 size of one chunk instead of the size of the whole detection window.
 """
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from openwakeword.utils import AudioFeatures
 SAMPLE_RATE = 16000
 CLIP_SECONDS = 1.5
 CHUNK_SAMPLES = 1280  # 80ms chunks, openWakeWord's standard streaming granularity
+COOLDOWN_SECONDS = 1.5  # minimum gap between two separate detections
 
 
 def _ensure_openwakeword_models() -> None:
@@ -90,6 +92,27 @@ class WakeWordListener:
         # classifier actually learned.
         self._n_feature_frames = self._features.get_embedding_shape(CLIP_SECONDS)[0]
         self._running = False
+        # A single utterance of "Hey Peer" keeps the score above threshold
+        # for several consecutive chunks (it's a plateau, not a single
+        # spike) -- without debouncing, on_detected() fired once per chunk
+        # in that plateau, i.e. several times for one utterance. Only fire
+        # on the rising edge (was below, now above), and refuse to fire
+        # again within COOLDOWN_SECONDS regardless, as a backstop.
+        self._armed = True
+        self._last_trigger_time = 0.0
+
+    def _maybe_trigger(self, score: float) -> bool:
+        """Returns True at most once per utterance (rising edge + cooldown)."""
+        if score < self.threshold:
+            self._armed = True
+            return False
+        if not self._armed:
+            return False
+        if time.time() - self._last_trigger_time < COOLDOWN_SECONDS:
+            return False
+        self._armed = False
+        self._last_trigger_time = time.time()
+        return True
 
     def _score(self) -> float:
         features = self._features.get_features(n_feature_frames=self._n_feature_frames)
@@ -142,7 +165,7 @@ class WakeWordListener:
                         end="",
                         flush=True,
                     )
-                if score >= self.threshold:
+                if self._maybe_trigger(score):
                     if self.debug:
                         print()  # move off the overwritten debug line
                     print(f"[wakeword] Mot d'activation detecte (score={score:.2f}).")

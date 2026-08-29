@@ -107,3 +107,33 @@ def test_ensure_openwakeword_models_downloads_when_missing(
     _ensure_openwakeword_models()
 
     download_mock.assert_called_once()
+
+
+def test_maybe_trigger_fires_once_per_utterance_plateau(toy_model: Path) -> None:
+    """Regression test: a real utterance keeps the score above threshold for
+    several consecutive chunks (a plateau), not just one -- must fire once,
+    not once per chunk in that plateau."""
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+
+    # Simulate a plateau: several consecutive above-threshold scores.
+    fires = [listener._maybe_trigger(0.9) for _ in range(5)]
+    assert fires == [True, False, False, False, False]
+
+    # Score drops back down (utterance ended) then rises again immediately
+    # -- cooldown should still block a second fire this soon.
+    listener._maybe_trigger(0.1)
+    assert listener._maybe_trigger(0.9) is False
+
+    # After the cooldown window, a genuinely new utterance should fire again.
+    listener._last_trigger_time -= 10
+    assert listener._maybe_trigger(0.9) is True
+
+
+def test_maybe_trigger_requires_drop_below_threshold_to_rearm(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+    listener._maybe_trigger(0.9)
+    listener._last_trigger_time -= 10  # clear cooldown
+
+    # Still above threshold without ever dropping below it -- must not
+    # re-fire just because the cooldown elapsed.
+    assert listener._maybe_trigger(0.9) is False
