@@ -27,31 +27,33 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
 4. Once activated, the user's spoken instruction plus a screenshot of the current
    screen are sent to **Nemotron 3 Nano Omni**, hosted on **Nebius Token Factory**,
    which reasons over audio + vision + text to produce a structured intent.
-   Nemotron picks one of: replay a learned skill, do a **direct one-off action**
-   that doesn't need any learned skill at all (e.g. "déplace le fichier facture
-   vers Archives" — grounded against the watched folder's actual file listing), or
-   report the instruction as unrecognized.
-5. The user is shown (and told out loud, in French by default) exactly what will be
-   done, and must explicitly confirm before anything executes — no exception for
-   direct actions either. A real spoken wake-word activation confirms **by voice**
-   (say "oui"/"yes" or "non"/"no" after Hey Peer asks); the tray's manual typed
-   prompt still uses a console y/N since there's no mic context to react to there.
-6. Once confirmed, it's carried out — via direct filesystem operations for
-   file-organizing skills and direct file moves, or mouse/keyboard automation with a
-   visual check between steps for anything else. The tray icon turns blue while
-   something is running, so the current status is always visible from the
-   hidden-icons area.
+   Nemotron picks one of: replay a learned skill, or a **direct one-off file
+   action** that doesn't need any learned skill at all — move, rename, create, or
+   delete a specific file/folder (e.g. "déplace le fichier facture vers Archives",
+   "renomme facture.pdf en facture_mars.pdf", "crée un dossier Factures",
+   "supprime notes.txt" — all grounded against the watched folder's actual file
+   listing) — or reports the instruction as unrecognized.
+5. Hey Peer narrates what it's about to do out loud (in French by default) and then
+   does it — **no confirmation prompt** stands in the way any more. There used to be
+   one (spoken or typed); it was removed after real-world testing showed it caused
+   more problems than it solved (a misheard "yes" over a noisy mic would silently
+   default to "no" and block a legitimate action). The safety net that replaces it:
+   deletes go to the recycle bin/trash rather than a permanent unlink, and every file
+   operation is confined to the watched directory (see Ethics & privacy notes below).
+6. It's carried out — via direct filesystem operations for file-organizing skills
+   and file actions, or mouse/keyboard automation with a visual check between steps
+   for anything else. The tray icon turns blue while something is running, so the
+   current status is always visible from the hidden-icons area.
 
 For quick testing or debugging without a mic, the tray menu also has a **"Demander
 à Hey Peer..."** item that opens a small text-input dialog and feeds it through the
-exact same interpretation → confirmation → execution path as a real wake-word
-activation.
+exact same interpretation → execution path as a real wake-word activation.
 
 ## Why
 
 Repetitive multi-app busywork (data entry, file sorting, form submission) is common
 and tedious. Hey Peer learns these patterns passively and lets the user delegate them
-with a single voice command, without ever acting without explicit confirmation.
+with a single voice command.
 
 ## Demo scenario: file sorting
 
@@ -63,13 +65,14 @@ moving the next 4 matching files straight through the filesystem (`shutil.move`)
 by simulating clicks — so it's robust to the file manager window being anywhere on
 screen, or not even open.
 
-Alongside that, Hey Peer can also handle a **single named file directly**, with no
-repetition and no learned skill involved at all ("déplace le fichier facture vers
-Archives") — pure Nemotron reasoning grounded against the real filenames in the
-watched folder. As a safety constraint, the destination is always resolved as a
-subfolder *of the watched directory* (created if it doesn't exist), so a
-misunderstood or ambiguous instruction can't write outside it — and it still goes
-through the same confirmation gate as everything else.
+Alongside that, Hey Peer can also handle a **single named file or folder directly**,
+with no repetition and no learned skill involved at all — move, rename, create, or
+delete ("déplace le fichier facture vers Archives", "renomme facture.pdf en
+facture_mars.pdf", "crée un dossier Factures", "supprime notes.txt") — pure Nemotron
+reasoning grounded against the real filenames in the watched folder. As a safety
+constraint, every one of these resolves to a path *inside the watched directory*
+(checked, not just assumed — see Ethics & privacy notes), so a misunderstood or
+ambiguous instruction can't write, rename, or delete outside it.
 
 ## Architecture
 
@@ -82,10 +85,7 @@ through the same confirmation gate as everything else.
    (Nebius Token Factory · audio + screen)
         │
         ▼
-[User confirmation]
-        │
-        ▼
-[Execution — mouse/keyboard control]
+[Execution — filesystem ops / mouse+keyboard control]
         │
         └──► updates skill memory
 ```
@@ -102,10 +102,8 @@ heypeer/
 │                   # and a watchdog-based file-move watcher (demo scenario)
 ├── patterns/       # repeated-sequence detector + JSON-backed skill memory
 ├── nemotron/       # Nebius Token Factory client for Nemotron 3 Nano Omni
-├── confirmation/   # user confirmation gate (voice, after a real spoken wake-word
-│                   # activation; console y/N as a fallback for typed prompts)
 ├── executor/       # automated replay: pyautogui for input skills, direct
-│                   # filesystem ops (shutil) for file-move skills
+│                   # filesystem ops (move/rename/create/delete) for file actions
 ├── tray/           # system tray icon (voice-activation toggle, live status,
 │                   # manual prompt dialog) + colored-cursor indicator
 ├── main.py         # wires every stage into the end-to-end demo loop
@@ -164,19 +162,24 @@ python -m heypeer.main --cli
 This always runs with capture and voice activation both on, falls back to
 pressing Enter to simulate the wake word if no trained model is available, and
 still shows a real (detached) tray icon so "Quitter" works as a stop button
-instead of Task Manager. Both modes also open a small always-on-top
-conversation window (`heypeer/tray/debug_window.py`) — a glassmorphism-styled
-page (`heypeer/tray/webui/conversation.html`) rendered via `pywebview`
-(the OS's own web view, WebView2 on Windows), positioned at the top-center of
-the screen: a Siri-style pulsing orb with animated wave rings radiating
-outward while listening/thinking/speaking, reacting to state and live mic
-level, above a scrolling transcript of the conversation — automatically
-switches to a dark palette on a dark OS theme —
-logging each interaction live: wake word detected, instruction heard, resolved
-intent, confirmation, result. It runs in its own OS process (not just a
-thread) specifically so that if window creation ever hangs or fails on some
-machine, the rest of Hey Peer keeps running unaffected instead of the whole
-app freezing with it.
+instead of Task Manager. **The actual conversation (wake word detected, instruction
+heard, resolved intent, result) is logged to the terminal** — both modes also show
+a minimal always-on-top visual indicator (`heypeer/tray/debug_window.py`): a small
+white circle with an Apple-style colored accent, sitting flush against the top edge
+of the screen, with animated wave rings radiating outward while listening/thinking/
+speaking (rendered via `pywebview` — the OS's own web view, WebView2 on Windows —
+loading `heypeer/tray/webui/conversation.html`). It runs in its own OS process (not
+just a thread) specifically so that if window creation ever hangs or fails on some
+machine, the rest of Hey Peer keeps running unaffected instead of the whole app
+freezing with it.
+
+Hey Peer's own TTS output is muted out of its own wake-word listening while it's
+speaking (`WakeWordListener.mute()`/`unmute()`, wired around every `_speak()` call in
+`main.py`) — with some headsets, its own voice was otherwise picked back up by the
+mic and could be scored as more speech or even a false wake-word trigger. This is
+mic *gating*, not true acoustic echo cancellation (nothing is cancelled during
+simultaneous playback+speech) — but Hey Peer never needs to listen for the wake word
+while it's actively talking anyway, so gating fully covers the symptom.
 
 To regenerate the wake-word model (voices aren't committed — download them first):
 
@@ -201,14 +204,14 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 54 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 100 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
-Nebius API**, not just mocks), user confirmation, skill execution, and the tray
-app/cursor indicator. Two full pipelines have been rehearsed end-to-end with real
-files and real API calls: learn a file-sorting skill -> "Hey Peer, do N more" ->
-confirm -> real file move; and a direct one-off "déplace le fichier X vers Y" with
-no learned skill at all.
+Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
+path-containment safety checks, skill execution, and the tray app/cursor indicator.
+Two full pipelines have been rehearsed end-to-end with real files and real API
+calls: learn a file-sorting skill -> "Hey Peer, do N more" -> real file move; and a
+direct one-off "déplace le fichier X vers Y" with no learned skill at all.
 
 The wake-word model has moved from "never trained" to **actually trained on real
 Piper-synthesized speech**, with a proper (if synthetic-only) held-out streaming
@@ -244,11 +247,10 @@ environment doesn't have:
   everything so far is synthetic-Piper-voice evaluation
 - The tray "Demander à Hey Peer..." dialog's actual on-screen appearance (fixed
   the threading bug behind it, but haven't seen it render for real)
-- The pywebview conversation window's actual rendered appearance — this
-  sandbox has no GTK/WebKit backend for pywebview to use at all (attempting a
-  real, non-mocked `DebugWindow()` here hangs rather than rendering anything),
-  so unlike most of this project's GUI code, even non-visual construction
-  couldn't be exercised here; needs a real run on the user's Windows machine
+- The pywebview orb indicator's actual rendered appearance — this sandbox has
+  no GTK/WebKit backend for pywebview to use at all, so unlike most of this
+  project's GUI code, even non-visual construction couldn't be exercised here
+  for real (only through mocks); needs a real run on the user's Windows machine
 - The recolored-arrow cursor's actual on-screen shape/color — verified logically
   for both the monochrome and color-cursor extraction paths, not yet seen render
 - **Ctrl+C does not reliably stop the tray app on Windows** — this is a pystray/
@@ -266,8 +268,14 @@ environment doesn't have:
   scroll deltas) — never the literal characters typed into a field. Plain
   character key presses are recorded as a generic marker and the executor
   refuses to replay them, so no automation can ever retype captured content.
-- **No automation ever runs without explicit user confirmation** of what will be done
-  and how many times.
+- **There is no confirmation prompt before an action runs** — removed after
+  real-world testing showed it caused more problems than it solved. In its place:
+  every direct file action (move/rename/create/delete) is checked to resolve to a
+  path *inside the watched directory* before touching the filesystem
+  (`_ensure_within` in `heypeer/executor/runner.py`) — a hallucinated or ambiguous
+  name can't escape it via `../` or an absolute path — and deletes go to the
+  recycle bin/trash (`send2trash`), not a permanent unlink, so at least that
+  action stays reversible.
 
 ## License
 

@@ -13,7 +13,6 @@ from heypeer.wakeword.listener import (
     _ensure_openwakeword_models,
     chunk_dbfs,
     dbfs_to_level,
-    record_voice_reply,
     save_wav,
 )
 from heypeer.wakeword.train import export_onnx, train
@@ -221,24 +220,51 @@ def test_record_instruction_respects_max_duration_cap(toy_model: Path) -> None:
     assert len(audio) == int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES) * CHUNK_SAMPLES
 
 
-def test_record_voice_reply_opens_and_closes_its_own_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`record_voice_reply` must not reuse the wake-word listener's own
-    stream (it's called from a different thread, well after the wake-word
-    trigger) - it opens (and cleans up) a short-lived stream of its own."""
-    chunks = [_loud_chunk()] * 3 + [_quiet_chunk()] * 10
+def test_start_skips_scoring_and_triggering_while_muted(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """While muted (Hey Peer's own TTS is playing - see main.py's `_speak`),
+    `start()`'s loop must drain the mic without scoring or triggering, so
+    Hey Peer's own voice bleeding into the mic can't be scored or
+    false-trigger the wake word."""
+    listener = WakeWordListener(str(toy_model), threshold=0.0)  # anything would trigger if scored
+    listener.mute()
+    process_spy = MagicMock(wraps=listener.process_chunk)
+    listener.process_chunk = process_spy
+
+    chunks = [_loud_chunk()] * 3
     fake_stream = _FakeStream(chunks)
+    reads = {"n": 0}
+    real_read = fake_stream.read
+
+    def counting_read(n, exception_on_overflow=False):
+        reads["n"] += 1
+        if reads["n"] >= len(chunks):
+            listener.stop()
+        return real_read(n, exception_on_overflow)
+
+    fake_stream.read = counting_read
     fake_pa = MagicMock()
     fake_pa.open.return_value = fake_stream
+    fake_pa.get_default_input_device_info.side_effect = Exception("no input device in this sandbox")
     fake_pyaudio_module = types.ModuleType("pyaudio")
     fake_pyaudio_module.PyAudio = MagicMock(return_value=fake_pa)
     fake_pyaudio_module.paInt16 = 8
     monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
 
-    audio = record_voice_reply()
+    listener.start(on_detected=MagicMock())
 
-    fake_pa.open.assert_called_once()
-    assert len(audio) > 0
-    fake_pa.terminate.assert_called_once()
+    process_spy.assert_not_called()
+
+
+def test_unmute_clears_the_muted_flag(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model))
+    listener.mute()
+    assert listener._muted is True
+
+    listener.unmute()
+
+    assert listener._muted is False
 
 
 def test_save_wav_round_trips(tmp_path: Path) -> None:

@@ -1,16 +1,17 @@
-"""A small always-on-top window showing Hey Peer's conversation live: a
-pulsing orb that reacts to state and live mic level, above a scrolling
-transcript — rendered as a real HTML/CSS/JS page (`webui/conversation.html`)
+"""A minimal always-on-top indicator: a small circle that sits flush against
+the top edge of the screen, pulsing/waving to show Hey Peer's state and live
+mic level — rendered as a real HTML/CSS/JS page (`webui/conversation.html`)
 via `pywebview` (the OS's native web view — WebView2 on Windows, already
 present on Windows 10/11, no extra runtime to ship) instead of a Tkinter
 Canvas.
 
-The first version of this window used Tkinter, which the user flagged as
-looking dated and "not viable for a real product" — fair: Tk's default
-widget styling is hard to make look modern. A real web page gets proper
-CSS (gradients, blur/glassmorphism, transitions, animations) essentially
-for free, while staying lightweight since it reuses the OS's own browser
-engine rather than bundling one.
+Deliberately just the orb — no chat window, no transcript. Two design
+changes drove this: the user first flagged the original Tkinter window as
+looking dated and "not viable for a real product" (fair: Tk's default widget
+styling is hard to make look modern), and then explicitly asked to drop the
+conversation transcript entirely and keep only the circle, since the actual
+conversation is easier to follow in the terminal log anyway (see
+`HeyPeer._log`, which just prints - no `debug_window.log()` any more).
 
 Runs in its own **process**, not a thread. A thread-based version was tried
 first and, in this project's Linux dev sandbox, `webview.create_window()`
@@ -31,9 +32,9 @@ from pathlib import Path
 HTML_PATH = Path(__file__).resolve().parent / "webui" / "conversation.html"
 
 
-WINDOW_WIDTH = 380
-WINDOW_HEIGHT = 480
-TOP_MARGIN = 24  # px from the top of the screen - Siri-style assistants sit near an edge, not centered
+WINDOW_WIDTH = 200
+WINDOW_HEIGHT = 170  # tall enough for the wave rings' peak scale without clipping
+TOP_MARGIN = 0  # flush with the screen's top edge - the orb reads as "emerging from" it
 
 
 def _window_process(command_queue: "multiprocessing.Queue") -> None:
@@ -91,9 +92,6 @@ class DebugWindow:
             self._queue.put(js)
         except Exception:
             pass  # queue closed / process gone — never let a UI hiccup break the app
-
-    def log(self, message: str) -> None:
-        self._send(f"log({json.dumps(message)})")
 
     def set_level(self, level: float) -> None:
         self._send(f"setLevel({float(max(0.0, min(1.0, level)))})")

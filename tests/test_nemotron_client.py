@@ -98,6 +98,76 @@ def test_interpret_text_parses_move_file_intent_with_watched_files() -> None:
     assert "notes.txt" in user_message
 
 
+def test_interpret_text_parses_rename_file_intent() -> None:
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "rename_file", "src_filename": "facture.pdf", "new_name": "facture_mars.pdf"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        intent = client.interpret_text(
+            "renomme facture.pdf en facture_mars.pdf",
+            skill_context=[],
+            watched_files=["facture.pdf"],
+        )
+
+    assert intent.action == "rename_file"
+    assert intent.src_filename == "facture.pdf"
+    assert intent.new_name == "facture_mars.pdf"
+
+
+def test_interpret_text_parses_create_folder_intent() -> None:
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "create_folder", "target_name": "Factures"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        intent = client.interpret_text("crée un dossier Factures", skill_context=[])
+
+    assert intent.action == "create_folder"
+    assert intent.target_name == "Factures"
+
+
+def test_interpret_text_parses_delete_file_intent() -> None:
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "delete_file", "src_filename": "notes.txt"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        intent = client.interpret_text(
+            "supprime notes.txt", skill_context=[], watched_files=["notes.txt"]
+        )
+
+    assert intent.action == "delete_file"
+    assert intent.src_filename == "notes.txt"
+
+
 def test_interpret_text_with_screenshot_uses_list_content(tmp_path) -> None:
     screenshot_path = tmp_path / "screen.png"
     screenshot_path.write_bytes(b"fake-png-bytes")

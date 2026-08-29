@@ -579,6 +579,67 @@ fluid, matching the light/dark OS theme automatically.
       Still unverified rendered for real, same caveat as the rest of the
       pywebview work in this sandbox (see above).
 
+### Confirmation removed, mic-echo gating, minimal orb UI, extended file actions (2026-08-29)
+
+Real-world use surfaced several friction points; all fixed/implemented in one
+pass since they touched overlapping code (mainly `main.py`'s dispatch and the
+conversation window).
+
+- [x] **Confirmation removed entirely.** The explicit "wants to: X — confirm?"
+      gate (spoken+recorded reply, or console y/N) is gone — the user reported
+      it caused more problems than it solved (a misheard voice reply defaulted
+      to "no" and silently blocked real actions). Every resolved intent now
+      executes immediately, still narrated out loud first. Deleted
+      `heypeer/confirmation/` entirely (`cli.py`'s console y/N gate,
+      `voice.py`'s oui/non parser, `heypeer.wakeword.listener.record_voice_reply`
+      — all now unused) rather than leave dead code around. The safety net
+      that replaces the gate: every direct file action is checked to resolve
+      inside the watched directory before touching the filesystem
+      (`_ensure_within` — see below), and deletes go to the recycle bin/trash,
+      not a permanent unlink.
+- [x] **Mic-echo gating** (the "Hey Peer hears its own voice" bug, reported
+      with a specific headset). `WakeWordListener` gained `mute()`/`unmute()`;
+      `start()`'s loop drains the mic without scoring/triggering while muted.
+      `HeyPeer._speak()` now mutes before calling Piper and unmutes in a
+      `finally`, so Hey Peer's own TTS playback can't be scored as speech or
+      false-trigger the wake word. This is mic *gating*, not true acoustic
+      echo cancellation (nothing is cancelled during genuinely simultaneous
+      playback+speech, which real AEC like Discord's WebRTC stack handles) —
+      a full AEC integration was out of scope here, but gating fully covers
+      the reported symptom since Hey Peer never needs to listen for the wake
+      word while it's actively talking.
+- [x] **Conversation window reduced to just the orb**, per explicit request:
+      dropped the transcript/card entirely — the real conversation lives in
+      the terminal log now (`HeyPeer._log` just prints; `DebugWindow.log()`
+      is gone). Restyled as a small white circle with an Apple-style colored
+      accent (blue/green/purple/pink depending on state, matching system
+      colors rather than a single brand color) instead of the previous
+      glassmorphism card + Siri-blue-only palette. Window shrunk to 200x170
+      and pinned flush against the screen's top edge (`TOP_MARGIN = 0`) so
+      the orb reads as "emerging from" it.
+- [x] **Extended file actions**: Hey Peer can now move (already existed),
+      **rename, create (file or folder), and delete** a single named
+      file/folder directly — no learned skill needed, same as the existing
+      move path. `Intent` gained `new_name`/`target_name` fields; Nemotron's
+      system prompt (`heypeer/nemotron/client.py`) documents all four new
+      action shapes; `heypeer/executor/runner.py` gained
+      `rename_file`/`create_file`/`create_folder`/`delete_file`.
+      **`delete_file` uses `send2trash`** (recycle bin/trash), not a
+      permanent unlink — deliberate, since there's no confirmation step any
+      more to catch a bad delete before it happens.
+      **Real security fix found while doing this**: the *existing*
+      `move_file` path built `dest_dir = watched_dir / intent.dest_folder`
+      with no check that the result actually stayed under `watched_dir` — a
+      `dest_folder` value like `"../../etc"` would have escaped it entirely
+      (Nemotron's own output, not user-typed, but nothing stopped a
+      hallucinated or adversarial value from reaching the filesystem this
+      way). Added `_ensure_within(base, target, what)` — resolves the target
+      path and checks `Path.is_relative_to`, raising `ExecutionAborted` if it
+      would land outside `watched_dir` — and applied it to *every* direct
+      file operation (move/rename/create/delete), not just the new ones.
+      Verified with dedicated escape-attempt tests (`../outside` for each
+      action) confirming they raise and never touch the filesystem.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

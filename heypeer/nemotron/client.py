@@ -56,11 +56,32 @@ forms:
 best matches what the user described>", \
 "dest_folder": "<a short destination folder name, e.g. 'Archives' — an \
 existing subfolder if one clearly matches, otherwise a new short name>"}
-  Only use this when a specific single file and destination are named. Only
-  pick src_filename from the filenames actually given to you — never invent
-  one.
 
-- If neither applies:
+- To rename ONE existing file (same folder, just a new name — e.g. "renomme \
+facture.pdf en facture_mars.pdf"):
+  {"action": "rename_file", \
+"src_filename": "<the exact filename from the watched-folder listing>", \
+"new_name": "<the new filename — keep the original extension unless the \
+user clearly asks to change it>"}
+
+- To create a new, empty file (e.g. "crée un fichier notes.txt"):
+  {"action": "create_file", \
+"target_name": "<the new filename, with an extension if one makes sense>"}
+
+- To create a new folder (e.g. "crée un dossier Factures"):
+  {"action": "create_folder", "target_name": "<the new folder name>"}
+
+- To delete ONE existing file (e.g. "supprime le fichier notes.txt" — this \
+moves it to the recycle bin/trash, not a permanent delete):
+  {"action": "delete_file", \
+"src_filename": "<the exact filename from the watched-folder listing>"}
+
+  For rename_file/delete_file, only pick src_filename from the filenames
+  actually given to you — never invent one. All of the above only apply to
+  a specific single file/folder named directly; if the user's instruction
+  doesn't clearly name one, use "unknown" instead of guessing.
+
+- If nothing above applies:
   {"action": "unknown"}
 
 Always include every key shown for the chosen form; use null for any you
@@ -80,6 +101,8 @@ def _parse_intent(raw_content: str) -> Intent:
         n_repetitions=int(data.get("n_repetitions") or 1),
         src_filename=data.get("src_filename"),
         dest_folder=data.get("dest_folder"),
+        new_name=data.get("new_name"),
+        target_name=data.get("target_name"),
     )
 
 

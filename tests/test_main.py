@@ -17,21 +17,10 @@ from heypeer.patterns.skill import Skill
 @pytest.fixture(autouse=True)
 def fake_tts(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Avoids loading a real Piper voice / touching an audio output device
-    on every test that reaches a confirmation prompt."""
+    on every test that reaches a spoken narration."""
     speak_mock = MagicMock()
     monkeypatch.setattr("heypeer.tray.tts.speak", speak_mock, raising=False)
     return speak_mock
-
-
-@pytest.fixture(autouse=True)
-def fake_voice_reply(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """A real (audio-triggered) wake-word turn now confirms by voice, which
-    would otherwise open a real mic stream via pyaudio - not something any
-    test should touch. Defaults to "no audio heard" (empty array); tests
-    that need a specific spoken reply override this directly."""
-    reply_mock = MagicMock(return_value=np.zeros(0, dtype=np.int16))
-    monkeypatch.setattr("heypeer.wakeword.listener.record_voice_reply", reply_mock, raising=False)
-    return reply_mock
 
 
 @pytest.fixture
@@ -56,9 +45,12 @@ def _peer(tmp_path: Path, nemotron: MagicMock) -> HeyPeer:
     )
 
 
-def test_on_wake_word_runs_confirmed_skill(
+def test_on_wake_word_runs_skill_directly_no_confirmation(
     tmp_path: Path, fake_pyautogui: MagicMock, fake_tts: MagicMock
 ) -> None:
+    """No confirmation gate any more - a resolved run_skill intent executes
+    immediately (removed per explicit user feedback that it caused more
+    problems than it solved)."""
     nemotron = MagicMock()
     nemotron.interpret_text.return_value = Intent(
         action="run_skill", skill_id="sort_files", n_repetitions=2
@@ -66,30 +58,14 @@ def test_on_wake_word_runs_confirmed_skill(
     nemotron.verify_screen.return_value = True
     peer = _peer(tmp_path, nemotron)
 
-    with patch("heypeer.main.confirm", return_value=True):
-        peer.on_wake_word()
+    peer.on_wake_word()
 
     nemotron.interpret_text.assert_called_once()
     call_args = nemotron.interpret_text.call_args.args
     assert call_args[0] == "do it 4 more times"
     assert {"id": "sort_files", "name": "Sort downloaded files"} in call_args[1]
-    # Spoken before executing (Siri-style confirmation) and again once done.
+    # Spoken once before executing (narration) and again once done.
     assert fake_tts.call_count == 2
-
-
-def test_on_wake_word_skips_execution_if_not_confirmed(
-    tmp_path: Path, fake_pyautogui: MagicMock
-) -> None:
-    nemotron = MagicMock()
-    nemotron.interpret_text.return_value = Intent(
-        action="run_skill", skill_id="sort_files", n_repetitions=2
-    )
-    peer = _peer(tmp_path, nemotron)
-
-    with patch("heypeer.main.confirm", return_value=False):
-        peer.on_wake_word()
-
-    fake_pyautogui.click.assert_not_called()
 
 
 def test_on_wake_word_handles_unknown_intent(tmp_path: Path, fake_pyautogui: MagicMock) -> None:
@@ -97,7 +73,7 @@ def test_on_wake_word_handles_unknown_intent(tmp_path: Path, fake_pyautogui: Mag
     nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
     peer = _peer(tmp_path, nemotron)
 
-    peer.on_wake_word()  # should not raise, no confirmation prompt reached
+    peer.on_wake_word()  # should not raise
 
     fake_pyautogui.click.assert_not_called()
 
@@ -140,6 +116,17 @@ def test_input_events_and_file_events_use_separate_detectors(tmp_path: Path) -> 
     assert all(a.type == ActionType.FILE_MOVE for a in file_skills[0].actions)
 
 
+def _peer_with_watched_dir(tmp_path: Path, nemotron: MagicMock, watched_dir: Path) -> HeyPeer:
+    memory = SkillMemory(tmp_path / "skills.json")
+    return HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        watched_dir=watched_dir,
+        get_instruction=lambda: "instruction",
+    )
+
+
 def test_move_file_intent_moves_the_named_file(tmp_path: Path) -> None:
     watched_dir = tmp_path / "Downloads"
     watched_dir.mkdir()
@@ -153,20 +140,100 @@ def test_move_file_intent_moves_the_named_file(tmp_path: Path) -> None:
         src_filename="facture.pdf",
         dest_folder="Archives",
     )
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
-        nemotron=nemotron,
-        watched_dir=watched_dir,
-        get_instruction=lambda: "déplace facture.pdf vers Archives",
-    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
 
-    with patch("heypeer.main.confirm", return_value=True):
-        peer.on_wake_word()
+    peer.on_wake_word()
 
     assert (watched_dir / "Archives" / "facture.pdf").exists()
     assert not (watched_dir / "facture.pdf").exists()
+
+
+def test_rename_file_intent_renames_the_named_file(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="rename_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        new_name="facture_mars.pdf",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    peer.on_wake_word()
+
+    assert (watched_dir / "facture_mars.pdf").exists()
+    assert not (watched_dir / "facture.pdf").exists()
+
+
+def test_create_folder_intent_creates_the_named_folder(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="create_folder", skill_id=None, n_repetitions=1, target_name="Factures"
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    peer.on_wake_word()
+
+    assert (watched_dir / "Factures").is_dir()
+
+
+def test_create_file_intent_creates_the_named_file(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="create_file", skill_id=None, n_repetitions=1, target_name="notes.txt"
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    peer.on_wake_word()
+
+    assert (watched_dir / "notes.txt").is_file()
+
+
+def test_delete_file_intent_deletes_the_named_file(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "notes.txt").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="delete_file", skill_id=None, n_repetitions=1, src_filename="notes.txt"
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    with patch("send2trash.send2trash") as fake_trash:
+        peer.on_wake_word()
+
+    fake_trash.assert_called_once()
+
+
+def test_file_action_failure_does_not_raise(tmp_path: Path) -> None:
+    """A missing source file (ExecutionAborted) must be caught and logged,
+    not propagate - there's no confirmation step any more to have gated it
+    beforehand."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="does_not_exist.pdf",
+        dest_folder="Archives",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    peer.on_wake_word()  # must not raise
 
 
 def test_auto_mode_toggle_does_not_affect_capture(tmp_path: Path) -> None:
@@ -188,35 +255,6 @@ def test_auto_mode_toggle_does_not_affect_capture(tmp_path: Path) -> None:
 
     peer.stop_capture()
     peer.watcher.stop.assert_called_once()
-
-
-def test_move_file_intent_cancelled_does_not_move(tmp_path: Path) -> None:
-    watched_dir = tmp_path / "Downloads"
-    watched_dir.mkdir()
-    (watched_dir / "facture.pdf").write_text("x")
-
-    nemotron = MagicMock()
-    nemotron.interpret_text.return_value = Intent(
-        action="move_file",
-        skill_id=None,
-        n_repetitions=1,
-        src_filename="facture.pdf",
-        dest_folder="Archives",
-    )
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
-        nemotron=nemotron,
-        watched_dir=watched_dir,
-        get_instruction=lambda: "déplace facture.pdf vers Archives",
-    )
-
-    with patch("heypeer.main.confirm", return_value=False):
-        peer.on_wake_word()
-
-    assert (watched_dir / "facture.pdf").exists()
-    assert not (watched_dir / "Archives").exists()
 
 
 def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: Path) -> None:
@@ -251,17 +289,19 @@ def test_on_quit_enqueues_shutdown_sentinel(tmp_path: Path) -> None:
     assert peer._detections.get_nowait() is _SHUTDOWN
 
 
-def test_log_prints_and_forwards_to_debug_window(tmp_path: Path) -> None:
+def test_speak_mutes_and_unmutes_the_wake_listener(tmp_path: Path) -> None:
+    """Regression test: with some headsets, Hey Peer's own TTS output was
+    picked back up by its own mic input. The wake-word listener is muted for
+    the duration of `_speak` so its own voice can't be scored/false-trigger."""
     nemotron = MagicMock()
-    debug_window = MagicMock()
     memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(
-        memory=memory, detector=PatternDetector(), nemotron=nemotron, debug_window=debug_window
-    )
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer._wake_listener = MagicMock()
 
-    peer._log("hello")
+    peer._speak("hello")
 
-    debug_window.log.assert_called_once_with("hello")
+    peer._wake_listener.mute.assert_called_once()
+    peer._wake_listener.unmute.assert_called_once()
 
 
 def test_on_wake_word_with_audio_transcribes_locally_then_uses_interpret_text(
@@ -286,10 +326,7 @@ def test_on_wake_word_with_audio_transcribes_locally_then_uses_interpret_text(
     )
     audio = np.zeros(16000, dtype=np.int16)
 
-    with (
-        patch("heypeer.main.confirm", return_value=True),
-        patch("heypeer.wakeword.stt.transcribe", return_value="do it again"),
-    ):
+    with patch("heypeer.wakeword.stt.transcribe", return_value="do it again"):
         peer.on_wake_word(audio)
 
     get_instruction.assert_not_called()
@@ -319,69 +356,6 @@ def test_on_wake_word_with_empty_audio_falls_back_to_text(
     nemotron.interpret_text.assert_called_once()
     assert nemotron.interpret_text.call_args.args[0] == "typed instruction"
     assert nemotron.interpret_text.call_args.kwargs.get("screenshot_path") is None
-
-
-def test_confirm_uses_voice_path_after_a_real_spoken_turn(tmp_path: Path) -> None:
-    """A wake-word turn triggered by real mic audio confirms by recording
-    and transcribing a spoken reply, not the console y/N prompt."""
-    nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
-    peer._last_turn_was_voice = True
-    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
-
-    with (
-        patch("heypeer.main.confirm") as console_confirm,
-        patch("heypeer.wakeword.stt.transcribe", return_value="oui"),
-    ):
-        result = peer._confirm(intent, "do the thing")
-
-    assert result is True
-    console_confirm.assert_not_called()
-
-
-def test_confirm_uses_console_path_after_a_typed_turn(tmp_path: Path) -> None:
-    nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
-    peer._last_turn_was_voice = False
-    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
-
-    with patch("heypeer.main.confirm", return_value=True) as console_confirm:
-        result = peer._confirm(intent, "do the thing")
-
-    assert result is True
-    console_confirm.assert_called_once()
-
-
-def test_confirm_by_voice_rejects_when_reply_is_unclear(tmp_path: Path) -> None:
-    nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
-    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
-
-    with patch("heypeer.wakeword.stt.transcribe", return_value="what was that"):
-        assert peer._confirm_by_voice(intent, "do the thing") is False
-
-
-def test_confirm_by_voice_rejects_on_no(tmp_path: Path) -> None:
-    nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
-    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
-
-    with patch("heypeer.wakeword.stt.transcribe", return_value="non"):
-        assert peer._confirm_by_voice(intent, "do the thing") is False
-
-
-def test_confirm_by_voice_swallows_errors_and_treats_as_no(tmp_path: Path) -> None:
-    nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
-    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
-
-    with patch("heypeer.wakeword.stt.transcribe", side_effect=RuntimeError("model not loaded")):
-        assert peer._confirm_by_voice(intent, "do the thing") is False  # must not raise
 
 
 def test_on_wake_word_interpret_failure_does_not_raise(
