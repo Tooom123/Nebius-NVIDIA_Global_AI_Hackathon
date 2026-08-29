@@ -695,6 +695,67 @@ instead of a borderless circle. All three fixed:
       whether the square is actually gone now, or whether it's a third,
       still-unidentified cause.
 
+### Round 2 of engineering hardening (2026-08-30) — real Windows CLI session
+
+Another real CLI session on Windows surfaced two new concrete problems and
+confirmed the previous transparency fix didn't fully work.
+
+- [x] **Activation chime + orb only visible during an active turn.** The
+      user reported being unsure whether Hey Peer actually heard "Hey Peer"
+      at all (no audible or visual confirmation at the moment of
+      detection), and — separately — that the always-visible orb
+      (breathing quietly through "idle"/"listening") wasn't what they
+      wanted; they asked for a Siri-like experience where a sound plays and
+      the circle *appears* right when detected, rather than sitting on
+      screen continuously.
+      - `heypeer/wakeword/listener.py`: added `play_activation_chime()` — a
+        short, synthesized two-tone rising chime (not a TTS phrase, much
+        faster), played the instant `_maybe_trigger` fires, before
+        `_record_instruction` even starts.
+      - `heypeer/tray/debug_window.py`: the window now starts hidden
+        (`hidden=True`) and `set_state()` calls `window.show()`/`.hide()`
+        (a new show/hide/eval command protocol over the same queue,
+        replacing the old raw-JS-string-or-None-sentinel one) — visible
+        only for `recording`/`thinking`/`speaking`, hidden for
+        `idle`/`listening`.
+- [x] **"A square persists"/"a white rectangle" — still present after the
+      first fix (`shadow=False` + `gui="edgechromium"`).** Rather than keep
+      chasing pywebview's own `transparent` flag (which two rounds of
+      real-hardware testing now show isn't reliably working for whatever
+      pywebview version/backend combination is installed), switched to a
+      technique this project doesn't depend on pywebview for at all: the
+      page now renders on a solid "magic pink" (`#ff00ff`) background, and
+      once the window has loaded, direct Win32 calls
+      (`SetWindowLongW`/`SetLayeredWindowAttributes` with `LWA_COLORKEY`,
+      via ctypes — same pattern and the same explicit-argtypes discipline
+      as `heypeer/tray/cursor.py`) make every pixel of that exact color
+      transparent/click-through. `transparent=True` is no longer passed to
+      `create_window` to avoid pywebview applying its own (possibly
+      conflicting) layered-window attributes first. Unverified for real
+      still (no Windows machine in this sandbox) — but this no longer
+      depends on the specific behavior this project has now seen fail
+      twice.
+- [x] **Folder name not preserved — real bug, not a guess.** "Déplace le
+      dossier 6.txt dans le dossier test" resulted in a **new folder named
+      "tests"** (plural) being created instead of "test" (singular, what
+      the transcript actually said). Root cause: `_watched_files()` only
+      ever listed *files*, never folders, so Nemotron had no way to know
+      "test" already existed (or didn't) and invented a plausible-sounding
+      variant instead. Added `HeyPeer._watched_folders()` and a
+      `watched_folders` param on `NemotronClient.interpret_text()`, wired
+      through every call site; the system prompt now explicitly instructs
+      Nemotron to reuse an existing folder's exact name verbatim if one is
+      given and matches, and otherwise use the name **exactly as the user
+      said it** — never pluralize, translate, or rephrase it — for both
+      `move_file`'s `dest_folder` and `create_folder`'s `target_name`.
+
+Also still true and worth re-flagging alongside these: the "activation
+happens even without saying Hey Peer" concern is a wake-word *model*
+accuracy question (trained on synthetic Piper voices only — see the
+"Real wake-word training" entry above), not something this pass touched;
+the chime at least now makes a real trigger audible immediately, which
+should make false positives easier to notice and report specifically.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

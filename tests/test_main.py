@@ -148,6 +148,24 @@ def test_move_file_intent_moves_the_named_file(tmp_path: Path) -> None:
     assert not (watched_dir / "facture.pdf").exists()
 
 
+def test_watched_folders_are_passed_to_nemotron(tmp_path: Path) -> None:
+    """Regression test: Nemotron needs to know what folders already exist
+    to reuse a real one instead of inventing a variant of a stated name
+    (real bug: "test" -> created "tests")."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "test").mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    peer.on_wake_word()
+
+    assert nemotron.interpret_text.call_args.kwargs["watched_folders"] == ["test"]
+
+
 def test_rename_file_intent_renames_the_named_file(tmp_path: Path) -> None:
     watched_dir = tmp_path / "Downloads"
     watched_dir.mkdir()

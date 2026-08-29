@@ -14,7 +14,12 @@
     padding: 0;
     width: 100%;
     height: 100%;
-    background: transparent;
+    /* Magic color-key background, not `transparent` - see debug_window.py's
+       module docstring: relying on pywebview's own transparency support
+       still left a visible rectangle in real testing, so every pixel this
+       exact color is instead made transparent at the Win32 layer directly.
+       Must match MAGIC_BACKGROUND_CSS there exactly. */
+    background: #ff00ff;
     overflow: hidden;
     user-select: none;
   }

@@ -163,15 +163,18 @@ This always runs with capture and voice activation both on, falls back to
 pressing Enter to simulate the wake word if no trained model is available, and
 still shows a real (detached) tray icon so "Quitter" works as a stop button
 instead of Task Manager. **The actual conversation (wake word detected, instruction
-heard, resolved intent, result) is logged to the terminal** — both modes also show
-a minimal always-on-top visual indicator (`heypeer/tray/debug_window.py`): a small
-white circle with an Apple-style colored accent, sitting flush against the top edge
-of the screen, with animated wave rings radiating outward while listening/thinking/
-speaking (rendered via `pywebview` — the OS's own web view, WebView2 on Windows —
-loading `heypeer/tray/webui/conversation.html`). It runs in its own OS process (not
-just a thread) specifically so that if window creation ever hangs or fails on some
-machine, the rest of Hey Peer keeps running unaffected instead of the whole app
-freezing with it.
+heard, resolved intent, result) is logged to the terminal.** A short chime plays
+the instant "Hey Peer" is detected (before the instruction is even recorded) —
+audible confirmation that it really heard you, the way Siri/Alexa do — and only
+then does a minimal visual indicator (`heypeer/tray/debug_window.py`) appear: a
+small white circle with an Apple-style colored accent, flush against the top edge
+of the screen, with animated wave rings radiating outward while
+recording/thinking/speaking (rendered via `pywebview` — the OS's own web view,
+WebView2 on Windows — loading `heypeer/tray/webui/conversation.html`). It's hidden
+the rest of the time, not a persistent always-on-screen widget. Runs in its own OS
+process (not just a thread) specifically so that if window creation ever hangs or
+fails on some machine, the rest of Hey Peer keeps running unaffected instead of the
+whole app freezing with it.
 
 Hey Peer mutes its own wake-word listening (`WakeWordListener.mute()`/`unmute()`) for
 the whole duration of a turn — from the instant a wake word is detected through
@@ -212,7 +215,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 104 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 109 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
@@ -255,10 +258,13 @@ environment doesn't have:
   everything so far is synthetic-Piper-voice evaluation
 - The tray "Demander à Hey Peer..." dialog's actual on-screen appearance (fixed
   the threading bug behind it, but haven't seen it render for real)
-- The pywebview orb indicator's actual rendered appearance — this sandbox has
-  no GTK/WebKit backend for pywebview to use at all, so unlike most of this
-  project's GUI code, even non-visual construction couldn't be exercised here
-  for real (only through mocks); needs a real run on the user's Windows machine
+- The orb indicator's actual rendered appearance — real Windows testing has
+  caught two rounds of a "square"/"white rectangle" showing around the circle
+  despite `pywebview`'s own transparency settings; the current fix bypasses
+  that entirely with a direct Win32 color-key layered-window call, unverified
+  since this sandbox has no GTK/WebKit backend for pywebview to render
+  anything with at all — even non-visual construction couldn't be exercised
+  here for real (only through mocks)
 - The recolored-arrow cursor's actual on-screen shape/color — verified logically
   for both the monochrome and color-cursor extraction paths, not yet seen render
 - **Ctrl+C does not reliably stop the tray app on Windows** — this is a pystray/
