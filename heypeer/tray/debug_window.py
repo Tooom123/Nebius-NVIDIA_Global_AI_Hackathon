@@ -33,23 +33,32 @@ recording:
    surface, which the parent window's layered color-keying never sees. It's
    the right technique for a plain GDI window and the wrong one for a
    hardware-composited web view.
-3. What's here now — pywebview's own `transparent=True`, which reading its
-   source (`platforms/winforms.py`, `platforms/edgechromium.py` in 6.2.1)
-   shows *is* properly implemented for EdgeChromium: it sets the WebView2
-   controller's `DefaultBackgroundColor` to `Color.Transparent` and runs a
-   Show/Hide dance to make it take effect.
+3. pywebview's own `transparent=True` (which its source *does* implement
+   properly for EdgeChromium), created non-hidden so its Show/Hide
+   transparency hack isn't skipped by the `if window.hidden: ... elif
+   window.transparent:` branch in `platforms/winforms.py`. This got closer —
+   WebView2 itself went transparent — but a grey rectangle remained, because
+   in that same branch pywebview only sets the *WebView2* background to
+   transparent and never the WinForms `Form` behind it, which keeps its
+   default Control-grey. The web view being see-through just revealed the
+   grey form underneath.
 
-The reason attempt 3 hadn't been tried successfully before is a genuine
-conflict with `hidden=True`, visible in that same source as an `if/elif`:
+4. What's here now, and why it can't fail the same way: a **window region**
+   (`SetWindowRgn` with an elliptical region). A region is applied by the
+   window manager itself — pixels outside it are simply not part of the
+   window, whatever renders inside. It is completely independent of
+   compositors, backends, alpha support and background colors, which is
+   exactly the class of assumption the first three attempts each died on.
+   `transparent=True` is kept as well, so if it does work the edges get real
+   alpha; the region is what guarantees no rectangle either way.
 
-    if window.hidden:            # our old case - transparency hack skipped
-        ...
-    elif window.transparent and is_chromium:
-        browser.Show(); browser.Hide()   # the hack that makes it work
-
-Passing `hidden=True` therefore silently disabled the very transparency
-setup we needed. So the window is now created *not* hidden (letting that
-path run) and hidden immediately afterwards from the command pump instead.
+The trade-off this makes, deliberately: the visible silhouette is the
+region's ellipse, so the blob's outline is a clean circle rather than the
+irregular morphing outline of the reference design. The page therefore
+paints the blob edge-to-edge (every pixel inside the region is blob), and
+the organic quality comes from motion *within* the circle — a drifting
+gradient and level-driven brightness — instead of from the outline. A
+rectangle-free circle that reacts beats an irregular blob in a grey box.
 
 Runs in its own **process**, not a thread. A thread-based version was tried
 first and, in this project's Linux dev sandbox, `webview.create_window()`
@@ -65,6 +74,7 @@ waiting on this window.
 
 import json
 import multiprocessing
+import platform
 import time
 from pathlib import Path
 
@@ -89,6 +99,45 @@ STARTUP_HIDE_DELAY_SECONDS = 1.0
 # hidden the rest of the time, per explicit feedback that the indicator
 # should appear on detection, not sit there continuously.
 _VISIBLE_STATES = {"recording", "thinking", "speaking"}
+
+
+def _clip_window_to_circle(title: str, width: int, height: int) -> None:
+    """Windows-only: clips the window titled `title` to an inscribed ellipse,
+    so it has no rectangular edge at all — see the module docstring for why
+    this is used instead of (well, alongside) transparency.
+
+    Every win32 call gets explicit argtypes/restype: ctypes otherwise
+    defaults them to 32-bit `c_int`, silently truncating 64-bit handles (the
+    same class of bug that produced a real `OverflowError` crash in
+    `heypeer/tray/cursor.py` — see its module docstring).
+
+    Best-effort: if the window can't be found, a rectangular window is a
+    cosmetic problem and crashing the indicator would be a worse one."""
+    if platform.system() != "Windows":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    gdi32.CreateEllipticRgn.argtypes = [ctypes.c_int] * 4
+    gdi32.CreateEllipticRgn.restype = wintypes.HRGN
+    user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+    user32.SetWindowRgn.restype = ctypes.c_int
+
+    try:
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return
+        region = gdi32.CreateEllipticRgn(0, 0, width, height)
+        # Ownership of `region` passes to the window on success - it must not
+        # be deleted here.
+        user32.SetWindowRgn(hwnd, region, True)
+    except Exception:
+        pass
 
 
 def _window_process(command_queue: "multiprocessing.Queue") -> None:
@@ -127,6 +176,7 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
         # Start hidden, but only after pywebview's own transparency
         # show/hide dance has settled - see STARTUP_HIDE_DELAY_SECONDS.
         time.sleep(STARTUP_HIDE_DELAY_SECONDS)
+        _clip_window_to_circle(WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT)
         try:
             _window.hide()
         except Exception:

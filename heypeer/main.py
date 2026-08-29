@@ -108,10 +108,12 @@ class HeyPeer:
         wakeword_debug: bool = False,
         wakeword_threshold: float = 0.9,
         debug_window: DebugWindow | None = None,
+        capture_input: bool = False,
     ) -> None:
         self.memory = memory
         self.wakeword_debug = wakeword_debug
         self.wakeword_threshold = wakeword_threshold
+        self.capture_input = capture_input
         self.debug_window = debug_window
         self.detector = detector
         # A separate detector for FILE_MOVE events - see module docstring for
@@ -157,13 +159,20 @@ class HeyPeer:
         """Starts passive skill-learning capture (input events + file moves).
         Native/always-on: called once at app startup, independent of the
         "Mode auto" voice-activation toggle - observation alone never
-        executes anything on its own, only a resolved wake-word intent does."""
-        self.watcher.start()
+        executes anything on its own, only a resolved wake-word intent does.
+
+        Input capture (mouse/keyboard habits) is opt-in via
+        `HEYPEER_CAPTURE_INPUT` - see `Settings.capture_input` for why it's
+        off by default. File-move capture is always on: it's cheap and it's
+        what the demo skill actually learns from."""
+        if self.capture_input:
+            self.watcher.start()
         if self.file_watcher is not None:
             self.file_watcher.start()
 
     def stop_capture(self) -> None:
-        self.watcher.stop()
+        if self.capture_input:
+            self.watcher.stop()
         if self.file_watcher is not None:
             self.file_watcher.stop()
 
@@ -223,12 +232,15 @@ class HeyPeer:
                 self.debug_window.set_state("listening")
 
     def _on_audio_level(self, level: float, recording: bool) -> None:
-        """Forwards live mic level (and whether it's mid-instruction-
-        recording) to the conversation window's audio-reactive circle."""
-        if self.debug_window is None:
+        """Forwards the live mic level to the indicator's audio-reactive blob.
+
+        Deliberately does *not* set the state: recording begins before
+        verification has confirmed the wake word (they run concurrently), so
+        flipping to a visible state here would pop the blob up for every
+        false trigger. `_verify_wake_word` owns that transition instead."""
+        if self.debug_window is None or not recording:
             return
         self.debug_window.set_level(level)
-        self.debug_window.set_state("recording" if recording else "listening")
 
     def _run_wake_listener(self) -> None:
         try:
@@ -258,7 +270,44 @@ class HeyPeer:
         self._wake_ready.set()
         if self.debug_window is not None:
             self.debug_window.set_state("listening")
-        self._wake_listener.start(on_detected=self._on_wake_detected, on_level=self._on_audio_level)
+        self._wake_listener.start(
+            on_detected=self._on_wake_detected,
+            on_level=self._on_audio_level,
+            on_verify=self._verify_wake_word,
+        )
+
+    def _verify_wake_word(self, pre_trigger_audio: np.ndarray) -> bool:
+        """Confirms a detection really was "Hey Peer", from the audio around
+        the trigger, and only *then* produces any user-visible reaction.
+
+        This is where the chime and the on-screen indicator fire, deliberately
+        — the raw detector fires on plenty of ordinary speech (it was trained
+        on synthetic voices only), so chiming or showing the blob on the raw
+        trigger surfaced every false positive to the user. Runs on its own
+        thread while the instruction is still being recorded, so confirmation
+        still lands within a few hundred ms of the wake word."""
+        try:
+            from heypeer.wakeword.stt import transcribe
+            from heypeer.wakeword.verify import contains_wake_word
+
+            if not contains_wake_word(transcribe(pre_trigger_audio)):
+                return False
+        except Exception as exc:
+            # Never lose a genuine activation to a verification failure —
+            # a missing model or a transcription error shouldn't make Hey
+            # Peer deaf. Falls back to trusting the detector.
+            print(f"[wakeword] Verification failed, accepting the trigger: {exc}")
+            return True
+
+        from heypeer.wakeword.listener import play_activation_chime
+
+        try:
+            play_activation_chime()
+        except Exception as exc:  # best-effort - never block on a beep
+            print(f"[wakeword] Chime playback failed: {exc}")
+        if self.debug_window is not None:
+            self.debug_window.set_state("recording")
+        return True
 
     def _on_wake_detected(self, audio: np.ndarray) -> None:
         """Called from the wake-word audio thread once a detection fires and
@@ -543,6 +592,7 @@ def _build_peer(with_debug_window: bool = False) -> HeyPeer:
         wakeword_debug=settings.wakeword_debug,
         wakeword_threshold=settings.wakeword_threshold,
         debug_window=DebugWindow() if with_debug_window else None,
+        capture_input=settings.capture_input,
     )
 
 

@@ -33,6 +33,16 @@ class Settings:
     # phrases while 0.9 cuts that to ~7% with no loss of true-positive
     # recall in evaluation. Override with HEYPEER_WAKEWORD_THRESHOLD.
     wakeword_threshold: float = 0.9
+    # Global mouse/keyboard capture (learning click/keystroke habits) is OFF
+    # by default: the user reported it noticeably slowing their machine, and
+    # the skills it learned from IDE/terminal activity were mostly noise
+    # anyway. The per-keystroke `get_active_window()` call that caused most
+    # of the cost is now throttled (see capture/watcher.py), but global input
+    # hooks still have a real baseline cost, so this stays opt-in.
+    # File-move capture (watchdog, cheap, and what the demo skill actually
+    # uses) is unaffected and stays on.
+    # Set HEYPEER_CAPTURE_INPUT=1 to re-enable.
+    capture_input: bool = False
 
 
 def load_settings() -> Settings:
@@ -47,4 +57,5 @@ def load_settings() -> Settings:
         watched_dir=Path(os.environ.get("HEYPEER_WATCHED_DIR") or str(Path.home() / "Downloads")),
         wakeword_debug=(os.environ.get("HEYPEER_WAKEWORD_DEBUG") or "0") != "0",
         wakeword_threshold=float(os.environ.get("HEYPEER_WAKEWORD_THRESHOLD") or 0.9),
+        capture_input=(os.environ.get("HEYPEER_CAPTURE_INPUT") or "0") != "0",
     )
