@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from heypeer.wakeword.listener import CHUNK_SAMPLES, WakeWordListener
+from heypeer.wakeword.listener import CHUNK_SAMPLES, WakeWordListener, chunk_dbfs
 from heypeer.wakeword.train import export_onnx, train
 
 SR = 16000
@@ -14,9 +14,9 @@ SR = 16000
 def toy_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Trains a tiny classifier on synthetic tone-vs-noise clips.
 
-    Stands in for real Piper-generated "Hey Peer" samples, which this sandbox
-    can't produce (no Piper voices installed) — the point here is to exercise
-    the embed -> train -> export -> runtime-inference pipeline end to end.
+    A real "Hey Peer" model (trained on real Piper-synthesized speech) is
+    also produced by this pipeline now (see generate_samples.py/train.py) —
+    this fixture just keeps the unit test itself fast and self-contained.
     """
     root = tmp_path_factory.mktemp("wakeword_fixture")
     pos_dir, neg_dir = root / "positive", root / "negative"
@@ -53,3 +53,15 @@ def test_process_chunk_scores_positive_tone_higher(toy_model: Path) -> None:
         noise_score = listener.process_chunk(noise_chunk)
 
     assert tone_score > noise_score
+
+
+def test_chunk_dbfs_silence_is_much_quieter_than_full_scale() -> None:
+    silence = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+    full_scale = np.full(CHUNK_SAMPLES, 32767, dtype=np.int16)
+
+    assert chunk_dbfs(silence) < -80
+    assert chunk_dbfs(full_scale) > -1
+
+
+def test_chunk_dbfs_empty_chunk_does_not_crash() -> None:
+    assert chunk_dbfs(np.array([], dtype=np.int16)) < 0
