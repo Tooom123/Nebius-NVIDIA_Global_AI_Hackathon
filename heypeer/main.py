@@ -94,6 +94,14 @@ class HeyPeer:
         )
         self._wake_listener = None
         self._wake_thread: threading.Thread | None = None
+        # Set once _run_wake_listener has either succeeded (entered its
+        # blocking mic loop) or failed — lets callers wait for the *real*
+        # outcome instead of guessing a fixed timeout. Loading the wake-word
+        # model's two ONNX sessions + enumerating audio devices can easily
+        # take more than a few hundred ms, so a short guessed timeout
+        # previously reported "unavailable" while the listener was actually
+        # still starting up successfully in the background.
+        self._wake_ready = threading.Event()
 
     def start_capture(self) -> None:
         """Starts passive skill-learning capture (input events + file moves).
@@ -120,6 +128,7 @@ class HeyPeer:
             self._stop_voice()
 
     def _start_voice(self) -> None:
+        self._wake_ready.clear()
         self._wake_thread = threading.Thread(target=self._run_wake_listener, daemon=True)
         self._wake_thread.start()
 
@@ -133,13 +142,18 @@ class HeyPeer:
             self._wake_listener = WakeWordListener(
                 str(model_path), threshold=self.wakeword_threshold, debug=self.wakeword_debug
             )
-            self._wake_listener.start(on_detected=self.on_wake_word)
         except (FileNotFoundError, OSError) as exc:
             print(
                 f'Wake-word listener unavailable ({exc}). Mode auto actif mais '
                 'sans activation vocale (utilise "Demander à Hey Peer..." dans '
                 "le menu pour donner une instruction sans micro)."
             )
+            self._wake_ready.set()
+            return
+        # Signal readiness *before* entering the blocking mic loop below,
+        # which only returns once stop() is called.
+        self._wake_ready.set()
+        self._wake_listener.start(on_detected=self.on_wake_word)
 
     def _stop_voice(self) -> None:
         if self._wake_listener is not None:
@@ -289,8 +303,10 @@ def run_cli() -> None:
     peer.tray.set_auto_mode(True)
 
     try:
-        if peer._wake_thread is not None:
-            peer._wake_thread.join(timeout=0.5)
+        # Waits for the *actual* outcome (success or failure) rather than a
+        # guessed timeout — loading the wake-word model can legitimately
+        # take a second or more. 15s is just a generous safety cap.
+        peer._wake_ready.wait(timeout=15)
         if peer._wake_listener is None:
             print('Wake-word listener unavailable - press Enter to simulate "Hey Peer".')
             while True:
