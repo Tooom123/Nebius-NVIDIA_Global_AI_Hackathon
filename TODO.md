@@ -937,6 +937,48 @@ fix and still needs audio that doesn't exist yet.
       instead of from the outline. A rectangle-free circle that reacts beats
       an irregular blob sitting in a grey box.
 
+### Round 6: the animated blob, genuinely borderless (2026-08-30)
+
+Round 5 removed the rectangle by clipping the window to a fixed ellipse,
+which worked but looked — accurately — truncated, and lost the organic
+outline of the reference design. The answer to "n'est-il pas possible de
+créer un cercle sans bordure ?" is yes, and the fixed ellipse was an
+unnecessary concession: `SetWindowRgn` takes an **arbitrary polygon**, not
+just an ellipse, and it can be replaced every frame.
+
+- [x] **`heypeer/tray/blob_shape.py`** (new): the outline as a pure function
+      of (time, level) — a radius modulated by three low-frequency harmonics,
+      `r(θ,t) = R·(1 + Σ aᵢ·sin(kᵢθ + ωᵢt + φᵢ))`. No drawing, no Win32, so
+      it is fully unit-testable without a display, which nothing about the
+      previous CSS-animated silhouette was. Tests cover the properties that
+      actually matter: it never escapes the window (anything outside gets
+      clipped, which is exactly what made the ellipse version look cut off),
+      it's measurably irregular rather than a disc, neighbouring points stay
+      close enough to show no facets, it changes over time, and it grows
+      with the mic level. Also rasterized it to ASCII during development to
+      look at the silhouette rather than only asserting on numbers.
+- [x] **The region is now the single source of the shape.** The page paints
+      a full-bleed gradient and defines no outline at all; the window region,
+      rebuilt every frame from `blob_points`, carves the silhouette out of
+      it. This inversion is the substantive fix: any design where CSS
+      animates a shape *and* a region clips it has two independent notions of
+      the outline that inevitably disagree — whatever the region doesn't
+      cover is chopped off, whatever the page doesn't paint shows as grey.
+      With one source there's nothing to keep in sync, and no per-frame
+      JavaScript either (only a local `CreatePolygonRgn`), so the whole
+      animation costs one cheap Win32 call per frame.
+- [x] **Real size reaction to the voice is back**: `blob_points` takes the
+      level, so the silhouette itself swells when the user speaks. The
+      fixed-ellipse version could only fake that with brightness.
+- [x] **The slide-in now moves the window** rather than CSS-translating its
+      contents — with the region locked to the window's own coordinates, a
+      CSS translate would have slid the gradient out from under the region.
+      Eased exponentially toward a target so an interrupted slide retargets
+      instead of jumping.
+- [x] Animation idles at 10 Hz doing nothing while off screen (the common
+      case) instead of running the frame loop continuously — worth being
+      careful about given the performance problems reported in round 5.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
