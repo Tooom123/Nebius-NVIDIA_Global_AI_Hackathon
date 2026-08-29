@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from heypeer.capture.events import ActionEvent, ActionType
 from heypeer.main import HeyPeer
 from heypeer.nemotron.intent import Intent
 from heypeer.patterns.detector import PatternDetector
@@ -73,3 +74,99 @@ def test_on_wake_word_handles_unknown_intent(tmp_path: Path, fake_pyautogui: Mag
     peer.on_wake_word()  # should not raise, no confirmation prompt reached
 
     fake_pyautogui.click.assert_not_called()
+
+
+def test_input_events_and_file_events_use_separate_detectors(tmp_path: Path) -> None:
+    """Regression test: mouse/keyboard noise during a drag-and-drop must not
+    interfere with — or be confused for — the file-move pattern, and vice
+    versa. Each event source has to feed its own PatternDetector."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+
+    # Two clicks in the same app/window: on its own this is below the
+    # min_repetitions=3 default threshold for the *input* detector.
+    for _ in range(2):
+        peer._on_input_event(
+            ActionEvent(type=ActionType.CLICK, app_name="Explorer", window_title="w", x=1, y=1)
+        )
+    assert len(peer.memory.all()) == 1  # still just the seeded "sort_files" skill
+
+    # A third click interleaved with file-move events must not let a mixed
+    # (click + file-move) sequence satisfy either detector.
+    peer._on_input_event(
+        ActionEvent(type=ActionType.CLICK, app_name="Explorer", window_title="w", x=1, y=1)
+    )
+    for i in range(3):
+        peer._on_file_event(
+            ActionEvent(
+                type=ActionType.FILE_MOVE,
+                app_name="",
+                window_title="/dest",
+                src_path=f"/watched/f{i}.pdf",
+                dest_path=f"/dest/f{i}.pdf",
+            )
+        )
+
+    skills = {s.id: s for s in peer.memory.all()}
+    assert "sort_files" in skills
+    file_skills = [s for s in skills.values() if s.id != "sort_files"]
+    assert len(file_skills) == 1
+    assert all(a.type == ActionType.FILE_MOVE for a in file_skills[0].actions)
+
+
+def test_move_file_intent_moves_the_named_file(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+    )
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        watched_dir=watched_dir,
+        get_instruction=lambda: "déplace facture.pdf vers Archives",
+    )
+
+    with patch("heypeer.main.confirm", return_value=True):
+        peer.on_wake_word()
+
+    assert (watched_dir / "Archives" / "facture.pdf").exists()
+    assert not (watched_dir / "facture.pdf").exists()
+
+
+def test_move_file_intent_cancelled_does_not_move(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+    )
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        watched_dir=watched_dir,
+        get_instruction=lambda: "déplace facture.pdf vers Archives",
+    )
+
+    with patch("heypeer.main.confirm", return_value=False):
+        peer.on_wake_word()
+
+    assert (watched_dir / "facture.pdf").exists()
+    assert not (watched_dir / "Archives").exists()

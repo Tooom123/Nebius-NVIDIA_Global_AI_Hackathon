@@ -63,6 +63,41 @@ def test_interpret_text_unknown_intent_has_no_skill_id() -> None:
     assert intent.skill_id is None
 
 
+def test_interpret_text_parses_move_file_intent_with_watched_files() -> None:
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {
+                "action": "move_file",
+                "src_filename": "facture_mars.pdf",
+                "dest_folder": "Archives",
+            }
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        intent = client.interpret_text(
+            "déplace le fichier facture vers Archives",
+            skill_context=[],
+            watched_files=["facture_mars.pdf", "notes.txt"],
+        )
+
+    assert intent.action == "move_file"
+    assert intent.src_filename == "facture_mars.pdf"
+    assert intent.dest_folder == "Archives"
+    assert intent.n_repetitions == 1  # default when the model omits it
+
+    user_message = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "facture_mars.pdf" in user_message
+    assert "notes.txt" in user_message
+
+
 def test_verify_screen_returns_ok_flag() -> None:
     settings = Settings(
         nebius_api_key="test-key",

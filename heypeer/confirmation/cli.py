@@ -7,10 +7,8 @@ checkpoint between an interpreted intent and actual execution.
 from heypeer.nemotron.intent import Intent
 
 
-def confirm(intent: Intent, skill_name: str) -> bool:
-    prompt = (
-        f'Hey Peer wants to run "{skill_name}" {intent.n_repetitions} more time(s). '
-        "Proceed? [y/N] "
-    )
+def confirm(intent: Intent, description: str) -> bool:
+    suffix = f" (x{intent.n_repetitions})" if intent.n_repetitions > 1 else ""
+    prompt = f"Hey Peer wants to: {description}{suffix}. Proceed? [y/N] "
     answer = input(prompt).strip().lower()
     return answer in ("y", "yes")

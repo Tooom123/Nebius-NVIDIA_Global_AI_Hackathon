@@ -96,3 +96,15 @@ class SkillRunner:
                         )
                 self._replay_action(action)
                 time.sleep(self.step_delay)
+
+
+def move_single_file(src_path: Path, dest_dir: Path) -> Path:
+    """Direct, one-off file move for the "no skill needed, pure logic"
+    assistant path — not tied to a learned Skill at all. Creates `dest_dir`
+    if it doesn't exist yet. Returns the file's new path."""
+    if not src_path.is_file():
+        raise ExecutionAborted(f"Source file not found: {src_path}")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / src_path.name
+    shutil.move(str(src_path), str(dest_path))
+    return dest_path

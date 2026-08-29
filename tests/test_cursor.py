@@ -10,13 +10,12 @@ from heypeer.tray.cursor import (
     OCR_NORMAL,
     SPI_SETCURSORS,
     CursorIndicator,
-    _make_tinted_cursor_image,
     _write_cur_file,
 )
 
 
 def test_write_cur_file_has_valid_header(tmp_path: Path) -> None:
-    image = _make_tinted_cursor_image((0, 255, 0, 255), size=16)
+    image = Image.new("RGBA", (16, 16), (0, 255, 0, 255))
     out_path = tmp_path / "cursor.cur"
     _write_cur_file(image, hotspot=(1, 2), out_path=out_path)
 
@@ -57,6 +56,13 @@ def test_set_active_is_idempotent_for_same_value(monkeypatch: pytest.MonkeyPatch
 
 def test_set_active_windows_calls_set_system_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("heypeer.tray.cursor.platform.system", lambda: "Windows")
+    # The real bitmap extraction (GetIconInfo/GetDIBits) can only be verified
+    # on real Windows — here we only check that _apply_windows wires its
+    # result into SetSystemCursor correctly.
+    monkeypatch.setattr(
+        "heypeer.tray.cursor._extract_recolored_arrow",
+        lambda tint: (Image.new("RGBA", (4, 4), tint), (0, 0)),
+    )
     fake_user32 = MagicMock()
     fake_user32.LoadCursorFromFileW.return_value = 12345
     fake_windll = MagicMock(user32=fake_user32)
@@ -69,4 +75,18 @@ def test_set_active_windows_calls_set_system_cursor(monkeypatch: pytest.MonkeyPa
     fake_user32.SetSystemCursor.assert_called_once_with(12345, OCR_NORMAL)
 
     indicator.set_active(False)
+    fake_user32.SystemParametersInfoW.assert_called_once_with(SPI_SETCURSORS, 0, None, 0)
+
+
+def test_reset_always_resets_even_if_never_toggled_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guards the bug where quitting after a crash-recovered/fresh instance
+    silently skipped the reset because `_active` was already False."""
+    monkeypatch.setattr("heypeer.tray.cursor.platform.system", lambda: "Windows")
+    fake_user32 = MagicMock()
+    fake_windll = MagicMock(user32=fake_user32)
+    monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
+
+    indicator = CursorIndicator()
+    indicator.reset()  # never called set_active(True) first
+
     fake_user32.SystemParametersInfoW.assert_called_once_with(SPI_SETCURSORS, 0, None, 0)

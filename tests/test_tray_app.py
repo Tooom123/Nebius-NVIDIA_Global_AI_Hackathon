@@ -47,11 +47,32 @@ def test_quit_calls_callback_and_stops_icon() -> None:
 
 def test_menu_reflects_current_state() -> None:
     app = TrayApp()
-    status_item, toggle_item, quit_item = list(app.icon.menu)
+    status_item, toggle_item, prompt_item, quit_item = list(app.icon.menu)
 
     assert status_item.text == "Hey Peer - en pause"
     assert toggle_item.checked is False
+    assert prompt_item.text == "Demander à Hey Peer..."
 
     app.set_auto_mode(True)
     assert toggle_item.checked is True
     assert status_item.text == "Hey Peer - actif, à l'écoute"
+
+
+def test_prompt_calls_on_prompt_with_typed_text(monkeypatch) -> None:
+    on_prompt = MagicMock()
+    app = TrayApp(on_prompt=on_prompt)
+    monkeypatch.setattr("heypeer.tray.prompt.ask_instruction", lambda: "déplace X vers Y")
+
+    app._prompt(app.icon, None)
+
+    on_prompt.assert_called_once_with("déplace X vers Y")
+
+
+def test_prompt_ignores_empty_result(monkeypatch) -> None:
+    on_prompt = MagicMock()
+    app = TrayApp(on_prompt=on_prompt)
+    monkeypatch.setattr("heypeer.tray.prompt.ask_instruction", lambda: None)
+
+    app._prompt(app.icon, None)
+
+    on_prompt.assert_not_called()

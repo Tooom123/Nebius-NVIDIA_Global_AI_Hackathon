@@ -1,11 +1,16 @@
 """Best-effort colored-cursor indicator for when Hey Peer's auto mode is on.
 
 Full support is Windows-only today, via the classic Win32 `SetSystemCursor`
-API fed a generated tinted `.cur` file. macOS and Linux (X11/Wayland) don't
-expose an equally simple, stable API for recoloring the *system* cursor —
-`set_active()` there logs and no-ops instead of pretending to work. This
-hasn't been exercised on a real Windows machine (this dev sandbox is
-Linux/headless); the win32 call sequence is unit-tested with a mocked
+API fed a tinted `.cur` file. macOS and Linux (X11/Wayland) don't expose an
+equally simple, stable API for recoloring the *system* cursor — `set_active()`
+there logs and no-ops instead of pretending to work.
+
+The tinted cursor is built by extracting Windows' own default arrow cursor
+bitmap (via `GetIconInfo`/`GetDIBits` on the monochrome AND/XOR mask) and
+recoloring only its white fill pixels — the black outline, transparency, and
+exact silhouette are all preserved as-is, so this only changes color, never
+shape. This hasn't been exercised on a real Windows machine (this dev sandbox
+is Linux/headless); the win32 call sequence is unit-tested with a mocked
 `ctypes.windll`, but the actual on-screen result needs verifying for real.
 """
 
@@ -15,34 +20,126 @@ import struct
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # Distinct from typical system cursor colors, so it reads clearly as "Hey
 # Peer is armed" rather than blending into a normal white/black arrow.
 ACTIVE_TINT = (46, 204, 113, 255)
 
+IDC_ARROW = 32512
 OCR_NORMAL = 32512  # win32 system cursor id for the default arrow
 SPI_SETCURSORS = 0x0057  # reloads all system cursors from the active scheme
+DIB_RGB_COLORS = 0
+BI_RGB = 0
 
 
-def _make_tinted_cursor_image(color: tuple[int, int, int, int], size: int = 32) -> Image.Image:
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    # A simple arrow silhouette — visibly cursor-shaped, not a pixel clone of
-    # any particular OS's default arrow.
-    draw.polygon(
-        [
-            (0, 0),
-            (0, size - 1),
-            (size // 3, size * 2 // 3),
-            (size // 2, size - 1),
-            (size * 2 // 3, size * 2 // 3),
-            (size - 1, size // 2),
-        ],
-        fill=color,
-        outline=(0, 0, 0, 255),
-    )
-    return image
+def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Image, tuple[int, int]]:
+    """Reads Windows' own default arrow cursor bitmap and returns a copy with
+    its white fill pixels replaced by `tint` — same shape, same outline, same
+    hotspot, only the color changes. Windows-only; must not be called
+    elsewhere."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ICONINFO(ctypes.Structure):
+        _fields_ = [
+            ("fIcon", wintypes.BOOL),
+            ("xHotspot", wintypes.DWORD),
+            ("yHotspot", wintypes.DWORD),
+            ("hbmMask", wintypes.HBITMAP),
+            ("hbmColor", wintypes.HBITMAP),
+        ]
+
+    class BITMAP(ctypes.Structure):
+        _fields_ = [
+            ("bmType", ctypes.c_long),
+            ("bmWidth", ctypes.c_long),
+            ("bmHeight", ctypes.c_long),
+            ("bmWidthBytes", ctypes.c_long),
+            ("bmPlanes", wintypes.WORD),
+            ("bmBitsPixel", wintypes.WORD),
+            ("bmBits", ctypes.c_void_p),
+        ]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wintypes.DWORD),
+            ("biWidth", ctypes.c_long),
+            ("biHeight", ctypes.c_long),
+            ("biPlanes", wintypes.WORD),
+            ("biBitCount", wintypes.WORD),
+            ("biCompression", wintypes.DWORD),
+            ("biSizeImage", wintypes.DWORD),
+            ("biXPelsPerMeter", ctypes.c_long),
+            ("biYPelsPerMeter", ctypes.c_long),
+            ("biClrUsed", wintypes.DWORD),
+            ("biClrImportant", wintypes.DWORD),
+        ]
+
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+
+    hcursor = user32.LoadCursorW(None, IDC_ARROW)
+    icon_info = ICONINFO()
+    if not user32.GetIconInfo(hcursor, ctypes.byref(icon_info)):
+        raise OSError("GetIconInfo failed")
+
+    try:
+        bmp = BITMAP()
+        gdi32.GetObjectW(icon_info.hbmMask, ctypes.sizeof(BITMAP), ctypes.byref(bmp))
+        width = bmp.bmWidth
+        # The default arrow is a monochrome cursor: hbmColor is NULL and
+        # hbmMask stacks the AND mask on top of the XOR mask, each full-height.
+        mono = not icon_info.hbmColor
+        total_height = bmp.bmHeight
+        height = total_height // 2 if mono else total_height
+        if not mono:
+            raise OSError("Unexpected color cursor for IDC_ARROW")
+
+        bmi = BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = width
+        bmi.bmiHeader.biHeight = -total_height  # negative = top-down rows
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 1
+        bmi.bmiHeader.biCompression = BI_RGB
+
+        row_bytes = ((width + 31) // 32) * 4
+        buffer = (ctypes.c_ubyte * (row_bytes * total_height))()
+        hdc = user32.GetDC(None)
+        gdi32.GetDIBits(
+            hdc, icon_info.hbmMask, 0, total_height, buffer, ctypes.byref(bmi), DIB_RGB_COLORS
+        )
+        user32.ReleaseDC(None, hdc)
+
+        def get_bit(row_offset: int, x: int, y: int) -> int:
+            row = row_offset + y
+            byte_index = row * row_bytes + x // 8
+            bit_index = 7 - (x % 8)
+            return (buffer[byte_index] >> bit_index) & 1
+
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        pixels = image.load()
+        for y in range(height):
+            for x in range(width):
+                and_bit = get_bit(0, x, y)
+                xor_bit = get_bit(height, x, y)
+                if and_bit == 1 and xor_bit == 0:
+                    pixels[x, y] = (0, 0, 0, 0)  # transparent
+                elif and_bit == 0 and xor_bit == 1:
+                    pixels[x, y] = tint  # the arrow's white fill -> recolored
+                else:
+                    pixels[x, y] = (0, 0, 0, 255)  # outline (and the rare invert case)
+
+        hotspot = (icon_info.xHotspot, icon_info.yHotspot)
+        return image, hotspot
+    finally:
+        gdi32.DeleteObject(icon_info.hbmMask)
+        if icon_info.hbmColor:
+            gdi32.DeleteObject(icon_info.hbmColor)
 
 
 def _write_cur_file(image: Image.Image, hotspot: tuple[int, int], out_path: Path) -> None:
@@ -94,14 +191,28 @@ class CursorIndicator:
             return
         self._apply_windows(active)
 
+    def reset(self) -> None:
+        """Unconditionally restores the default system cursor scheme,
+        bypassing the active-state dedup in `set_active`. Called defensively
+        at startup (in case a previous crashed run left the cursor stuck) and
+        at shutdown, since a normal `set_active(False)` would silently no-op
+        if this instance never saw `active` flip to True — e.g. right after
+        a crash, a fresh `CursorIndicator` starts at `_active=False` already."""
+        self._active = False
+        if not self._supported:
+            return
+        import ctypes
+
+        ctypes.windll.user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
+
     def _apply_windows(self, active: bool) -> None:
         import ctypes
 
         user32 = ctypes.windll.user32
         if active:
-            image = _make_tinted_cursor_image(ACTIVE_TINT)
+            image, hotspot = _extract_recolored_arrow(ACTIVE_TINT)
             cursor_path = Path(tempfile.gettempdir()) / "heypeer_cursor_active.cur"
-            _write_cur_file(image, hotspot=(0, 0), out_path=cursor_path)
+            _write_cur_file(image, hotspot=hotspot, out_path=cursor_path)
             handle = user32.LoadCursorFromFileW(str(cursor_path))
             if handle:
                 user32.SetSystemCursor(handle, OCR_NORMAL)

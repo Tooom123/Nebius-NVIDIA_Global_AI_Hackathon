@@ -1,11 +1,18 @@
 """Entry point wiring the full Hey Peer pipeline together for the demo scenario.
 
-Flow: activity capture feeds the pattern detector, which stores newly detected
-skills in memory. Once the wake word fires, the user's instruction (today: typed
-text, standing in for the transcribed audio clip until the full omni audio path
-is exercised against a live Nebius endpoint) is sent to Nemotron along with the
-list of known skills. If it resolves to a known skill, the user confirms before
-SkillRunner replays it, with Nemotron re-checking the screen between steps.
+Flow: activity capture feeds a pattern detector, which stores newly detected
+skills in memory. Once the wake word (or the tray's manual prompt) fires, the
+user's instruction is sent to Nemotron along with the list of known skills and
+the watched folder's current contents. Nemotron either resolves it to a known
+skill, resolves it to a direct one-off file move (no skill needed — "déplace X
+vers Y"), or reports it as unknown. Either way the user confirms before
+anything executes.
+
+Two independent PatternDetectors are used — one for generic input events
+(clicks/keys/focus, from `ActivityWatcher`), one for file moves (from
+`FileOpWatcher`) — so that incidental mouse activity during a drag-and-drop
+can't spuriously "complete" a file-move pattern with the wrong actions, or
+have a file move interrupt a click-sequence pattern.
 
 By default this runs as a background app with a system tray icon (`TrayApp`):
 the "Mode auto" menu toggle arms/disarms the whole pipeline (capture watchers +
@@ -15,6 +22,7 @@ headless dev boxes without a tray host.
 """
 
 import argparse
+import atexit
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -24,8 +32,9 @@ from heypeer.capture.file_watcher import FileOpWatcher
 from heypeer.capture.watcher import ActivityWatcher
 from heypeer.config import SKILLS_DIR, load_settings
 from heypeer.confirmation.cli import confirm
-from heypeer.executor.runner import ExecutionAborted, SkillRunner
+from heypeer.executor.runner import ExecutionAborted, SkillRunner, move_single_file
 from heypeer.nemotron.client import NemotronClient
+from heypeer.nemotron.intent import Intent
 from heypeer.patterns.detector import PatternDetector
 from heypeer.patterns.memory import SkillMemory
 from heypeer.tray.app import Status, TrayApp
@@ -52,20 +61,29 @@ class HeyPeer:
         nemotron: NemotronClient,
         watched_dir: Path | None = None,
         get_instruction: GetInstruction = _default_get_instruction,
+        file_detector: PatternDetector | None = None,
     ) -> None:
         self.memory = memory
         self.detector = detector
+        # A separate detector for FILE_MOVE events — see module docstring for
+        # why generic input events and file moves must not share a buffer.
+        self.file_detector = file_detector if file_detector is not None else PatternDetector()
         self.nemotron = nemotron
         self.get_instruction = get_instruction
         self.watched_dir = watched_dir
-        self.watcher = ActivityWatcher(on_event=self._on_capture_event)
+        self.watcher = ActivityWatcher(on_event=self._on_input_event)
         self.file_watcher = (
-            FileOpWatcher(watched_dir, on_event=self._on_capture_event)
+            FileOpWatcher(watched_dir, on_event=self._on_file_event)
             if watched_dir is not None
             else None
         )
         self.cursor = CursorIndicator()
-        self.tray = TrayApp(on_auto_mode_change=self._set_auto_mode, on_quit=self._stop_pipeline)
+        self.cursor.reset()  # clear any stale override left by a previous crashed run
+        self.tray = TrayApp(
+            on_auto_mode_change=self._set_auto_mode,
+            on_quit=self._on_quit,
+            on_prompt=self._handle_instruction,
+        )
         self._wake_listener = None
         self._wake_thread: threading.Thread | None = None
 
@@ -95,7 +113,9 @@ class HeyPeer:
         except (FileNotFoundError, OSError) as exc:
             print(
                 f'Wake-word listener unavailable ({exc}). Mode auto actif '
-                "mais sans activation vocale — le tri de fichiers reste surveillé."
+                "mais sans activation vocale — le tri de fichiers reste surveillé "
+                '(utilise "Demander à Hey Peer..." dans le menu pour donner une '
+                "instruction sans micro)."
             )
 
     def _stop_pipeline(self) -> None:
@@ -105,9 +125,20 @@ class HeyPeer:
         if self._wake_listener is not None:
             self._wake_listener.stop()
             self._wake_listener = None
+        self.cursor.reset()
 
-    def _on_capture_event(self, event: ActionEvent) -> None:
+    def _on_quit(self) -> None:
+        self._stop_pipeline()
+
+    def _on_input_event(self, event: ActionEvent) -> None:
         skill = self.detector.observe(event)
+        if skill is not None:
+            print(f'Learned a new skill: "{skill.name}" ({skill.id})')
+            self.memory.add(skill)
+            self.memory.save()
+
+    def _on_file_event(self, event: ActionEvent) -> None:
+        skill = self.file_detector.observe(event)
         if skill is not None:
             print(f'Learned a new skill: "{skill.name}" ({skill.id})')
             self.memory.add(skill)
@@ -116,15 +147,29 @@ class HeyPeer:
     def _skill_context(self) -> list[dict]:
         return [{"id": s.id, "name": s.name} for s in self.memory.all()]
 
+    def _watched_files(self) -> list[str] | None:
+        if self.watched_dir is None or not self.watched_dir.is_dir():
+            return None
+        return sorted(p.name for p in self.watched_dir.iterdir() if p.is_file())
+
     def on_wake_word(self) -> None:
-        """Called once "Hey Peer" is detected. Handles the rest of the turn."""
-        instruction_text = self.get_instruction()
-        intent = self.nemotron.interpret_text(instruction_text, self._skill_context())
+        """Called once "Hey Peer" is detected — gets the instruction (today:
+        typed text, standing in for the transcribed audio clip) and handles it."""
+        self._handle_instruction(self.get_instruction())
 
-        if intent.action != "run_skill" or intent.skill_id is None:
-            print("Hey Peer didn't recognize a known skill in that instruction.")
-            return
+    def _handle_instruction(self, instruction_text: str) -> None:
+        intent = self.nemotron.interpret_text(
+            instruction_text, self._skill_context(), watched_files=self._watched_files()
+        )
 
+        if intent.action == "run_skill" and intent.skill_id is not None:
+            self._run_skill_intent(intent)
+        elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
+            self._run_move_file_intent(intent)
+        else:
+            print("Hey Peer didn't recognize a known skill or file action in that instruction.")
+
+    def _run_skill_intent(self, intent: Intent) -> None:
         skill = self.memory.get(intent.skill_id)
         if skill is None:
             print(f"Nemotron referenced an unknown skill id: {intent.skill_id}")
@@ -145,6 +190,30 @@ class HeyPeer:
             print(f'Done: "{skill.name}" x{intent.n_repetitions}.')
         except ExecutionAborted as exc:
             print(f"Stopped mid-replay: {exc}")
+        finally:
+            self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
+
+    def _run_move_file_intent(self, intent: Intent) -> None:
+        if self.watched_dir is None:
+            print("No watched directory configured — can't resolve a direct file move.")
+            return
+
+        src_path = self.watched_dir / intent.src_filename
+        # Kept inside the watched directory by design: Nemotron only ever
+        # names a destination *folder name*, not an arbitrary path, so a
+        # hallucinated or unexpected destination can't write outside it.
+        dest_dir = self.watched_dir / intent.dest_folder
+
+        if not confirm(intent, f"move {intent.src_filename} -> {intent.dest_folder}/"):
+            print("Cancelled.")
+            return
+
+        self.tray.set_status(Status.EXECUTING)
+        try:
+            new_path = move_single_file(src_path, dest_dir)
+            print(f"Done: moved to {new_path}.")
+        except ExecutionAborted as exc:
+            print(f"Stopped: {exc}")
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 
@@ -170,9 +239,15 @@ def run_tray() -> None:
     and the colored-cursor indicator. `TrayApp.run()` blocks the calling
     thread with the tray's own event loop, so it must be called last, from
     the main thread.
+
+    Note: on Windows, Ctrl+C in the console can't reliably interrupt the
+    tray's native message loop — use the tray menu's "Quitter" to exit
+    cleanly (it also resets the cursor).
     """
     peer = _build_peer()
+    atexit.register(peer.cursor.reset)
     print("Icône dans la zone de notification. Active « Mode auto » pour démarrer.")
+    print('Menu "Demander à Hey Peer..." disponible pour tester sans micro.')
     peer.tray.run()
 
 
@@ -181,6 +256,7 @@ def run_cli() -> None:
     boxes. Auto mode is always on; Enter simulates the wake word if no
     trained wake-word model is available."""
     peer = _build_peer()
+    atexit.register(peer.cursor.reset)
     peer._set_auto_mode(True)
 
     try:
