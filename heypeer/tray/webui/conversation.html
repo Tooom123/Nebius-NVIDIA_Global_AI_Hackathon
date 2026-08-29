@@ -5,8 +5,11 @@
 <style>
   :root {
     --level: 0;
-    --accent-1: #d5d8dd;
-    --accent-2: #f4f5f7;
+    /* Blue -> violet -> magenta, the palette from the reference design. */
+    --c1: #4f8cff;
+    --c2: #7b4dff;
+    --c3: #e040fb;
+    --morph-speed: 9s;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -14,85 +17,70 @@
     padding: 0;
     width: 100%;
     height: 100%;
-    /* Magic color-key background, not `transparent` - see debug_window.py's
-       module docstring: relying on pywebview's own transparency support
-       still left a visible rectangle in real testing, so every pixel this
-       exact color is instead made transparent at the Win32 layer directly.
-       Must match MAGIC_BACKGROUND_CSS there exactly. */
-    background: #ff00ff;
+    /* Pure black is the color key: every pixel exactly this color is made
+       transparent at the Win32 layer (see debug_window.py). Black is chosen
+       deliberately over a "magic" color like magenta — magenta sits right
+       inside this blob's own palette, so anti-aliased edge pixels blended
+       toward it produced a pink fringe. Blending toward black instead reads
+       as a natural soft shadow on the few edge pixels that survive keying. */
+    background: #000000;
     overflow: hidden;
     user-select: none;
   }
-  .orb-wrap {
-    position: relative;
+  .stage {
     width: 100%;
     height: 100%;
     display: flex;
+    align-items: center;
     justify-content: center;
+    /* Slides in from above the screen edge, like a notification dropping
+       down; `hidden` puts it back. */
+    transform: translateY(-130%);
+    transition: transform 0.52s cubic-bezier(0.22, 1.2, 0.36, 1);
   }
-  .wave-ring {
-    position: absolute;
-    top: 16px;
-    width: 60px;
-    height: 60px;
-    border-radius: 50%;
-    border: 2px solid var(--accent-1);
-    opacity: 0;
-    pointer-events: none;
-    animation: wave 2.6s ease-out infinite;
-    animation-play-state: paused;
+  .stage.visible { transform: translateY(0); }
+
+  .blob {
+    width: 108px;
+    height: 108px;
+    background: linear-gradient(135deg, var(--c1) 0%, var(--c2) 52%, var(--c3) 100%);
+    /* The organic silhouette: an asymmetric border-radius animated between
+       several shapes reads as a soft morphing blob, without the cost (or the
+       WebGL dependency) of a real shader-based one. */
+    border-radius: 62% 38% 46% 54% / 58% 44% 56% 42%;
+    animation: morph var(--morph-speed) ease-in-out infinite;
+    /* Scale tracks the live mic level, so it visibly reacts to the voice. */
+    transform: scale(calc(1 + var(--level) * 0.28));
+    transition: transform 0.11s ease-out, background 0.5s ease;
+    filter: blur(0.4px);  /* softens the edge just enough to look organic */
   }
-  .orb-wrap.waving .wave-ring {
-    animation-play-state: running;
-  }
-  @keyframes wave {
-    0% { transform: scale(1); opacity: 0.5; }
-    100% { transform: scale(2.4); opacity: 0; }
-  }
-  .orb {
-    position: relative;
-    top: 16px;
-    z-index: 1;
-    width: 60px;
-    height: 60px;
-    border-radius: 50%;
-    /* White base with an Apple-style colored accent (blue/green/purple/pink
-       depending on state) rather than committing to one brand color. */
-    background: radial-gradient(circle at 35% 30%, #ffffff, var(--accent-2) 55%, var(--accent-1));
-    box-shadow:
-      0 2px 10px rgba(0, 0, 0, 0.12),
-      0 0 calc(14px + var(--level) * 34px) calc(1px + var(--level) * 8px) var(--accent-1);
-    transform: scale(calc(1 + var(--level) * 0.3));
-    transition: transform 0.12s ease-out, box-shadow 0.12s ease-out, background 0.4s ease;
-  }
-  .orb.breathe {
-    animation: breathe 2.4s ease-in-out infinite;
-  }
-  @keyframes breathe {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.08); }
+  @keyframes morph {
+    0%,100% { border-radius: 62% 38% 46% 54% / 58% 44% 56% 42%; }
+    25%     { border-radius: 44% 56% 62% 38% / 42% 62% 38% 58%; }
+    50%     { border-radius: 55% 45% 38% 62% / 50% 38% 62% 50%; }
+    75%     { border-radius: 38% 62% 54% 46% / 62% 52% 48% 38%; }
   }
 </style>
 </head>
 <body>
-  <div class="orb-wrap" id="orb-wrap">
-    <div class="wave-ring" style="animation-delay: 0s"></div>
-    <div class="wave-ring" style="animation-delay: 0.7s"></div>
-    <div class="wave-ring" style="animation-delay: 1.4s"></div>
-    <div class="orb breathe" id="orb"></div>
+  <div class="stage" id="stage">
+    <div class="blob" id="blob"></div>
   </div>
 
 <script>
+  // Only the accent palette and morph speed change per state — the shape
+  // language stays identical, so transitions read as the same object
+  // reacting rather than a different indicator appearing.
   const STATE_STYLE = {
-    idle:      { a1: "#d5d8dd", a2: "#f4f5f7", breathe: false },
-    listening: { a1: "#5ac8fa", a2: "#ffffff", breathe: true },
-    recording: { a1: "#34c759", a2: "#ffffff", breathe: false },
-    thinking:  { a1: "#af52de", a2: "#ffffff", breathe: true },
-    speaking:  { a1: "#ff375f", a2: "#ffffff", breathe: true },
+    idle:      { c1: "#3a4a60", c2: "#4a4a6a", c3: "#6a4a7a", speed: "12s" },
+    listening: { c1: "#4f8cff", c2: "#7b4dff", c3: "#e040fb", speed: "9s" },
+    recording: { c1: "#4f8cff", c2: "#8b5cff", c3: "#ff4fd8", speed: "3.4s" },
+    thinking:  { c1: "#5b6dff", c2: "#9b4dff", c3: "#d040fb", speed: "1.9s" },
+    speaking:  { c1: "#5fa8ff", c2: "#a05cff", c3: "#ff6ae0", speed: "5s" },
   };
 
-  const orb = document.getElementById("orb");
-  const orbWrap = document.getElementById("orb-wrap");
+  const blob = document.getElementById("blob");
+  const stage = document.getElementById("stage");
   const root = document.documentElement;
 
   function setLevel(level) {
@@ -101,11 +89,17 @@
 
   function setState(state) {
     const style = STATE_STYLE[state] || STATE_STYLE.idle;
-    root.style.setProperty("--accent-1", style.a1);
-    root.style.setProperty("--accent-2", style.a2);
-    orb.classList.toggle("breathe", style.breathe);
-    orbWrap.classList.toggle("waving", state !== "idle");
+    root.style.setProperty("--c1", style.c1);
+    root.style.setProperty("--c2", style.c2);
+    root.style.setProperty("--c3", style.c3);
+    root.style.setProperty("--morph-speed", style.speed);
     if (state !== "recording") setLevel(0);
+  }
+
+  // Drives the slide-in/out. Called from Python alongside show()/hide() so
+  // the animation actually plays before the window is hidden again.
+  function setVisible(visible) {
+    stage.classList.toggle("visible", visible);
   }
 
   setState("idle");

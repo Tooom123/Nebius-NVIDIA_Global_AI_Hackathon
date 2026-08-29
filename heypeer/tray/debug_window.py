@@ -54,21 +54,29 @@ waiting on this window.
 import json
 import multiprocessing
 import platform
+import time
 from pathlib import Path
 
 HTML_PATH = Path(__file__).resolve().parent / "webui" / "conversation.html"
 
 WINDOW_TITLE = "Hey Peer"
-WINDOW_WIDTH = 200
-WINDOW_HEIGHT = 170  # tall enough for the wave rings' peak scale without clipping
-TOP_MARGIN = 0  # flush with the screen's top edge - the orb reads as "emerging from" it
+WINDOW_WIDTH = 190
+WINDOW_HEIGHT = 190  # room for the blob at its peak level-driven scale
+TOP_MARGIN = 0  # flush with the screen's top edge - the blob drops in from above it
 
 # Must match `webui/conversation.html`'s `html, body { background: ... }`
 # exactly - every pixel this color becomes fully transparent/click-through.
-# Chosen because none of the orb's own accent colors (blues/greens/purples/
-# a pink that's close but not identical) are pure magenta.
-MAGIC_BACKGROUND_CSS = "#ff00ff"
-MAGIC_BACKGROUND_COLORREF = 0x00FF00FF  # COLORREF is 0x00BBGGRR - symmetric for #ff00ff
+# Black rather than a "magic" color like magenta: magenta sits inside the
+# blob's own blue->violet->magenta palette, so anti-aliased edge pixels
+# blended toward it left a pink fringe. Edge pixels blended toward black
+# instead read as a natural soft shadow.
+COLORKEY_CSS = "#000000"
+COLORKEY_COLORREF = 0x00000000  # COLORREF is 0x00BBGGRR
+
+# How long the page's slide-out animation takes - the window is only really
+# hidden after this, so the animation is actually seen instead of the window
+# vanishing mid-transition. Must stay >= the CSS transition duration.
+HIDE_ANIMATION_SECONDS = 0.55
 
 # Only shown (see `DebugWindow.set_state`) while a turn is actually active -
 # hidden the rest of the time, per explicit feedback that the indicator
@@ -77,8 +85,8 @@ _VISIBLE_STATES = {"recording", "thinking", "speaking"}
 
 
 def _make_colorkey_transparent(title: str) -> None:
-    """Windows-only: makes every `MAGIC_BACKGROUND_COLORREF` pixel in the
-    window titled `title` fully transparent, via the classic layered-window
+    """Windows-only: makes every `COLORKEY_COLORREF` pixel in the window
+    titled `title` fully transparent, via the classic layered-window
     color-key technique — see module docstring for why this replaces
     relying on pywebview's own `transparent` flag. Every win32 call gets
     explicit argtypes/restype (see heypeer/tray/cursor.py's module docstring
@@ -112,7 +120,7 @@ def _make_colorkey_transparent(title: str) -> None:
             return
         style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
-        user32.SetLayeredWindowAttributes(hwnd, MAGIC_BACKGROUND_COLORREF, 0, LWA_COLORKEY)
+        user32.SetLayeredWindowAttributes(hwnd, COLORKEY_COLORREF, 0, LWA_COLORKEY)
     except Exception:
         pass
 
@@ -155,8 +163,15 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
                     _window.destroy()
                     return
                 elif kind == "show":
+                    # Window first, then the slide-in - the reverse order
+                    # would start the animation on a window nobody can see.
                     _window.show()
+                    _window.evaluate_js("setVisible(true)")
                 elif kind == "hide":
+                    # Slide out first and only actually hide once it's had
+                    # time to play, otherwise the window just vanishes.
+                    _window.evaluate_js("setVisible(false)")
+                    time.sleep(HIDE_ANIMATION_SECONDS)
                     _window.hide()
                 elif kind == "eval":
                     _window.evaluate_js(payload)
@@ -177,6 +192,7 @@ class DebugWindow:
             target=_window_process, args=(self._queue,), daemon=True
         )
         self._process.start()
+        self._last_state: str | None = None
 
     def _send(self, kind: str, payload=None) -> None:
         try:
@@ -188,6 +204,14 @@ class DebugWindow:
         self._send("eval", f"setLevel({float(max(0.0, min(1.0, level)))})")
 
     def set_state(self, state: str) -> None:
+        """No-ops when the state hasn't actually changed. This is called from
+        the audio callback on every chunk (~12x/second), and each show/hide
+        drives a real window transition — one of which deliberately sleeps
+        through its slide-out animation — so forwarding unchanged states
+        would swamp the queue and stutter the animation."""
+        if state == self._last_state:
+            return
+        self._last_state = state
         self._send("eval", f"setState({json.dumps(state)})")
         self._send("show" if state in _VISIBLE_STATES else "hide")
 

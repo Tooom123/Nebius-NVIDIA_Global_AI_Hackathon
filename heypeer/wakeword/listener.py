@@ -18,6 +18,7 @@ size of one chunk instead of the size of the whole detection window.
 """
 
 import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -38,6 +39,12 @@ INSTRUCTION_MAX_SECONDS = 8.0
 INSTRUCTION_SILENCE_CHUNKS = 10  # ~0.8s of trailing silence ends the recording
 INSTRUCTION_MIN_SPEECH_CHUNKS = 3
 SPEECH_DBFS_THRESHOLD = -40.0  # chunks louder than this count as "speech"
+
+# How much audio from *before* a trigger to keep and hand to the verifier.
+# Detection fires at the end of the spoken phrase, so the wake word lives
+# entirely in this window — 2s covers "Hey Peer" plus lead-in comfortably.
+PREBUFFER_SECONDS = 2.0
+PREBUFFER_CHUNKS = int(PREBUFFER_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
 
 
 def _ensure_openwakeword_models() -> None:
@@ -159,6 +166,13 @@ class WakeWordListener:
         # for the wake word while it's actively talking anyway, so gating
         # fully covers the "hears itself" symptom this was meant to fix.
         self._muted = False
+        # Rolling window of the most recent raw chunks, so the audio that
+        # *caused* a detection (the wake word itself) can be handed to the
+        # second-stage verifier along with the instruction — see
+        # heypeer/wakeword/verify.py. Detection fires at the end of the
+        # phrase, so without this the wake word is already gone by the time
+        # recording starts.
+        self._prebuffer: deque = deque(maxlen=PREBUFFER_CHUNKS)
 
     def mute(self) -> None:
         self._muted = True
@@ -263,6 +277,7 @@ class WakeWordListener:
                 if self._muted:
                     continue  # drain the mic but don't score/trigger while Hey Peer is talking
                 chunk = np.frombuffer(raw, dtype=np.int16)
+                self._prebuffer.append(chunk)
                 score = self.process_chunk(chunk)
                 dbfs = chunk_dbfs(chunk)
                 if on_level is not None:
@@ -296,7 +311,17 @@ class WakeWordListener:
                         f"[wakeword] Instruction enregistree "
                         f"({len(instruction_audio) / SAMPLE_RATE:.1f}s)."
                     )
-                    on_detected(instruction_audio)
+                    # Prepend the pre-trigger window so the wake word itself
+                    # is part of what gets transcribed — the verifier needs
+                    # it to confirm this wasn't a false trigger, and
+                    # `strip_wake_word` then removes it from the instruction.
+                    pre_audio = (
+                        np.concatenate(list(self._prebuffer))
+                        if self._prebuffer
+                        else np.zeros(0, dtype=np.int16)
+                    )
+                    self._prebuffer.clear()
+                    on_detected(np.concatenate([pre_audio, instruction_audio]))
         finally:
             stream.stop_stream()
             stream.close()

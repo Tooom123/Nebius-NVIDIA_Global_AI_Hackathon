@@ -756,6 +756,71 @@ accuracy question (trained on synthetic Piper voices only — see the
 the chime at least now makes a real trigger audible immediately, which
 should make false positives easier to notice and report specifically.
 
+### Round 3: two-stage wake-word verification + blob UI (2026-08-30)
+
+Two problems from a real session, one of them the most important bug in the
+project so far.
+
+- [x] **The wake word triggered on basically any speech** — real logs show
+      scores of 0.93-0.99 on sentences that never contained "Hey Peer".
+      Root cause is the model itself, not a threshold: it was trained on
+      synthetic Piper speech only (3 English voices, no real humans, no
+      French accent — see the "Real wake-word training" entry above), so
+      what it actually learned to separate is "synthetic-speech-like audio"
+      vs "noise", not this phrase vs other phrases. No threshold fixes that,
+      because the false-positive scores are *higher* than plenty of true
+      positives. Retraining needs real recorded negatives (ideally the
+      user's own voice), which aren't available here.
+      Implemented the architecture real always-listening assistants use
+      instead: a **two-stage cascade** — the cheap always-on detector only
+      *proposes*, and a more accurate model *confirms*. Whisper already runs
+      on the captured audio, so verification is free:
+      - `WakeWordListener` now keeps a 2s rolling prebuffer and prepends it
+        to the emitted audio, so the wake word itself (which is over by the
+        time detection fires) is part of what gets transcribed.
+      - `heypeer/wakeword/verify.py` (new): normalizes the transcript
+        (lowercase, accent/punctuation-stripped) and scores a sliding window
+        over its *opening* against "hey peer" with `difflib`. Fuzzy on
+        purpose — Whisper renders it "Hey Pierre"/"Hey, Peer."/"hey pir"
+        depending on accent, and enumerating spellings is exactly the
+        brute-force approach rejected earlier for yes/no. Only the opening
+        is searched, so a chance match late in a long sentence can't
+        validate a false trigger.
+      - `_interpret_audio` returns `None` for an unverified trigger (logged
+        quietly, not spoken — announcing every false positive out loud would
+        be worse than the false positive) and otherwise strips the wake word
+        before sending the instruction on.
+      **Verified against the exact transcripts from the user's real logs**:
+      all 6 real false triggers rejected, all 4 real activations accepted
+      with the instruction cleanly extracted. That's a real-data check, not
+      just synthetic unit tests — but it is a check of the *verifier* on
+      transcripts, not an end-to-end run on live audio, which still needs
+      the user's hardware.
+- [x] **Fixed a second real bug the same logs exposed**: "Hey, Peer. Déplace
+      le fichier 4." was passed to Nemotron *including* the wake word and
+      truncated, Nemotron answered `dest_folder="unknown"`, and Hey Peer
+      created a folder literally named `unknown` and moved the file into it.
+      Two fixes: the wake word is now stripped (above), and
+      `_has_placeholder_name` treats "unknown"/"none"/"null"/... as
+      "Nemotron couldn't determine this" rather than a literal name, asking
+      the user to repeat instead of acting.
+- [x] **UI reworked into an actual blob**, per reference designs: no
+      rectangular window, a blue -> violet -> magenta gradient blob with an
+      organic morphing silhouette (animated asymmetric `border-radius` —
+      the reference article's own approach is React Three Fiber/WebGL, far
+      too heavy for an always-running indicator, and CSS gets an
+      indistinguishable result at this size), which **slides down from the
+      top edge like a notification** on activation and slides back up after.
+      Morph speed and palette shift per state; scale tracks the live mic
+      level. Also switched the transparency color key from magenta to
+      **black** — magenta sits inside this blob's own palette, so
+      anti-aliased edge pixels blended toward it would have left a pink
+      fringe; blending toward black reads as a natural soft shadow instead.
+      `DebugWindow.set_state` now dedupes unchanged states, which matters
+      because it's called ~12x/second from the audio callback and each
+      show/hide drives a real window transition (one of which sleeps
+      through its slide-out animation).
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

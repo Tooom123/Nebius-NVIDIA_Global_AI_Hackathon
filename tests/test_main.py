@@ -384,14 +384,73 @@ def test_on_wake_word_with_audio_transcribes_locally_then_uses_interpret_text(
     )
     audio = np.zeros(16000, dtype=np.int16)
 
-    with patch("heypeer.wakeword.stt.transcribe", return_value="do it again"):
+    # The captured audio starts before the trigger, so the transcript opens
+    # with the wake word - which must be verified, then stripped.
+    with patch("heypeer.wakeword.stt.transcribe", return_value="Hey Peer, do it again"):
         peer.on_wake_word(audio)
 
     get_instruction.assert_not_called()
     nemotron.interpret_text.assert_called_once()
     call_args = nemotron.interpret_text.call_args
-    assert call_args.args[0] == "do it again"
+    assert call_args.args[0] == "do it again"  # wake word stripped
     assert call_args.kwargs["screenshot_path"] is not None
+
+
+def test_on_wake_word_ignores_audio_without_the_wake_word(
+    tmp_path: Path, fake_pyautogui: MagicMock
+) -> None:
+    """The always-on detector fires on plenty of ordinary speech (real logs
+    showed 0.97-0.99 scores on sentences with no wake word in them). The
+    second-stage transcript check must drop those before Nemotron is called
+    or anything is executed."""
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+
+    with patch(
+        "heypeer.wakeword.stt.transcribe", return_value="déplace le fichier quatre"
+    ):
+        peer.on_wake_word(np.zeros(16000, dtype=np.int16))
+
+    nemotron.interpret_text.assert_not_called()
+
+
+def test_on_wake_word_unmutes_after_a_rejected_false_trigger(tmp_path: Path) -> None:
+    """A rejected trigger still has to release the listener, or Hey Peer
+    would go permanently deaf after the first false positive."""
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer._wake_listener = MagicMock()
+
+    with patch("heypeer.wakeword.stt.transcribe", return_value="rien a voir"):
+        peer.on_wake_word(np.zeros(16000, dtype=np.int16))
+
+    peer._wake_listener.unmute.assert_called_once()
+
+
+def test_placeholder_destination_is_not_taken_literally(tmp_path: Path) -> None:
+    """Regression test: a truncated instruction made Nemotron answer
+    dest_folder="unknown", and Hey Peer created a folder literally named
+    "unknown" and moved the file into it."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "4.txt").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="4.txt",
+        dest_folder="unknown",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    peer.on_wake_word()
+
+    assert not (watched_dir / "unknown").exists()
+    assert (watched_dir / "4.txt").exists()
 
 
 def test_on_wake_word_with_empty_audio_falls_back_to_text(

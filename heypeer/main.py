@@ -78,6 +78,18 @@ def _default_get_instruction() -> str:
     return input("Hey Peer heard you. What do you want to do? ")
 
 
+# Values Nemotron returns to mean "I couldn't determine this" — they must
+# never be taken literally as a file/folder name (see `_has_placeholder_name`).
+_PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
+
+
+def _has_placeholder_name(intent: Intent) -> bool:
+    """Whether any name field on `intent` is a stand-in for "not determined"
+    rather than a real name the user asked for."""
+    names = (intent.src_filename, intent.dest_folder, intent.new_name, intent.target_name)
+    return any(name is not None and name.strip().lower() in _PLACEHOLDER_NAMES for name in names)
+
+
 class HeyPeer:
     """Wires capture -> detection -> interpretation -> execution.
 
@@ -322,14 +334,16 @@ class HeyPeer:
         The wake-word listener stays muted (see `_on_wake_detected`) for the
         whole turn - unmuted here in a `finally`, once fully done, however
         the turn ends, so Hey Peer only ever handles one turn at a time."""
-        self._log("Hey Peer detected.")
         if self.debug_window is not None:
             self.debug_window.set_state("thinking")
         try:
             try:
                 if audio is not None and len(audio) > 0:
                     intent = self._interpret_audio(audio)
+                    if intent is None:
+                        return  # false trigger, already logged - see _interpret_audio
                 else:
+                    self._log("Hey Peer detected.")
                     instruction_text = self.get_instruction()
                     self._log(f"> {instruction_text}")
                     intent = self.nemotron.interpret_text(
@@ -343,22 +357,44 @@ class HeyPeer:
                 return
             self._dispatch_intent(intent)
         finally:
+            if self.debug_window is not None:
+                self.debug_window.set_state("listening")
             if self._wake_listener is not None:
                 self._wake_listener.unmute()
 
-    def _interpret_audio(self, audio: np.ndarray) -> Intent:
-        """Transcribes the recorded instruction locally (Nemotron via this
-        Nebius endpoint doesn't accept audio input - see
-        heypeer/wakeword/stt.py and heypeer/nemotron/client.py's module
-        docstrings for why) and sends the resulting text, plus a screenshot,
-        to Nemotron for the actual reasoning."""
+    def _interpret_audio(self, audio: np.ndarray) -> "Intent | None":
+        """Transcribes the captured audio locally (Nemotron via this Nebius
+        endpoint doesn't accept audio input - see heypeer/wakeword/stt.py and
+        heypeer/nemotron/client.py's module docstrings for why) and sends the
+        resulting text, plus a screenshot, to Nemotron for the reasoning.
+
+        `audio` starts ~2s *before* the trigger (see the listener's
+        prebuffer), so the wake word itself is in the transcript. That's used
+        for two things before anything else happens: confirming this wasn't a
+        false trigger (returns None if so - the small always-on detector fires
+        on plenty of ordinary speech, see heypeer/wakeword/verify.py), and
+        stripping the wake word out so it doesn't leak into the instruction
+        Nemotron sees."""
         import tempfile
 
         import pyautogui
 
         from heypeer.wakeword.stt import transcribe
+        from heypeer.wakeword.verify import contains_wake_word, strip_wake_word
 
-        instruction_text = transcribe(audio)
+        transcript = transcribe(audio)
+        if not transcript:
+            return None  # silence/noise - nothing was actually said
+
+        if not contains_wake_word(transcript):
+            # Logged quietly, not spoken: this is the common case for a false
+            # trigger, and announcing every one of them out loud would be
+            # worse than the false trigger itself.
+            self._log(f'Ignored (no wake word in "{transcript}").')
+            return None
+
+        self._log("Hey Peer detected.")
+        instruction_text = strip_wake_word(transcript)
         self._log(f"> {instruction_text}")
         if not instruction_text:
             return Intent(action="unknown", skill_id=None, n_repetitions=1)
@@ -395,6 +431,16 @@ class HeyPeer:
                 self._wake_listener.unmute()
 
     def _dispatch_intent(self, intent: Intent) -> None:
+        if _has_placeholder_name(intent):
+            # Real bug this guards against: a truncated instruction ("Déplace
+            # le fichier 4.", no destination) made Nemotron answer
+            # dest_folder="unknown", and Hey Peer dutifully created a folder
+            # literally named "unknown" and moved the file into it. A
+            # placeholder is Nemotron saying it doesn't know - treat it that
+            # way instead of taking it literally as a name.
+            self._log("Hey Peer didn't get a clear enough target for that instruction.")
+            self._speak("Je n'ai pas bien compris, peux-tu répéter ?")
+            return
         if intent.action == "run_skill" and intent.skill_id is not None:
             self._run_skill_intent(intent)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
