@@ -550,6 +550,35 @@ confirmations should be French by default.
       no longer the common case. Set `HEYPEER_WAKEWORD_DEBUG=1` to bring it
       back if a mic issue needs diagnosing again.
 
+### Siri-style orb redesign (2026-08-29)
+
+Follow-up to the pywebview switch, per a concrete design ask: a circle at the
+top-center of the screen with animated waves radiating outward while
+listening, similar to Hey Siri/iOS's voice-mode indicator, staying light and
+fluid, matching the light/dark OS theme automatically.
+
+- [x] `heypeer/tray/webui/conversation.html`: added three `.wave-ring`
+      elements layered behind the orb, each a plain circular border that
+      scales up and fades out on a staggered ~2.6s loop (pure CSS
+      `@keyframes`, no JS/canvas driving it) - paused via
+      `animation-play-state` whenever state is "idle" so nothing animates
+      (or costs CPU) while Hey Peer isn't actively listening/thinking/
+      speaking. Added a `prefers-color-scheme: dark` block so the card
+      switches to a dark translucent background with light text
+      automatically, matching the OS theme rather than committing to one
+      look.
+- [x] `heypeer/tray/debug_window.py`: the window is now positioned at the
+      **top-center** of the primary screen (`webview.screens[0]`, falling
+      back to pywebview's own default placement if screen info isn't
+      available on some backend) instead of wherever the OS defaults an
+      unpositioned window to.
+- [x] Kept the conversation transcript below the orb rather than dropping it
+      for a bare orb-only popup - preserving the discussion history was an
+      explicit earlier requirement and nothing since has asked to remove it,
+      just to make the *orb itself* more Siri-like and reposition the window.
+      Still unverified rendered for real, same caveat as the rest of the
+      pywebview work in this sandbox (see above).
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
