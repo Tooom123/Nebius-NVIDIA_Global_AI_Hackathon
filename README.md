@@ -164,8 +164,9 @@ pressing Enter to simulate the wake word if no trained model is available, and
 still shows a real (detached) tray icon so "Quitter" works as a stop button
 instead of Task Manager. **The actual conversation (wake word detected, instruction
 heard, resolved intent, result) is logged to the terminal.** A short chime plays
-the instant "Hey Peer" is detected (before the instruction is even recorded) —
-audible confirmation that it really heard you, the way Siri/Alexa do — and a
+the instant "Hey Peer" is detected — audible confirmation that it really heard
+you, the way Siri/Alexa do, played on its own thread so it never delays the
+start of recording — and a
 visual indicator (`heypeer/tray/debug_window.py`) slides down from the top edge of
 the screen like a notification: a blue → violet → magenta gradient blob with an
 organic morphing silhouette, whose palette and morph speed shift per state and
@@ -191,6 +192,14 @@ Local transcription (`heypeer/wakeword/stt.py`) uses faster-whisper's "small" mo
 with a French-biased prompt and voice-activity filtering (`vad_filter=True`) — after
 "base" produced both garbled short words/filenames and outright hallucinated
 sentences over background noise with no real speech in them.
+
+**When you stop talking is measured, not assumed.** The end of a spoken
+instruction is detected relative to the room's own noise floor (sampled from the
+audio just before you started speaking) rather than at a fixed decibel level — a
+fixed cutoff is either too high to hear a quiet speaker or too low to ignore a
+fan, and it was truncating real instructions mid-sentence. Trailing silence has
+to last ~1.2s to end a recording, since people pause naturally between a filename
+and a destination.
 
 **Wake-word detection is a two-stage cascade**, the same architecture real
 always-listening assistants use. The small always-on ONNX detector only *proposes*:
@@ -228,7 +237,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 127 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 135 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with

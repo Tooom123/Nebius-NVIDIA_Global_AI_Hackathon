@@ -1,4 +1,5 @@
 import sys
+import threading
 import types
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -9,12 +10,17 @@ import soundfile as sf
 
 from heypeer.wakeword.listener import (
     CHUNK_SAMPLES,
+    SPEECH_THRESHOLD_MAX_DBFS,
+    SPEECH_THRESHOLD_MIN_DBFS,
+    CHIME_PATH,
     WakeWordListener,
     _ensure_openwakeword_models,
     chunk_dbfs,
     dbfs_to_level,
+    estimate_noise_floor,
     play_activation_chime,
     save_wav,
+    speech_threshold_dbfs,
 )
 from heypeer.wakeword.train import export_onnx, train
 
@@ -258,9 +264,9 @@ def test_start_skips_scoring_and_triggering_while_muted(
     process_spy.assert_not_called()
 
 
-def test_play_activation_chime_writes_audio_to_output_stream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_play_chime_writes_audio_to_output_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    from heypeer.wakeword.listener import _play_chime_blocking
+
     fake_stream = MagicMock()
     fake_pa = MagicMock()
     fake_pa.open.return_value = fake_stream
@@ -269,12 +275,33 @@ def test_play_activation_chime_writes_audio_to_output_stream(
     fake_pyaudio_module.paInt16 = 8
     monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
 
-    play_activation_chime()
+    _play_chime_blocking()
 
     fake_pa.open.assert_called_once()
     assert fake_pa.open.call_args.kwargs["output"] is True
     fake_stream.write.assert_called_once()
     fake_pa.terminate.assert_called_once()
+
+
+def test_play_activation_chime_does_not_block_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: blocking here delayed the start of instruction
+    recording by the chime's length, dropping the first moments of what the
+    user said when they ran the wake word straight into the instruction."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_playback() -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr("heypeer.wakeword.listener._play_chime_blocking", slow_playback)
+
+    play_activation_chime()  # must return while playback is still going
+
+    assert started.wait(timeout=2)
+    release.set()
 
 
 def test_start_plays_chime_on_trigger_before_recording(
@@ -320,6 +347,81 @@ def test_start_plays_chime_on_trigger_before_recording(
     listener.start(on_detected=MagicMock())
 
     assert call_order == ["chime", "record"]
+
+
+def test_speech_threshold_tracks_the_noise_floor() -> None:
+    """A quiet room and a noisy one must not share one fixed cutoff — that
+    was the bug behind instructions being cut off mid-sentence."""
+    quiet = speech_threshold_dbfs(-70.0)
+    noisy = speech_threshold_dbfs(-45.0)
+
+    assert quiet < noisy
+    for threshold in (quiet, noisy):
+        assert SPEECH_THRESHOLD_MIN_DBFS <= threshold <= SPEECH_THRESHOLD_MAX_DBFS
+
+
+def test_speech_threshold_is_clamped_at_both_extremes() -> None:
+    assert speech_threshold_dbfs(-120.0) == SPEECH_THRESHOLD_MIN_DBFS  # muted mic
+    assert speech_threshold_dbfs(0.0) == SPEECH_THRESHOLD_MAX_DBFS  # absurdly loud room
+
+
+def test_estimate_noise_floor_ignores_speech_in_the_window() -> None:
+    """A low percentile, not a mean: speech inside the measured window
+    would drag a mean upward and desensitize the threshold."""
+    mostly_quiet = [_quiet_chunk()] * 8 + [_loud_chunk()] * 2
+
+    floor = estimate_noise_floor(mostly_quiet)
+
+    assert floor < chunk_dbfs(_loud_chunk()) - 20
+
+
+def test_estimate_noise_floor_handles_empty_input() -> None:
+    assert estimate_noise_floor([]) < 0  # must not raise
+
+
+def test_record_instruction_survives_a_mid_sentence_pause(toy_model: Path) -> None:
+    """Regression test for the real bug: "déplace le fichier 4.0." was cut
+    off because a natural pause between the filename and the destination hit
+    the old ~0.8s trailing-silence cutoff."""
+    listener = WakeWordListener(str(toy_model))
+    listener._prebuffer.extend([_quiet_chunk()] * 10)  # quiet room
+    pause_chunks = 9  # ~0.7s - a natural pause, shorter than the new cutoff
+    chunks = (
+        [_loud_chunk()] * 6
+        + [_quiet_chunk()] * pause_chunks
+        + [_loud_chunk()] * 6  # the rest of the sentence
+        + [_quiet_chunk()] * 25  # actually finished now
+    )
+    stream = _FakeStream(chunks)
+
+    audio = listener._record_instruction(stream)
+
+    # Must have kept recording through the pause and captured the second half.
+    assert len(audio) > CHUNK_SAMPLES * (6 + pause_chunks + 6)
+
+
+def test_record_instruction_enforces_a_minimum_duration(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model))
+    listener._prebuffer.extend([_quiet_chunk()] * 10)
+    stream = _FakeStream([_loud_chunk()] * 4 + [_quiet_chunk()] * 60)
+
+    audio = listener._record_instruction(stream)
+
+    from heypeer.wakeword.listener import INSTRUCTION_MIN_SECONDS, SAMPLE_RATE
+
+    assert len(audio) >= INSTRUCTION_MIN_SECONDS * SAMPLE_RATE * 0.9
+
+
+def test_chime_asset_exists_and_is_loadable() -> None:
+    """The chime ships as a pre-decoded wav (see `_load_chime`) — if it went
+    missing, activation would silently lose its audible cue."""
+    import soundfile as sf
+
+    assert CHIME_PATH.is_file()
+    data, sr = sf.read(str(CHIME_PATH), dtype="int16")
+    assert sr == 16000
+    assert data.ndim == 1  # mono
+    assert 0.1 < len(data) / sr < 2.0  # a short cue, not a whole track
 
 
 def test_unmute_clears_the_muted_flag(toy_model: Path) -> None:

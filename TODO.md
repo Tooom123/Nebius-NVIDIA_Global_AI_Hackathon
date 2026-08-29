@@ -821,6 +821,68 @@ project so far.
       show/hide drives a real window transition (one of which sleeps
       through its slide-out animation).
 
+### Round 4: real transparency, supplied chime, adaptive end-pointing (2026-08-30)
+
+- [x] **The black rectangle — root cause finally found, by reading
+      pywebview's source instead of guessing again.** Two earlier attempts
+      failed for reasons now recorded in `debug_window.py`'s module
+      docstring; the important one is that attempt #2 (Win32 layered-window
+      color key) *cannot* work here at all: WebView2 renders through
+      DirectComposition into its own child surface, which the parent
+      window's color-keying never sees. It's the right technique for a plain
+      GDI window and the wrong one for a hardware-composited web view.
+      pywebview 6.2.1 *does* implement transparency properly for
+      EdgeChromium (sets the WebView2 controller's `DefaultBackgroundColor`
+      to `Color.Transparent`, plus a Show/Hide dance to make it take
+      effect) — but `platforms/winforms.py` gates it behind an `if/elif`:
+
+          if window.hidden:                      # <- our case
+              ...
+          elif window.transparent and is_chromium:
+              browser.Show(); browser.Hide()     # the hack that makes it work
+
+      Passing `hidden=True` (added in round 2, so the blob would only appear
+      during a turn) therefore silently disabled the very transparency setup
+      needed. Now created with `transparent=True` and *not* hidden, then
+      hidden from the command pump a moment later. Real per-pixel alpha also
+      made it worth adding back the level-reactive glow that color-keying
+      couldn't have rendered without a halo.
+- [x] **Activation chime now uses the mp3 the user supplied**, converted
+      once to a trimmed mono 16 kHz WAV (`heypeer/assets/`, see the README
+      there for provenance and the regeneration snippet) rather than decoded
+      at runtime — libsndfile only reads mp3 from 1.1 onward, which isn't
+      guaranteed on every install. **Also fixed a real problem introduced
+      with the chime in round 2**: it was played synchronously, so
+      instruction recording didn't start until it finished — dropping the
+      first ~0.66s of speech for anyone running the wake word straight into
+      the instruction ("Hey Peer, déplace le fichier..."), which is exactly
+      how the user speaks in every real log. Now played on its own thread.
+- [x] **End-pointing reads the actual decibel spectrum instead of a fixed
+      cutoff**, per the user's request to "regarder le spectre de décibel
+      pour comprendre lorsque je parle et lorsque je ne parle plus". Real
+      instructions were being truncated mid-sentence ("déplace le fichier
+      4.0.", "Déplace le fichier 4.txt-"). Three changes in
+      `_record_instruction`:
+      - The speech/silence cutoff is now derived from the room's measured
+        noise floor (`estimate_noise_floor` — the 20th percentile of
+        per-chunk levels over the prebuffer, a low percentile rather than a
+        mean so speech in the window can't drag it up) plus a 12 dB margin,
+        clamped to a sane range. Measured effect: a very quiet room gets a
+        -54 dBFS threshold and a noisy one -25 dBFS, where before both got a
+        fixed -40 dBFS — too high to hear a quiet speaker, too low to ignore
+        a fan.
+      - Trailing silence needed to end a recording went from ~0.8s to ~1.2s;
+        people pause naturally between a filename and a destination, and
+        that pause was being read as "done".
+      - A minimum recording duration, so a slow start can't truncate an
+        instruction to nothing.
+
+Still open and unchanged: the wake-word *model* remains
+synthetic-voice-trained, so the always-on detector still over-fires — the
+round-3 second-stage verifier is what makes that survivable, not a fix to
+the model itself. Retraining with real recorded negatives is still the real
+fix and still needs audio that doesn't exist yet.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
