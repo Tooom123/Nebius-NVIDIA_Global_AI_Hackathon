@@ -1,264 +1,182 @@
-"""A borderless animated blob that drops in from the top of the screen when
-Hey Peer is activated, morphing organically and swelling with the user's
-voice, then slides back up when the turn is over.
+"""The on-screen indicator: a soft, luminous blob that drops in from the top
+of the screen when Hey Peer is activated, morphs organically, swells with the
+user's voice, and slides back up when the turn is over.
 
-Rendered as an HTML page (`webui/conversation.html`) through `pywebview`
-(the OS's native web view — WebView2 on Windows, already present on Windows
-10/11), running in its own process.
+## Why this no longer uses a web view
 
-## How the rectangle is actually removed
+Five rounds tried to get a borderless, good-looking indicator out of
+`pywebview`/WebView2, each failing on a different wrong assumption:
 
-Four earlier attempts failed, each on a different wrong assumption, and the
-history is worth keeping because the failure was subtle every time:
+1. `shadow=False` + forcing the Chromium backend — real issues, rectangle
+   remained.
+2. A Win32 layered-window **color key** — cannot work: WebView2 renders
+   through DirectComposition into its own child surface, which the parent's
+   color-keying never sees.
+3. pywebview's `transparent=True` — did make WebView2 transparent, revealing
+   that its Windows backend never makes the WinForms *form* behind it
+   transparent, so a grey rectangle stayed.
+4. `SetWindowRgn` with a fixed ellipse — finally rectangle-free, but a static
+   circle clipping an animated blob looked truncated.
+5. `SetWindowRgn` with a per-frame polygon — correct shape, but a window
+   region is a **1-bit mask**: hard, aliased edges, and a glow is impossible
+   by construction.
 
-1. `shadow=False` + forcing `gui="edgechromium"`. Real issues (Windows draws
-   a drop shadow behind frameless windows; the legacy MSHTML backend can't do
-   transparency), but a rectangle remained.
-2. A Win32 layered-window **color key**. Cannot work here at all: WebView2
-   renders through DirectComposition into its own child surface, which the
-   parent window's color-keying never sees.
-3. pywebview's `transparent=True`, created non-hidden so its Show/Hide
-   transparency hack isn't skipped. This *did* make WebView2 transparent —
-   and revealed that `platforms/winforms.py` sets only the web view's
-   background transparent, never the WinForms `Form` behind it, which keeps
-   its default Control-grey. Hence "a grey rectangle".
-4. `SetWindowRgn` with a fixed **ellipse**. Finally rectangle-free — a window
-   region is applied by the window manager, so pixels outside it aren't part
-   of the window whatever renders inside — but clipping an animated blob to a
-   static circle looked, accurately, truncated.
+Every one of those was an attempt to talk a browser engine into something
+Win32 exposes directly. `UpdateLayeredWindow` composites a 32-bit BGRA
+bitmap into the desktop with genuine per-pixel alpha — antialiased edges, a
+real glow, no background at all. So the frame is rendered here with PIL
+(`blob_render.py`) and pushed through `overlay.py`, and the browser engine
+is gone along with its whole class of failure modes.
 
-What's here now keeps the region (the only mechanism that reliably works)
-and fixes what made it ugly: the region is a **polygon recomputed every
-frame from the blob's actual outline** (`blob_shape.blob_points`), not a
-fixed ellipse. The page just paints a full-bleed gradient and never clips
-anything; the region carves the silhouette out of it.
+A useful side effect: the look is now *testable*. Alpha at the corners, edge
+softness, the glow reaching past the silhouette, growth with mic level — all
+assertable headlessly, none of which was checkable while the design lived in
+CSS behind a web view.
 
-That inversion is the important part. Any design where CSS animates a shape
-*and* a window region clips it has two independent notions of the outline
-that inevitably disagree — whatever the region doesn't cover gets chopped,
-whatever the page doesn't paint shows as grey. With the region as the sole
-source of shape there is nothing to keep in sync, and no per-frame
-JavaScript either: only a cheap local `CreatePolygonRgn` call.
+## Cost
 
-It also restores a real size reaction to the voice, since `blob_points`
-takes the mic level and the region follows it — the previous fixed-ellipse
-version could only fake that with brightness.
+`render_alpha` is the expensive half (~18ms: polygon fill, blur,
+supersampled downscale) but depends only on time and level, never on color.
+So a loop of alpha frames is rendered **once** up front (~0.2s) and reused;
+per frame only the cheap `compose` runs (~1.2ms, measured) — about 3.6% of
+one core at 30fps, and only while the indicator is actually on screen.
 
-## Why a separate process
+Runs in its own process: a thread-based version once hung the entire
+interpreter in this project's Linux sandbox, and `Process.start()` returns
+immediately whatever the child does.
 
-A thread-based version hung the *entire interpreter* in this project's Linux
-dev sandbox — `webview.create_window()` never returned and no other thread
-progressed, consistent with the native call holding the GIL while stuck
-(no GTK/WebKit backend there). Whether that can also happen on
-Windows/WebView2 is unverified, but a hang that takes down all of Hey Peer
-is worth guarding against regardless: `Process.start()` returns immediately
-no matter what the child does.
+Windows-only, like `cursor.py`. Elsewhere it degrades to a no-op rather than
+pretending to work.
 """
 
-import json
 import multiprocessing
-import platform
-import threading
 import time
-from pathlib import Path
 
-from heypeer.tray.blob_shape import blob_points
-
-HTML_PATH = Path(__file__).resolve().parent / "webui" / "conversation.html"
-
-WINDOW_TITLE = "Hey Peer"
-WINDOW_WIDTH = 210
-WINDOW_HEIGHT = 210
-TOP_MARGIN = 0  # resting position: flush with the top edge of the screen
-
-# 3-degree steps around the outline: fine enough that the polygon region
-# shows no facets at this size, still trivial to build every frame.
-OUTLINE_POINTS = 120
-
-FRAME_INTERVAL = 1 / 30
-# Polling interval while nothing is on screen — the overwhelmingly common
-# case, since the indicator only appears during an actual turn. Animating at
-# frame rate then would burn CPU for nothing.
-IDLE_POLL_INTERVAL = 0.1
-# Exponential easing factor per frame for the slide in/out. Chosen over a
-# fixed duration so an interrupted slide (state flipping mid-animation)
-# simply retargets instead of jumping.
-SLIDE_EASING = 0.22
-SLIDE_SETTLED_PX = 2
+# Palette per state: blue -> violet -> magenta, shifted per state. The shape
+# language is identical across states, so a transition reads as one object
+# reacting rather than a different indicator appearing.
+STATE_PALETTES = {
+    "idle": ((58, 74, 96), (74, 74, 106), (106, 74, 122)),
+    "listening": ((79, 140, 255), (123, 77, 255), (224, 64, 251)),
+    "recording": ((79, 140, 255), (139, 92, 255), (255, 79, 216)),
+    "thinking": ((91, 109, 255), (155, 77, 255), (208, 64, 251)),
+    "speaking": ((95, 168, 255), (160, 92, 255), (255, 106, 224)),
+}
 
 # Only shown while a turn is actually happening — the indicator should appear
 # when Hey Peer has heard something, not sit on screen permanently.
 _VISIBLE_STATES = {"recording", "thinking", "speaking"}
 
-# Below this change, a new level isn't worth a round trip into the page for
-# its brightness reaction (the size reaction goes through the region, which
-# is local and updated every frame regardless).
-_LEVEL_JS_EPSILON = 0.06
+SIZE = 240
+TOP_MARGIN = 12  # resting distance from the top edge of the screen
+
+# Pre-rendered morph loop. 48 frames at ~13 fps of morph is plenty for a
+# slow organic wobble, and keeps the one-off cost near a fifth of a second.
+LOOP_FRAMES = 48
+LOOP_STEP_SECONDS = 0.28
+
+FRAME_INTERVAL = 1 / 30
+# While nothing is on screen — the overwhelmingly common case — idle cheaply
+# instead of running the frame loop for nothing.
+IDLE_POLL_INTERVAL = 0.1
+
+# Exponential easing per frame for the slide, rather than a fixed duration,
+# so a state change mid-slide retargets smoothly instead of jumping.
+SLIDE_EASING = 0.24
+SLIDE_SETTLED_PX = 2
+
+# How far the mic level swells the blob on top of its own morphing.
+LEVEL_ZOOM = 0.14
 
 
-def _set_window_region(title: str, points: "list[tuple[int, int]]") -> bool:
-    """Windows-only: clips the window titled `title` to `points`, so it has
-    no rectangular edge. Returns whether it was applied.
-
-    Every win32 call gets explicit argtypes/restype — ctypes otherwise
-    defaults them to 32-bit `c_int`, silently truncating 64-bit handles,
-    which produced a real `OverflowError` crash elsewhere in this project
-    (see `heypeer/tray/cursor.py`'s module docstring).
-
-    Best-effort: a window that can't be found or clipped is a cosmetic
-    problem, and crashing the indicator over it would be a worse one.
-    """
-    if platform.system() != "Windows":
-        return False
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
-
-    class POINT(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-    user32.FindWindowW.restype = wintypes.HWND
-    gdi32.CreatePolygonRgn.argtypes = [ctypes.POINTER(POINT), ctypes.c_int, ctypes.c_int]
-    gdi32.CreatePolygonRgn.restype = wintypes.HRGN
-    user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
-    user32.SetWindowRgn.restype = ctypes.c_int
-
+def _screen_width(default: int = 1920) -> int:
     try:
-        hwnd = user32.FindWindowW(None, title)
-        if not hwnd:
-            return False
-        array = (POINT * len(points))(*[POINT(x, y) for x, y in points])
-        region = gdi32.CreatePolygonRgn(array, len(points), 2)  # 2 = WINDING
-        if not region:
-            return False
-        # Redraw only while visible: repainting on every frame of the
-        # slide-out is wasted work the user never sees.
-        user32.SetWindowRgn(hwnd, region, True)
-        # Ownership of `region` passes to the window; it must not be deleted
-        # here, and the system frees the previous one.
-        return True
+        import ctypes
+
+        return int(ctypes.windll.user32.GetSystemMetrics(0)) or default
     except Exception:
-        return False
+        return default
 
 
 def _window_process(command_queue: "multiprocessing.Queue") -> None:
-    """Runs in the child process. Owns the window, the command pump, and the
-    animation loop that drives the outline."""
-    import webview
+    """Owns the overlay window, the pre-rendered frames, and the animation."""
+    from PIL import Image
 
-    shared = {"visible": False, "level": 0.0, "quit": False}
+    from heypeer.tray.blob_render import compose, render_alpha
+    from heypeer.tray.overlay import Overlay, is_supported
 
-    x_position = 0
-    try:
-        x_position = max(0, (webview.screens[0].width - WINDOW_WIDTH) // 2)
-    except Exception:
-        pass  # screen info unavailable on this backend - fall back to the left edge
-
-    offscreen_y = -WINDOW_HEIGHT - 20
-
-    window = webview.create_window(
-        WINDOW_TITLE,
-        url=str(HTML_PATH),
-        width=WINDOW_WIDTH,
-        height=WINDOW_HEIGHT,
-        x=x_position,
-        y=offscreen_y,
-        frameless=True,
-        easy_drag=False,  # the region makes the whole window the blob; dragging it would just move it off-place
-        on_top=True,
-        resizable=False,
-        shadow=False,
-        # Kept alongside the region: where it works it softens the edges,
-        # and where it doesn't the region still removes the rectangle. NOT
-        # combined with hidden=True, which would skip pywebview's own
-        # transparency setup entirely (see module docstring).
-        transparent=True,
-    )
-
-    def animate(_window) -> None:
-        started_at = time.time()
-        y = float(offscreen_y)
-        on_screen = False
-        last_js_level = -1.0
-
-        while not shared["quit"]:
-            if not on_screen and not shared["visible"]:
-                # Nothing on screen: idle cheaply instead of waking 30x a
-                # second to do nothing. This is the common case by far —
-                # the indicator is only up during an actual turn.
-                time.sleep(IDLE_POLL_INTERVAL)
-                continue
-
-            target_y = float(TOP_MARGIN if shared["visible"] else offscreen_y)
-
-            if shared["visible"] and not on_screen:
-                try:
-                    _window.move(x_position, offscreen_y)
-                    _window.show()
-                except Exception:
-                    pass
-                y = float(offscreen_y)
-                on_screen = True
-
-            if on_screen:
-                y += (target_y - y) * SLIDE_EASING
-                if abs(target_y - y) < SLIDE_SETTLED_PX:
-                    y = target_y
-
-                level = shared["level"]
-                points = blob_points(
-                    WINDOW_WIDTH,
-                    WINDOW_HEIGHT,
-                    t=time.time() - started_at,
-                    level=level,
-                    n_points=OUTLINE_POINTS,
-                )
-                _set_window_region(WINDOW_TITLE, points)
-                try:
-                    _window.move(x_position, int(round(y)))
-                except Exception:
-                    pass
-
-                if abs(level - last_js_level) >= _LEVEL_JS_EPSILON:
-                    last_js_level = level
-                    try:
-                        _window.evaluate_js(f"setLevel({level})")
-                    except Exception:
-                        pass
-
-                if not shared["visible"] and y == target_y:
-                    try:
-                        _window.hide()
-                    except Exception:
-                        pass
-                    on_screen = False
-
-            time.sleep(FRAME_INTERVAL)
-
-    def pump_commands(_window) -> None:
-        threading.Thread(target=animate, args=(_window,), daemon=True).start()
+    if not is_supported():
+        # Drain commands so the parent never blocks on a full queue.
         while True:
-            kind, payload = command_queue.get()
-            try:
-                if kind == "quit":
-                    shared["quit"] = True
-                    _window.destroy()
-                    return
-                if kind == "level":
-                    shared["level"] = payload
-                elif kind == "state":
-                    shared["visible"] = payload in _VISIBLE_STATES
-                    _window.evaluate_js(f"setState({json.dumps(payload)})")
-            except Exception:
-                pass  # window mid-close, page not ready yet, etc.
+            if command_queue.get()[0] == "quit":
+                return
 
-    # gui="edgechromium" forces the modern WebView2 backend rather than
-    # letting pywebview fall back to the legacy MSHTML/IE engine, which
-    # can't do transparency at all.
-    webview.start(pump_commands, window, gui="edgechromium")
+    overlay = Overlay(SIZE, SIZE)
+    if not overlay.create():
+        while True:
+            if command_queue.get()[0] == "quit":
+                return
+
+    frames = [render_alpha(SIZE, t=i * LOOP_STEP_SECONDS) for i in range(LOOP_FRAMES)]
+
+    x = max(0, (_screen_width() - SIZE) // 2)
+    offscreen_y = -SIZE - 20
+
+    state = "idle"
+    visible = False
+    level = 0.0
+    y = float(offscreen_y)
+    on_screen = False
+    started_at = time.time()
+
+    while True:
+        overlay.pump_messages()
+
+        while not command_queue.empty():
+            try:
+                kind, payload = command_queue.get_nowait()
+            except Exception:
+                break
+            if kind == "quit":
+                overlay.destroy()
+                return
+            if kind == "level":
+                level = payload
+            elif kind == "state":
+                state = payload
+                visible = payload in _VISIBLE_STATES
+
+        if not on_screen and not visible:
+            time.sleep(IDLE_POLL_INTERVAL)
+            continue
+
+        if visible and not on_screen:
+            y = float(offscreen_y)
+            on_screen = True
+            overlay.set_visible(True)
+
+        target_y = float(TOP_MARGIN if visible else offscreen_y)
+        y += (target_y - y) * SLIDE_EASING
+        if abs(target_y - y) < SLIDE_SETTLED_PX:
+            y = target_y
+
+        alpha = frames[int((time.time() - started_at) / LOOP_STEP_SECONDS) % LOOP_FRAMES]
+        if level > 0.01:
+            # Scale for the voice rather than re-rendering the silhouette —
+            # `render_alpha` is far too expensive to run per frame.
+            zoomed = int(SIZE * (1 + LEVEL_ZOOM * level))
+            canvas = Image.new("L", (SIZE, SIZE), 0)
+            scaled = alpha.resize((zoomed, zoomed), Image.BILINEAR)
+            canvas.paste(scaled, ((SIZE - zoomed) // 2, (SIZE - zoomed) // 2))
+            alpha = canvas
+
+        overlay.update(compose(alpha, STATE_PALETTES.get(state, STATE_PALETTES["idle"])), x, int(y))
+
+        if not visible and y == target_y:
+            overlay.set_visible(False)
+            on_screen = False
+
+        time.sleep(FRAME_INTERVAL)
 
 
 class DebugWindow:

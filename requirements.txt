@@ -10,7 +10,6 @@ scikit-learn>=1.4.0
 skl2onnx>=1.16.0
 piper-tts>=1.7.0
 faster-whisper>=1.0.0
-pywebview>=5.0
 send2trash>=1.8.0
 scipy>=1.11.0
 numpy>=1.26.0

@@ -82,6 +82,11 @@ def _default_get_instruction() -> str:
 # never be taken literally as a file/folder name (see `_has_placeholder_name`).
 _PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
 
+# Screenshot sent to Nemotron as visual context. Long edge in pixels and JPEG
+# quality — see `_interpret_audio` for why this isn't a full-resolution PNG.
+SCREENSHOT_MAX_PX = 768
+SCREENSHOT_QUALITY = 60
+
 
 def _has_placeholder_name(intent: Intent) -> bool:
     """Whether any name field on `intent` is a stand-in for "not determined"
@@ -230,6 +235,12 @@ class HeyPeer:
         finally:
             if self.debug_window is not None:
                 self.debug_window.set_state("listening")
+
+    def _speak_async(self, text: str) -> None:
+        """Speaks without blocking the caller. Used for narration that
+        precedes an action: the action shouldn't wait for a whole sentence
+        of speech to play before it happens."""
+        threading.Thread(target=self._speak, args=(text,), daemon=True).start()
 
     def _on_audio_level(self, level: float, recording: bool) -> None:
         """Forwards the live mic level to the indicator's audio-reactive blob.
@@ -449,8 +460,17 @@ class HeyPeer:
             return Intent(action="unknown", skill_id=None, n_repetitions=1)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            screenshot_path = Path(tmp_dir) / "screenshot.png"
-            pyautogui.screenshot().save(str(screenshot_path))
+            # Downscaled JPEG, not a full-resolution PNG. The screenshot is
+            # only context ("what is the user looking at"), and a 1920x1080
+            # PNG is ~730 KB once base64-encoded — measured ~23x larger than
+            # a 768px JPEG carrying the same context. That upload was a real
+            # part of the "action takes too long" delay the user reported.
+            screenshot_path = Path(tmp_dir) / "screenshot.jpg"
+            shot = pyautogui.screenshot()
+            shot.thumbnail((SCREENSHOT_MAX_PX, SCREENSHOT_MAX_PX))
+            shot.convert("RGB").save(
+                str(screenshot_path), format="JPEG", quality=SCREENSHOT_QUALITY
+            )
             return self.nemotron.interpret_text(
                 instruction_text,
                 self._skill_context(),
@@ -533,7 +553,7 @@ class HeyPeer:
             return
 
         times = f" {intent.n_repetitions} fois" if intent.n_repetitions > 1 else ""
-        self._speak(f"Je fais : {skill.name}{times}.")
+        self._speak_async(f"Je fais : {skill.name}{times}.")
 
         runner = SkillRunner(
             verify_step=lambda png: self.nemotron.verify_screen(
@@ -544,7 +564,6 @@ class HeyPeer:
         try:
             runner.run(skill, intent.n_repetitions)
             self._log(f'Done: "{skill.name}" x{intent.n_repetitions}.')
-            self._speak("C'est fait.")
         except ExecutionAborted as exc:
             self._log(f"Stopped mid-replay: {exc}")
             self._speak("Je me suis arrêté en cours de route, quelque chose semblait anormal.")
@@ -560,17 +579,26 @@ class HeyPeer:
         """Shared body for every direct, one-off file action (move/rename/
         create file/create folder/delete) - Nemotron resolves which one and
         the file/name(s) involved, and it runs immediately (no confirmation
-        step any more, see module docstring), narrated out loud first."""
+        step, see module docstring).
+
+        The narration is spoken *without waiting for it to finish*, and the
+        action runs straight away. Speaking synchronously first meant the
+        file didn't move until a whole sentence had played, which is a large
+        part of what the user experienced as "l'action prend trop de temps".
+
+        Nothing is spoken afterwards either: saying what it's doing already
+        tells the user it happened, so a trailing "C'est fait." was pure
+        repetition. Only failures still get a spoken message, since those
+        are the case where the narration would otherwise be a lie."""
         if self.watched_dir is None:
             self._log("No watched directory configured - can't resolve a direct file action.")
             return
 
-        self._speak(narration)
+        self._speak_async(narration)
         self.tray.set_status(Status.EXECUTING)
         try:
             result_path = run()
             self._log(done(result_path))
-            self._speak("C'est fait.")
         except ExecutionAborted as exc:
             self._log(f"Stopped: {exc}")
             self._speak("Je n'ai pas pu faire ça, quelque chose semblait anormal.")

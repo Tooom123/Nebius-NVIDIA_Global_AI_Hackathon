@@ -979,6 +979,52 @@ just an ellipse, and it can be replaced every frame.
       case) instead of running the frame loop continuously — worth being
       careful about given the performance problems reported in round 5.
 
+### Round 7: drop the web view, render the indicator ourselves (2026-08-30)
+
+- [x] **Crash on an empty model answer.** `message.content` is None when
+      Nemotron returns no usable completion, surfacing as "the JSON object
+      must be str, bytes or bytearray, not NoneType" — useless to the user.
+      An empty *or* non-JSON answer now resolves to an unknown intent;
+      `verify_screen` got the same treatment.
+- [x] **Action latency**, two real causes, both fixed: the narration was
+      spoken **synchronously before acting**, so the file didn't move until a
+      whole sentence had played; and the screenshot was a full-resolution
+      PNG, measured at ~730 KB base64 versus ~31 KB for a 768px JPEG with
+      the same context (23x). Narration is now fire-and-forget, the
+      screenshot downscaled.
+- [x] **Dropped the trailing "C'est fait."** — announcing the action already
+      tells the user it happened. Failures still speak, since that's the one
+      case where the narration would otherwise be a lie.
+- [x] **The indicator no longer uses a web view at all.** Rounds 2-6 each
+      failed to get a borderless, good-looking overlay out of
+      pywebview/WebView2 — color-keying can't see a DirectComposition
+      surface; `transparent=True` leaves the WinForms form's grey behind it;
+      `SetWindowRgn` works but is a **1-bit mask**, so edges are hard and
+      aliased and a glow is impossible by construction. Every attempt was
+      trying to talk a browser engine into something Win32 exposes directly.
+      `UpdateLayeredWindow` composites a 32-bit BGRA bitmap into the desktop
+      with genuine per-pixel alpha. So:
+      - `heypeer/tray/blob_render.py` (new) draws the frame with PIL/numpy:
+        organic silhouette supersampled 3x for antialiasing, diagonal
+        gradient, and a real glow (the silhouette blurred well past its own
+        edge, so it follows the shape as it morphs).
+      - `heypeer/tray/overlay.py` (new) is the Win32 layered window —
+        click-through, never steals focus, never in the taskbar.
+      - `debug_window.py` is now just orchestration; the HTML page and the
+        `pywebview` dependency are gone.
+      **The look is finally testable.** 12 new tests assert what kept
+      regressing where only the user could see it: corners fully
+      transparent (no background), centre fully opaque, a substantial band
+      of *partial* alpha (i.e. antialiased, which a 1-bit region cannot
+      produce), the glow reaching past the solid silhouette, growth with mic
+      level, and nothing clipped at the frame border. Also rasterized the
+      alpha channel to ASCII to actually look at it.
+      **Cost, measured**: `render_alpha` is the expensive half (~18ms) but
+      depends only on time and level, never colour — so a 48-frame loop is
+      pre-rendered once (~0.2s) and only the cheap `compose` runs per frame
+      (~1.2ms, ≈3.6% of one core at 30fps), and only while on screen. Given
+      the performance complaints in round 5, that mattered.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
