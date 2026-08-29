@@ -20,6 +20,17 @@ class Settings:
     nebius_base_url: str
     nemotron_model_id: str
     watched_dir: Path = field(default_factory=lambda: Path.home() / "Downloads")
+    # TEMPORARY, on by default while real wake-word detection is being
+    # validated on real hardware: prints a live mic dB meter + score so audio
+    # input hardware issues are obvious. Set HEYPEER_WAKEWORD_DEBUG=0 to quiet
+    # it once "Hey Peer" reliably triggers.
+    wakeword_debug: bool = True
+    # Default 0.9, not openWakeWord's usual 0.5: on this model (trained on
+    # synthetic voices only, see heypeer/wakeword/train.py's module
+    # docstring for the evaluation), 0.5 let through ~14% of unrelated
+    # phrases while 0.9 cuts that to ~7% with no loss of true-positive
+    # recall in evaluation. Override with HEYPEER_WAKEWORD_THRESHOLD.
+    wakeword_threshold: float = 0.9
 
 
 def load_settings() -> Settings:
@@ -32,4 +43,6 @@ def load_settings() -> Settings:
             "NEMOTRON_MODEL_ID", "nvidia/Nemotron-3-Nano-Omni"
         ),
         watched_dir=Path(os.environ.get("HEYPEER_WATCHED_DIR") or str(Path.home() / "Downloads")),
+        wakeword_debug=(os.environ.get("HEYPEER_WAKEWORD_DEBUG") or "1") != "0",
+        wakeword_threshold=float(os.environ.get("HEYPEER_WAKEWORD_THRESHOLD") or 0.9),
     )

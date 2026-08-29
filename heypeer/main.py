@@ -66,8 +66,12 @@ class HeyPeer:
         watched_dir: Path | None = None,
         get_instruction: GetInstruction = _default_get_instruction,
         file_detector: PatternDetector | None = None,
+        wakeword_debug: bool = False,
+        wakeword_threshold: float = 0.9,
     ) -> None:
         self.memory = memory
+        self.wakeword_debug = wakeword_debug
+        self.wakeword_threshold = wakeword_threshold
         self.detector = detector
         # A separate detector for FILE_MOVE events — see module docstring for
         # why generic input events and file moves must not share a buffer.
@@ -126,7 +130,9 @@ class HeyPeer:
             model_path = default_model_path()
             if not model_path.exists():
                 raise FileNotFoundError(model_path)
-            self._wake_listener = WakeWordListener(str(model_path))
+            self._wake_listener = WakeWordListener(
+                str(model_path), threshold=self.wakeword_threshold, debug=self.wakeword_debug
+            )
             self._wake_listener.start(on_detected=self.on_wake_word)
         except (FileNotFoundError, OSError) as exc:
             print(
@@ -244,6 +250,8 @@ def _build_peer() -> HeyPeer:
         detector=PatternDetector(),
         nemotron=NemotronClient(settings),
         watched_dir=settings.watched_dir,
+        wakeword_debug=settings.wakeword_debug,
+        wakeword_threshold=settings.wakeword_threshold,
     )
 
 

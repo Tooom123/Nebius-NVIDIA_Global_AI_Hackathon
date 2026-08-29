@@ -138,10 +138,17 @@ default watched folder `~/Downloads`, override with `HEYPEER_WATCHED_DIR`) start
 immediately and runs natively the whole time the app is open; the tray icon's color
 and tooltip/menu text always show voice-listening status (off / listening /
 executing). **"Mode auto (écoute vocale)"** starts ON by default — toggle it off
-from the tray menu if you don't want voice activation for that session. If no
-trained wake-word model exists yet at `data/wakeword/hey_peer.onnx`, voice
-activation just won't come up regardless of the toggle — use the tray's **"Demander
+from the tray menu if you don't want voice activation for that session. A trained
+wake-word model ships at `data/wakeword/hey_peer.onnx` — if it's missing, voice
+activation just won't come up regardless of the toggle; use the tray's **"Demander
 à Hey Peer..."** item to type an instruction instead.
+
+While the wake word is being validated on real hardware, a temporary debug mode is
+on by default: a live mic dB meter and detection score print to the console, and
+the input device name prints at startup — set `HEYPEER_WAKEWORD_DEBUG=0` once it's
+reliably working to quiet this. The detection threshold defaults to `0.9` (not
+openWakeWord's usual `0.5`) — see `heypeer/wakeword/train.py`'s module docstring
+for the evaluation behind that choice — override with `HEYPEER_WAKEWORD_THRESHOLD`.
 
 For a headless dev box without a tray host (no display), use the foreground
 console loop instead:
@@ -153,22 +160,30 @@ python -m heypeer.main --cli
 This always runs with capture and voice activation both on, and falls back to
 pressing Enter to simulate the wake word if no trained model is available.
 
-To train the real wake-word model:
+To regenerate the wake-word model (voices aren't committed — download them first):
 
 ```bash
-python -m heypeer.wakeword.generate_samples --voices <piper-voice.onnx> ...
+python -c "from piper import download_voices as d; from pathlib import Path; \
+  d.download_voice('en_US-lessac-medium', Path('data/wakeword/piper_voices'))"
+# repeat for en_US-amy-medium, en_US-ryan-medium (or other voices)
+
+python -m heypeer.wakeword.generate_samples --voices data/wakeword/piper_voices/*.onnx
+python -m heypeer.wakeword.generate_negatives --voices data/wakeword/piper_voices/*.onnx
 python -m heypeer.wakeword.augment
 python -m heypeer.wakeword.train --positive-dir ... --negative-dir ...
 ```
 
-See each script's docstring for details.
+See each script's docstring for details, and TODO.md for what the current model
+was actually trained/evaluated on (including a voice-leakage bug found and
+worked around — don't reintroduce a single voice used in both positive and
+negative sets without checking for this).
 
 ## Status
 
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 43+ tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 48 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), user confirmation, skill execution, and the tray
@@ -176,6 +191,14 @@ app/cursor indicator. Two full pipelines have been rehearsed end-to-end with rea
 files and real API calls: learn a file-sorting skill -> "Hey Peer, do N more" ->
 confirm -> real file move; and a direct one-off "déplace le fichier X vers Y" with
 no learned skill at all.
+
+The wake-word model has moved from "never trained" to **actually trained on real
+Piper-synthesized speech**, with a proper (if synthetic-only) held-out streaming
+evaluation — 100% recall / ~6.9% false-accept rate at the shipped 0.9 threshold. Two
+real training bugs were caught by that evaluation (not by held-out clip accuracy
+alone, which looked fine and hid both): missing alignment augmentation, and a
+single voice used in both classes leaking through as a shortcut. See TODO.md for
+the full story — and the model still hasn't been tested against a real human voice.
 
 The tray app + cursor indicator have been smoke-tested on a real Windows machine
 across three rounds, surfacing (and fixing) several real bugs — see TODO.md for the
@@ -199,7 +222,8 @@ full writeup of each:
 
 What's still *not* verified is anything needing real hardware/OS features this dev
 environment doesn't have:
-- `WakeWordListener.start()`'s live mic loop
+- `WakeWordListener.start()`'s live mic loop against a **real human voice** —
+  everything so far is synthetic-Piper-voice evaluation
 - The tray "Demander à Hey Peer..." dialog's actual on-screen appearance (fixed
   the threading bug behind it, but haven't seen it render for real)
 - The recolored-arrow cursor's actual on-screen shape/color — verified logically

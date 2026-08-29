@@ -25,7 +25,26 @@ TARGET_SR = 16000
 CLIP_SECONDS = 1.5
 
 
-def _load_clip(path: Path) -> np.ndarray:
+N_ALIGNMENT_VARIANTS = 4
+
+
+def _load_clip_variants(
+    path: Path, rng: np.random.Generator, n_variants: int = N_ALIGNMENT_VARIANTS
+) -> list[np.ndarray]:
+    """Loads a clip and places it at `n_variants` random offsets within the
+    fixed CLIP_SECONDS window, instead of always left-aligning it.
+
+    Left-aligning every training clip (word at t=0, silence padding at the
+    end) taught the classifier that specific alignment rather than the
+    word's actual acoustic content — great held-out accuracy on identically
+    left-aligned clips, but the real runtime listener feeds a continuously
+    sliding buffer that visits every alignment as speech moves through it,
+    and mis-aligned windows produced spurious high scores on prior versions
+    of this model (verified: a plain negative phrase padded with leading
+    silence — an alignment never seen in training — scored ~1.0 streamed,
+    but ~0.0 loaded left-aligned). Randomizing the offset during training
+    for both positive and negative clips directly targets that mismatch.
+    """
     # openWakeWord's melspectrogram model expects 16-bit PCM samples, not floats.
     audio, sr = sf.read(str(path), dtype="int16", always_2d=False)
     if audio.ndim > 1:
@@ -34,26 +53,36 @@ def _load_clip(path: Path) -> np.ndarray:
         raise ValueError(f"{path} is {sr} Hz, expected {TARGET_SR} Hz")
 
     target_len = int(CLIP_SECONDS * TARGET_SR)
-    if len(audio) < target_len:
-        audio = np.pad(audio, (0, target_len - len(audio)))
-    else:
+    if len(audio) > target_len:
         audio = audio[:target_len]
-    return audio
+    max_offset = target_len - len(audio)
+
+    variants = []
+    for _ in range(n_variants):
+        offset = int(rng.integers(0, max_offset + 1)) if max_offset > 0 else 0
+        clip = np.zeros(target_len, dtype=np.int16)
+        clip[offset : offset + len(audio)] = audio
+        variants.append(clip)
+    return variants
 
 
-def _embed_directory(wav_dir: Path, features: AudioFeatures) -> np.ndarray:
-    clips = [_load_clip(p) for p in sorted(wav_dir.glob("*.wav"))]
-    if not clips:
+def _embed_directory(
+    wav_dir: Path, features: AudioFeatures, rng: np.random.Generator
+) -> np.ndarray:
+    paths = sorted(wav_dir.glob("*.wav"))
+    if not paths:
         raise FileNotFoundError(f"No wav files found in {wav_dir}")
+    clips = [clip for p in paths for clip in _load_clip_variants(p, rng)]
     embeddings = features.embed_clips(np.stack(clips))
     # (n_clips, n_frames, emb_dim) -> average-pool frames into one vector per clip
     return embeddings.mean(axis=1)
 
 
-def train(positive_dir: Path, negative_dir: Path) -> tuple[MLPClassifier, int]:
+def train(positive_dir: Path, negative_dir: Path, seed: int = 0) -> tuple[MLPClassifier, int]:
     features = AudioFeatures()
-    pos = _embed_directory(positive_dir, features)
-    neg = _embed_directory(negative_dir, features)
+    rng = np.random.default_rng(seed)
+    pos = _embed_directory(positive_dir, features, rng)
+    neg = _embed_directory(negative_dir, features, rng)
 
     x = np.concatenate([pos, neg])
     y = np.concatenate([np.ones(len(pos)), np.zeros(len(neg))])

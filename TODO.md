@@ -209,11 +209,49 @@ each major implementation (per project convention).
 
 Requested by the user before signing off for the night on 2026-08-29:
 
-- [ ] **Real wake-word training** — actually run the Piper -> openWakeWord ->
-      ONNX pipeline (`heypeer/wakeword/generate_samples.py` / `augment.py` /
-      `train.py`, all built but never run for real "Hey Peer" audio) and
-      test live voice activation on the user's Windows machine/mic. This is
-      the last major piece of the original plan that's still simulated.
+- [x] **Real wake-word training** — done 2026-08-29. Downloaded 3 Piper
+      voices (en_US-lessac/amy/ryan-medium) via `piper.download_voices`,
+      generated 200 real "Hey Peer" positives and, after two rounds of
+      finding this inadequate (see below), 288 negatives (a large phrase
+      list + noise), augmented, and trained `data/wakeword/hey_peer.onnx`
+      (committed — it's ~16 KB, everything else under `data/wakeword/`
+      besides it is gitignored: voices are 240 MB+, samples are 38 MB+ of
+      generated wavs, both regeneratable from committed scripts).
+      Two real bugs found and fixed along the way by actually stress-testing
+      the trained model with simulated streaming (not just static held-out
+      accuracy, which looked fine at 96% and hid both problems):
+      - `train.py` always left-aligned clips (word at t=0, padding after),
+        so the classifier partly learned that specific alignment rather
+        than the word's content — added `_load_clip_variants()`, which
+        places each clip at a random offset within the window during
+        training so the model sees the word at many positions, matching
+        what a continuously sliding runtime buffer actually looks like.
+      - A single French Piper voice used for *both* positive and negative
+        synthesis caused severe leakage: 82% of that voice's negative
+        phrases false-accepted (median score 0.98) regardless of content,
+        vs 5-31% for the English voices — the model had partly learned
+        "sounds like this specific voice" instead of "hey peer" specifically
+        (plausibly because Piper phonemizes English text through a French
+        voice's own phonemizer, producing an unusual rendering). Dropped
+        that voice from training entirely rather than chase a fix tonight.
+      - Final measured numbers (synthetic held-out streaming evaluation,
+        200 positive / 288 negative clips, simulated sliding buffer): at the
+        shipped default threshold (0.9), **100% recall, ~6.9% false-accept
+        rate**; at 0.5 (openWakeWord's usual default) recall is the same but
+        FAR rises to ~14%. **This is synthetic-voice-only evaluation — real
+        human speech (especially the user's own voice/French accent) may
+        behave better or worse; the live mic test is the real verdict.**
+      - Added a temporary debug mode (`HEYPEER_WAKEWORD_DEBUG`, on by
+        default): live dB meter + score per chunk and the input device name
+        at startup, specifically so a "nothing happens" report can
+        distinguish a silent/wrong mic from a wake-word accuracy problem.
+      - Known limitation, not fixed tonight: only 3 English voices/accents
+        in the training data — no French-accented "Hey Peer" positives.
+        Real generalization to the user's actual accent is unverified.
+      - Regenerating: `python -m heypeer.wakeword.generate_samples`, then
+        `generate_negatives`, `augment`, `train` — see each script's
+        docstring; voices need re-downloading via
+        `piper.download_voices.download_voice`, not committed.
 - [ ] **A real UI**, beyond the tray icon — user wants something to look at
       and interact with beyond menu items. Needs a design conversation before
       coding: candidates are (a) a small always-available window (system

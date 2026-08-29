@@ -18,12 +18,26 @@ CLIP_SECONDS = 1.5
 CHUNK_SAMPLES = 1280  # 80ms chunks, openWakeWord's standard streaming granularity
 
 
+def chunk_dbfs(chunk: np.ndarray) -> float:
+    """RMS level of an int16 PCM chunk in dBFS (0 = full scale, more negative =
+    quieter; silence/no signal reads around -90 or lower)."""
+    if len(chunk) == 0:
+        return -120.0
+    rms = np.sqrt(np.mean(chunk.astype(np.float64) ** 2))
+    return float(20 * np.log10(rms / 32768 + 1e-9))
+
+
 class WakeWordListener:
     """Listens to the microphone and calls `on_detected` when "Hey Peer" is heard."""
 
-    def __init__(self, model_path: str, threshold: float = 0.5) -> None:
+    def __init__(self, model_path: str, threshold: float = 0.5, debug: bool = False) -> None:
         self.model_path = model_path
         self.threshold = threshold
+        # TEMPORARY: prints a live dB meter + score per chunk, and the input
+        # device name at startup, so mic hardware issues are obvious instead
+        # of "nothing happens, no idea why". Remove/gate more permanently
+        # once real wake-word detection is validated on real hardware.
+        self.debug = debug
         self._features = AudioFeatures()
         self._session = ort.InferenceSession(
             model_path, providers=["CPUExecutionProvider"]
@@ -49,6 +63,16 @@ class WakeWordListener:
 
         self._running = True
         pa = pyaudio.PyAudio()
+        if self.debug:
+            try:
+                info = pa.get_default_input_device_info()
+                print(
+                    f"[wakeword] Périphérique d'entrée : {info['name']} "
+                    f"(index {info['index']}, {int(info['defaultSampleRate'])} Hz natif)"
+                )
+            except Exception as exc:  # no default input device, permissions, etc.
+                print(f"[wakeword] Impossible de lire le périphérique d'entrée par défaut : {exc}")
+
         stream = pa.open(
             format=pyaudio.paInt16,
             channels=1,
@@ -56,11 +80,26 @@ class WakeWordListener:
             input=True,
             frames_per_buffer=CHUNK_SAMPLES,
         )
+        if self.debug:
+            print(f"[wakeword] Écoute démarrée (seuil de détection = {self.threshold}).")
         try:
             while self._running:
                 raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
                 chunk = np.frombuffer(raw, dtype=np.int16)
-                if self.process_chunk(chunk) >= self.threshold:
+                score = self.process_chunk(chunk)
+                if self.debug:
+                    dbfs = chunk_dbfs(chunk)
+                    bar_len = max(0, min(40, int((dbfs + 60) / 60 * 40)))
+                    print(
+                        f"\r[wakeword] {dbfs:6.1f} dBFS |{'#' * bar_len:<40}| "
+                        f"score={score:.2f}   ",
+                        end="",
+                        flush=True,
+                    )
+                if score >= self.threshold:
+                    if self.debug:
+                        print()  # move off the overwritten debug line
+                    print(f"[wakeword] Mot d'activation détecté (score={score:.2f}).")
                     on_detected()
         finally:
             stream.stop_stream()
