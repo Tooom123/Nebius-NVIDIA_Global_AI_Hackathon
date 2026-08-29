@@ -113,6 +113,7 @@ class WakeWordListener:
         # classifier actually learned.
         self._n_feature_frames = self._features.get_embedding_shape(CLIP_SECONDS)[0]
         self._running = False
+        self._debug_print_counter = 0
         # A single utterance of "Hey Peer" keeps the score above threshold
         # for several consecutive chunks (it's a plateau, not a single
         # spike) -- without debouncing, on_detected() fired once per chunk
@@ -222,13 +223,20 @@ class WakeWordListener:
                 if on_level is not None:
                     on_level(dbfs_to_level(dbfs), False)
                 if self.debug:
-                    bar_len = max(0, min(40, int(dbfs_to_level(dbfs) * 40)))
-                    print(
-                        f"\r[wakeword] {dbfs:6.1f} dBFS |{'#' * bar_len:<40}| "
-                        f"score={score:.2f}   ",
-                        end="",
-                        flush=True,
-                    )
+                    # Printing (with a flush) every single 80ms chunk was
+                    # measurably heavier on a slow terminal (Git Bash/MinTTY
+                    # in particular) than the actual scoring work itself --
+                    # every 3rd chunk (~240ms) still reads as live to a human
+                    # eye and cuts that console I/O by two thirds.
+                    self._debug_print_counter += 1
+                    if self._debug_print_counter % 3 == 0:
+                        bar_len = max(0, min(40, int(dbfs_to_level(dbfs) * 40)))
+                        print(
+                            f"\r[wakeword] {dbfs:6.1f} dBFS |{'#' * bar_len:<40}| "
+                            f"score={score:.2f}   ",
+                            end="",
+                            flush=True,
+                        )
                 if self._maybe_trigger(score):
                     if self.debug:
                         print()  # move off the overwritten debug line
