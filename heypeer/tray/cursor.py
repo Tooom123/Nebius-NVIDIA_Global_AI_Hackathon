@@ -9,9 +9,13 @@ The tinted cursor is built by extracting Windows' own default arrow cursor
 bitmap (via `GetIconInfo`/`GetDIBits` on the monochrome AND/XOR mask) and
 recoloring only its white fill pixels — the black outline, transparency, and
 exact silhouette are all preserved as-is, so this only changes color, never
-shape. This hasn't been exercised on a real Windows machine (this dev sandbox
-is Linux/headless); the win32 call sequence is unit-tested with a mocked
-`ctypes.windll`, but the actual on-screen result needs verifying for real.
+shape.
+
+Every win32 function used here gets explicit `argtypes`/`restype` — ctypes
+defaults undeclared arguments/return values to 32-bit `c_int`, which silently
+truncates real 64-bit handles/pointers on 64-bit Windows and raises
+`OverflowError: int too long to convert` the moment a handle happens to sit
+above 2**31 (which real HBITMAP/HCURSOR values from the heap routinely do).
 """
 
 import io
@@ -33,15 +37,11 @@ DIB_RGB_COLORS = 0
 BI_RGB = 0
 
 
-def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Image, tuple[int, int]]:
-    """Reads Windows' own default arrow cursor bitmap and returns a copy with
-    its white fill pixels replaced by `tint` — same shape, same outline, same
-    hotspot, only the color changes. Windows-only; must not be called
-    elsewhere."""
-    import ctypes
-    from ctypes import wintypes
+def _win32_structures(ctypes_mod, wintypes):
+    """Defines the ctypes Structures shared by extraction and DIB reading.
+    Kept in one place so both users stay in sync."""
 
-    class ICONINFO(ctypes.Structure):
+    class ICONINFO(ctypes_mod.Structure):
         _fields_ = [
             ("fIcon", wintypes.BOOL),
             ("xHotspot", wintypes.DWORD),
@@ -50,39 +50,106 @@ def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Ima
             ("hbmColor", wintypes.HBITMAP),
         ]
 
-    class BITMAP(ctypes.Structure):
+    class BITMAP(ctypes_mod.Structure):
         _fields_ = [
-            ("bmType", ctypes.c_long),
-            ("bmWidth", ctypes.c_long),
-            ("bmHeight", ctypes.c_long),
-            ("bmWidthBytes", ctypes.c_long),
+            ("bmType", ctypes_mod.c_long),
+            ("bmWidth", ctypes_mod.c_long),
+            ("bmHeight", ctypes_mod.c_long),
+            ("bmWidthBytes", ctypes_mod.c_long),
             ("bmPlanes", wintypes.WORD),
             ("bmBitsPixel", wintypes.WORD),
-            ("bmBits", ctypes.c_void_p),
+            ("bmBits", ctypes_mod.c_void_p),
         ]
 
-    class BITMAPINFOHEADER(ctypes.Structure):
+    class BITMAPINFOHEADER(ctypes_mod.Structure):
         _fields_ = [
             ("biSize", wintypes.DWORD),
-            ("biWidth", ctypes.c_long),
-            ("biHeight", ctypes.c_long),
+            ("biWidth", ctypes_mod.c_long),
+            ("biHeight", ctypes_mod.c_long),
             ("biPlanes", wintypes.WORD),
             ("biBitCount", wintypes.WORD),
             ("biCompression", wintypes.DWORD),
             ("biSizeImage", wintypes.DWORD),
-            ("biXPelsPerMeter", ctypes.c_long),
-            ("biYPelsPerMeter", ctypes.c_long),
+            ("biXPelsPerMeter", ctypes_mod.c_long),
+            ("biYPelsPerMeter", ctypes_mod.c_long),
             ("biClrUsed", wintypes.DWORD),
             ("biClrImportant", wintypes.DWORD),
         ]
 
-    class BITMAPINFO(ctypes.Structure):
+    class BITMAPINFO(ctypes_mod.Structure):
         _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
 
-    user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
+    return ICONINFO, BITMAP, BITMAPINFOHEADER, BITMAPINFO
 
-    hcursor = user32.LoadCursorW(None, IDC_ARROW)
+
+def _prepare_win32_functions(ctypes_mod, wintypes, ICONINFO):
+    """Declares argtypes/restype on every win32 entry point used in this
+    module. Must be called (idempotent, cheap) before any of them are
+    invoked — see module docstring for why this matters."""
+    user32 = ctypes_mod.windll.user32
+    gdi32 = ctypes_mod.windll.gdi32
+
+    user32.LoadCursorW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+    user32.LoadCursorW.restype = wintypes.HICON
+
+    user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes_mod.POINTER(ICONINFO)]
+    user32.GetIconInfo.restype = wintypes.BOOL
+
+    gdi32.GetObjectW.argtypes = [wintypes.HANDLE, ctypes_mod.c_int, ctypes_mod.c_void_p]
+    gdi32.GetObjectW.restype = ctypes_mod.c_int
+
+    user32.GetDC.argtypes = [wintypes.HWND]
+    user32.GetDC.restype = wintypes.HDC
+
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    user32.ReleaseDC.restype = ctypes_mod.c_int
+
+    gdi32.GetDIBits.argtypes = [
+        wintypes.HDC,
+        wintypes.HBITMAP,
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes_mod.c_void_p,
+        ctypes_mod.c_void_p,
+        wintypes.UINT,
+    ]
+    gdi32.GetDIBits.restype = ctypes_mod.c_int
+
+    gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+    gdi32.DeleteObject.restype = wintypes.BOOL
+
+    user32.LoadCursorFromFileW.argtypes = [wintypes.LPCWSTR]
+    user32.LoadCursorFromFileW.restype = wintypes.HICON
+
+    user32.SetSystemCursor.argtypes = [wintypes.HICON, wintypes.DWORD]
+    user32.SetSystemCursor.restype = wintypes.BOOL
+
+    user32.SystemParametersInfoW.argtypes = [
+        wintypes.UINT,
+        wintypes.UINT,
+        wintypes.LPVOID,
+        wintypes.UINT,
+    ]
+    user32.SystemParametersInfoW.restype = wintypes.BOOL
+
+    return user32, gdi32
+
+
+def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Image, tuple[int, int]]:
+    """Reads Windows' own default arrow cursor bitmap and returns a copy with
+    its white fill pixels replaced by `tint` — same shape, same outline, same
+    hotspot, only the color changes. Windows-only; must not be called
+    elsewhere."""
+    import ctypes
+    from ctypes import wintypes
+
+    ICONINFO, BITMAP, BITMAPINFOHEADER, BITMAPINFO = _win32_structures(ctypes, wintypes)
+    user32, gdi32 = _prepare_win32_functions(ctypes, wintypes, ICONINFO)
+
+    hcursor = user32.LoadCursorW(None, ctypes.cast(IDC_ARROW, wintypes.LPCWSTR))
+    if not hcursor:
+        raise OSError("LoadCursorW(IDC_ARROW) failed")
+
     icon_info = ICONINFO()
     if not user32.GetIconInfo(hcursor, ctypes.byref(icon_info)):
         raise OSError("GetIconInfo failed")
@@ -95,9 +162,9 @@ def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Ima
         # hbmMask stacks the AND mask on top of the XOR mask, each full-height.
         mono = not icon_info.hbmColor
         total_height = bmp.bmHeight
-        height = total_height // 2 if mono else total_height
         if not mono:
             raise OSError("Unexpected color cursor for IDC_ARROW")
+        height = total_height // 2
 
         bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
@@ -202,13 +269,19 @@ class CursorIndicator:
         if not self._supported:
             return
         import ctypes
+        from ctypes import wintypes
 
-        ctypes.windll.user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
+        ICONINFO, *_ = _win32_structures(ctypes, wintypes)
+        user32, _gdi32 = _prepare_win32_functions(ctypes, wintypes, ICONINFO)
+        user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
 
     def _apply_windows(self, active: bool) -> None:
         import ctypes
+        from ctypes import wintypes
 
-        user32 = ctypes.windll.user32
+        ICONINFO, *_ = _win32_structures(ctypes, wintypes)
+        user32, _gdi32 = _prepare_win32_functions(ctypes, wintypes, ICONINFO)
+
         if active:
             image, hotspot = _extract_recolored_arrow(ACTIVE_TINT)
             cursor_path = Path(tempfile.gettempdir()) / "heypeer_cursor_active.cur"

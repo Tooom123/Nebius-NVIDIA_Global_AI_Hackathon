@@ -156,6 +156,35 @@ each major implementation (per project convention).
         text goes through the exact same `_handle_instruction()` path as a
         real wake-word activation. Unit-tested with the dialog mocked; the
         real on-screen dialog is unverified in this sandbox.
+- [x] Round 2 of real-Windows bugs, fixed 2026-08-29:
+  - [x] **Cursor extraction crash**: `OverflowError: int too long to convert`
+        inside `GetObjectW`/`DeleteObject`. Root cause: none of the win32
+        function calls had `argtypes`/`restype` declared, so ctypes defaulted
+        handle arguments/return values to 32-bit `c_int` — silently
+        truncating real 64-bit pointers, which raises the moment a handle's
+        value happens to exceed 2**31 (routine for heap addresses on 64-bit
+        Windows). Fixed by explicitly declaring `argtypes`/`restype` (via
+        `ctypes.wintypes`) on every win32 entry point used
+        (`LoadCursorW`, `GetIconInfo`, `GetObjectW`, `GetDC`/`ReleaseDC`,
+        `GetDIBits`, `DeleteObject`, `LoadCursorFromFileW`, `SetSystemCursor`,
+        `SystemParametersInfoW`) in `_prepare_win32_functions()`.
+  - [x] **Broken prompt dialog** (`grab failed: another application has grab`,
+        couldn't type, wouldn't close): tray menu callbacks run *inside* the
+        native message-dispatch callback (on Windows, literally inside
+        WndProc) — creating/running a Tk modal there conflicts with the
+        outer message loop. Fixed by dispatching the dialog (and the
+        auto-mode toggle and quit handler, for the same reason) to their own
+        short-lived thread from `TrayApp`, instead of running inline in the
+        menu callback.
+  - [x] **"What does Mode auto even mean?"** — valid product question: the
+        toggle previously gated capture/learning, wake-word listening, *and*
+        the cursor together, which is confusing since capture never executes
+        anything on its own (confirmation always gates that). Redesigned per
+        the user's choice: `HeyPeer.start_capture()`/`stop_capture()` now run
+        natively at app launch, independent of the tray toggle. "Mode auto"
+        (renamed "Mode auto (écoute vocale)" in the menu) and the cursor
+        indicator are now specifically about wake-word listening readiness.
+        Regression-tested (`test_auto_mode_toggle_does_not_affect_capture`).
 - [ ] Submission polish
   - [x] README install/run instructions kept accurate as pieces land
   - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay

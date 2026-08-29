@@ -143,6 +143,27 @@ def test_move_file_intent_moves_the_named_file(tmp_path: Path) -> None:
     assert not (watched_dir / "facture.pdf").exists()
 
 
+def test_auto_mode_toggle_does_not_affect_capture(tmp_path: Path) -> None:
+    """Capture (skill learning) is native/always-on and must not be started
+    or stopped by the voice-activation ("Mode auto") toggle."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer.watcher.start = MagicMock()
+    peer.watcher.stop = MagicMock()
+
+    peer.start_capture()
+    peer.watcher.start.assert_called_once()
+
+    with patch.object(peer, "_run_wake_listener"):
+        peer._set_auto_mode(True)
+        peer._set_auto_mode(False)
+
+    peer.watcher.stop.assert_not_called()
+
+    peer.stop_capture()
+    peer.watcher.stop.assert_called_once()
+
+
 def test_move_file_intent_cancelled_does_not_move(tmp_path: Path) -> None:
     watched_dir = tmp_path / "Downloads"
     watched_dir.mkdir()
