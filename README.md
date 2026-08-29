@@ -171,9 +171,15 @@ that it really heard you, the way Siri/Alexa do, played on its own thread so it
 never delays the start of recording — and a
 visual indicator (`heypeer/tray/debug_window.py`) slides down from the top edge of
 the screen like a notification: a blue → violet → magenta gradient blob with an
-organic morphing silhouette, whose palette and morph speed shift per state and
-whose size tracks your live voice level. It slides back up and hides between
-turns, rather than sitting on screen permanently. Rendered via `pywebview` (the
+organic morphing silhouette, whose palette and drift speed shift per state and
+whose size swells with your live voice level. It slides back up and hides between
+turns, rather than sitting on screen permanently.
+
+It has genuinely no window border: the window is clipped every frame to the blob's
+own outline via `SetWindowRgn` with a polygon from `heypeer/tray/blob_shape.py`,
+which is also the *only* definition of the shape — the page paints a full-bleed
+gradient and clips nothing, so there is no second notion of the outline to drift
+out of sync with the region. Rendered via `pywebview` (the
 OS's own web view, WebView2 on Windows) loading
 `heypeer/tray/webui/conversation.html`, in its own OS process (not just a thread)
 specifically so that if window creation ever hangs or fails on some machine, the
@@ -239,7 +245,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 140 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 148 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with

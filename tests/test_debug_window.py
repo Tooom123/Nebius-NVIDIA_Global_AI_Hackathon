@@ -38,30 +38,30 @@ def test_set_level_clamps_to_0_1(fake_process: MagicMock) -> None:
     window = _make_window()
 
     window.set_level(1.5)
-    assert window._queue.put.call_args.args[0] == ("eval", "setLevel(1.0)")
+    assert window._queue.put.call_args.args[0] == ("level", 1.0)
 
     window.set_level(-0.5)
-    assert window._queue.put.call_args.args[0] == ("eval", "setLevel(0.0)")
+    assert window._queue.put.call_args.args[0] == ("level", 0.0)
 
 
-def test_set_state_queues_js_and_shows_for_an_active_state(fake_process: MagicMock) -> None:
+def test_set_state_forwards_the_state(fake_process: MagicMock) -> None:
     window = _make_window()
 
     window.set_state("recording")
 
-    calls = [c.args[0] for c in window._queue.put.call_args_list]
-    assert ("eval", 'setState("recording")') in calls
-    assert ("show", None) in calls
+    assert window._queue.put.call_args.args[0] == ("state", "recording")
 
 
-def test_set_state_hides_for_idle_and_listening(fake_process: MagicMock) -> None:
+def test_set_state_is_deduplicated(fake_process: MagicMock) -> None:
+    """Called from the audio callback on every chunk (~12x/second); an
+    unchanged state must not queue another window transition."""
     window = _make_window()
 
-    for state in ("idle", "listening"):
-        window._queue.reset_mock()
-        window.set_state(state)
-        calls = [c.args[0] for c in window._queue.put.call_args_list]
-        assert ("hide", None) in calls
+    window.set_state("recording")
+    window._queue.reset_mock()
+    window.set_state("recording")
+
+    window._queue.put.assert_not_called()
 
 
 def test_close_sends_quit(fake_process: MagicMock) -> None:
@@ -70,6 +70,16 @@ def test_close_sends_quit(fake_process: MagicMock) -> None:
     window.close()
 
     assert window._queue.put.call_args.args[0] == ("quit", None)
+
+
+def test_visible_states_cover_an_active_turn_only() -> None:
+    """The indicator appears when Hey Peer has actually heard something, and
+    is hidden while merely listening."""
+    from heypeer.tray.debug_window import _VISIBLE_STATES
+
+    assert {"recording", "thinking", "speaking"} == _VISIBLE_STATES
+    assert "listening" not in _VISIBLE_STATES
+    assert "idle" not in _VISIBLE_STATES
 
 
 def test_send_swallows_queue_errors(fake_process: MagicMock) -> None:

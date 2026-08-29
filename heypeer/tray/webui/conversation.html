@@ -21,67 +21,50 @@
     overflow: hidden;
     user-select: none;
   }
-  .stage {
-    width: 100%;
-    height: 100%;
-    /* Slides in from above the screen edge, like a notification dropping
-       down; `visible` is toggled from Python. */
-    transform: translateY(-130%);
-    transition: transform 0.52s cubic-bezier(0.22, 1.2, 0.36, 1);
-  }
-  .stage.visible { transform: translateY(0); }
 
-  /* Fills the window edge to edge on purpose: the window itself is clipped
-     to an inscribed ellipse by SetWindowRgn (see debug_window.py), so the
-     circle the user sees is the window's own silhouette. Anything not
-     painted here would show as a grey gap inside that circle. */
+  /* Full-bleed on purpose: this page never defines the blob's outline. The
+     window itself is clipped to the blob silhouette every frame by
+     SetWindowRgn (see debug_window.py), so anything painted outside that
+     outline simply isn't part of the window. Clipping here as well would
+     mean two independent notions of the shape, which is exactly the bug the
+     region-driven design removes — and any area this doesn't paint would
+     show through as the window's grey background instead. */
   .blob {
     position: absolute;
     inset: 0;
     background:
-      radial-gradient(circle at 30% 28%,
-        color-mix(in srgb, #ffffff 22%, transparent) 0%,
-        transparent 45%),
-      linear-gradient(135deg, var(--c1) 0%, var(--c2) 52%, var(--c3) 100%);
+      /* Off-centre highlight, so the volume reads as lit from one side
+         rather than as a flat disc. */
+      radial-gradient(circle at 32% 26%,
+        rgba(255, 255, 255, 0.30) 0%,
+        rgba(255, 255, 255, 0.10) 26%,
+        transparent 55%),
+      linear-gradient(135deg, var(--c1) 0%, var(--c2) 50%, var(--c3) 100%);
+    background-size: 160% 160%, 190% 190%;
     animation: drift var(--drift-speed) ease-in-out infinite;
-    transition: background 0.5s ease, filter 0.11s ease-out;
-    /* Brightness swells with the voice. This is what makes it read as
-       reacting, since the outline is fixed by the window region and can't
-       pulse in size. */
-    filter: brightness(calc(1 + var(--level) * 0.55))
-            saturate(calc(1 + var(--level) * 0.5));
-  }
-  /* Slow internal motion so it never looks like a flat static disc. */
-  @keyframes drift {
-    0%, 100% { background-position: 0% 50%, 0% 50%; transform: rotate(0deg) scale(1.08); }
-    50%      { background-position: 100% 50%, 100% 50%; transform: rotate(9deg) scale(1.14); }
+    /* Brightness lifts with the voice. The *size* reaction lives in the
+       window region (blob_shape.blob_points takes the level), so this only
+       has to add the glow, not fake the motion. */
+    filter: brightness(calc(1 + var(--level) * 0.42))
+            saturate(calc(1 + var(--level) * 0.45));
+    transition: filter 0.12s ease-out, background 0.5s ease;
   }
 
-  /* A soft inner rim that brightens with the voice — adds depth without
-     touching the silhouette. */
-  .rim {
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    pointer-events: none;
-    box-shadow:
-      inset 0 0 calc(18px + var(--level) * 30px)
-        color-mix(in srgb, #ffffff calc(14% + var(--level) * 26%), transparent),
-      inset 0 0 6px rgba(0, 0, 0, 0.18);
-    transition: box-shadow 0.11s ease-out;
+  /* Slow internal drift of the gradients, independent of the outline's own
+     morphing — together they keep it from ever looking static. */
+  @keyframes drift {
+    0%, 100% { background-position: 20% 30%, 0% 50%; }
+    50%      { background-position: 70% 65%, 100% 50%; }
   }
 </style>
 </head>
 <body>
-  <div class="stage" id="stage">
-    <div class="blob" id="blob"></div>
-    <div class="rim"></div>
-  </div>
+  <div class="blob" id="blob"></div>
 
 <script>
-  // Only the palette and drift speed change per state — the shape stays
-  // identical, so transitions read as the same object reacting rather than
-  // a different indicator appearing.
+  // Palette and drift speed per state. The silhouette is identical across
+  // states, so transitions read as one object reacting rather than a
+  // different indicator appearing.
   const STATE_STYLE = {
     idle:      { c1: "#3a4a60", c2: "#4a4a6a", c3: "#6a4a7a", speed: "12s" },
     listening: { c1: "#4f8cff", c2: "#7b4dff", c3: "#e040fb", speed: "9s" },
@@ -90,7 +73,6 @@
     speaking:  { c1: "#5fa8ff", c2: "#a05cff", c3: "#ff6ae0", speed: "5s" },
   };
 
-  const stage = document.getElementById("stage");
   const root = document.documentElement;
 
   function setLevel(level) {
@@ -104,12 +86,6 @@
     root.style.setProperty("--c3", style.c3);
     root.style.setProperty("--drift-speed", style.speed);
     if (state !== "recording") setLevel(0);
-  }
-
-  // Drives the slide-in/out. Called from Python alongside show()/hide() so
-  // the animation actually plays before the window is hidden again.
-  function setVisible(visible) {
-    stage.classList.toggle("visible", visible);
   }
 
   setState("idle");
