@@ -165,16 +165,16 @@ still shows a real (detached) tray icon so "Quitter" works as a stop button
 instead of Task Manager. **The actual conversation (wake word detected, instruction
 heard, resolved intent, result) is logged to the terminal.** A short chime plays
 the instant "Hey Peer" is detected (before the instruction is even recorded) —
-audible confirmation that it really heard you, the way Siri/Alexa do — and only
-then does a minimal visual indicator (`heypeer/tray/debug_window.py`) appear: a
-small white circle with an Apple-style colored accent, flush against the top edge
-of the screen, with animated wave rings radiating outward while
-recording/thinking/speaking (rendered via `pywebview` — the OS's own web view,
-WebView2 on Windows — loading `heypeer/tray/webui/conversation.html`). It's hidden
-the rest of the time, not a persistent always-on-screen widget. Runs in its own OS
-process (not just a thread) specifically so that if window creation ever hangs or
-fails on some machine, the rest of Hey Peer keeps running unaffected instead of the
-whole app freezing with it.
+audible confirmation that it really heard you, the way Siri/Alexa do — and a
+visual indicator (`heypeer/tray/debug_window.py`) slides down from the top edge of
+the screen like a notification: a blue → violet → magenta gradient blob with an
+organic morphing silhouette, whose palette and morph speed shift per state and
+whose size tracks your live voice level. It slides back up and hides between
+turns, rather than sitting on screen permanently. Rendered via `pywebview` (the
+OS's own web view, WebView2 on Windows) loading
+`heypeer/tray/webui/conversation.html`, in its own OS process (not just a thread)
+specifically so that if window creation ever hangs or fails on some machine, the
+rest of Hey Peer keeps running unaffected instead of the whole app freezing.
 
 Hey Peer mutes its own wake-word listening (`WakeWordListener.mute()`/`unmute()`) for
 the whole duration of a turn — from the instant a wake word is detected through
@@ -191,6 +191,19 @@ Local transcription (`heypeer/wakeword/stt.py`) uses faster-whisper's "small" mo
 with a French-biased prompt and voice-activity filtering (`vad_filter=True`) — after
 "base" produced both garbled short words/filenames and outright hallucinated
 sentences over background noise with no real speech in them.
+
+**Wake-word detection is a two-stage cascade**, the same architecture real
+always-listening assistants use. The small always-on ONNX detector only *proposes*:
+because it was trained on synthetic speech only (see Status below), it fires on
+plenty of ordinary speech, and no threshold separates that from real activations —
+its false-positive scores are higher than many true positives. So the listener also
+keeps a 2-second rolling prebuffer (the wake word is already over by the time
+detection fires), and `heypeer/wakeword/verify.py` *confirms* against the Whisper
+transcript that the audio really opens with something sounding like "Hey Peer"
+before anything is acted on. Matching is fuzzy and normalized rather than a list of
+spellings, since Whisper renders it "Hey Pierre" / "Hey, Peer." / "hey pir"
+depending on accent and audio quality. The same step strips the wake word out of
+the instruction, which previously leaked into what Nemotron saw.
 
 To regenerate the wake-word model (voices aren't committed — download them first):
 
@@ -215,7 +228,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 109 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 127 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
