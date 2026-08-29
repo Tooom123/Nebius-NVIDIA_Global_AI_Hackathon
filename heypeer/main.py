@@ -317,6 +317,16 @@ def run_cli() -> None:
             while True:
                 input()
                 peer.on_wake_word()
+        else:
+            # The listener runs in its own thread and blocks there until
+            # stopped — without this, the function would just fall through
+            # to `finally` and tear everything down a moment after it
+            # started (a real bug: the previous 0.5s-timeout race almost
+            # always took the "unavailable" branch above instead, whose own
+            # `while True` loop accidentally kept the process alive, masking
+            # this).
+            print('Écoute vocale active - Ctrl+C pour quitter.')
+            peer._wake_thread.join()
     finally:
         peer._on_quit()
 
