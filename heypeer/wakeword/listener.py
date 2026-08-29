@@ -77,6 +77,12 @@ def chunk_dbfs(chunk: np.ndarray) -> float:
     return float(20 * np.log10(rms / 32768 + 1e-9))
 
 
+def dbfs_to_level(dbfs: float) -> float:
+    """Normalizes dBFS to a 0-1 range for the UI's audio-reactive circle
+    (same -60..0 dBFS window the console debug meter already uses)."""
+    return max(0.0, min(1.0, (dbfs + 60) / 60))
+
+
 def save_wav(audio: np.ndarray, path) -> None:
     """Writes recorded int16 mono PCM audio to a 16kHz wav file."""
     import soundfile as sf
@@ -142,7 +148,9 @@ class WakeWordListener:
         self._features(chunk)
         return self._score()
 
-    def _record_instruction(self, stream) -> np.ndarray:
+    def _record_instruction(
+        self, stream, on_level: "Callable[[float, bool], None] | None" = None
+    ) -> np.ndarray:
         """Records audio right after a wake-word trigger, on the same open
         mic stream, until the user stops talking or a max-duration safety
         cap is hit. Wake-word scoring is paused for this stretch — it's
@@ -156,7 +164,10 @@ class WakeWordListener:
             raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
             chunk = np.frombuffer(raw, dtype=np.int16)
             frames.append(chunk)
-            if chunk_dbfs(chunk) > SPEECH_DBFS_THRESHOLD:
+            dbfs = chunk_dbfs(chunk)
+            if on_level is not None:
+                on_level(dbfs_to_level(dbfs), True)
+            if dbfs > SPEECH_DBFS_THRESHOLD:
                 speech_started = True
                 speech_chunks += 1
                 quiet_run = 0
@@ -170,7 +181,15 @@ class WakeWordListener:
                 break
         return np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
 
-    def start(self, on_detected: Callable[[np.ndarray], None]) -> None:
+    def start(
+        self,
+        on_detected: Callable[[np.ndarray], None],
+        on_level: "Callable[[float, bool], None] | None" = None,
+    ) -> None:
+        """`on_level(level, recording)` — level normalized 0-1 (see
+        `dbfs_to_level`), `recording` True while capturing the instruction
+        after a trigger, False while just scanning for the wake word. Meant
+        to drive a live audio-reactive UI element; optional."""
         import pyaudio
 
         self._running = True
@@ -199,9 +218,11 @@ class WakeWordListener:
                 raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
                 chunk = np.frombuffer(raw, dtype=np.int16)
                 score = self.process_chunk(chunk)
+                dbfs = chunk_dbfs(chunk)
+                if on_level is not None:
+                    on_level(dbfs_to_level(dbfs), False)
                 if self.debug:
-                    dbfs = chunk_dbfs(chunk)
-                    bar_len = max(0, min(40, int((dbfs + 60) / 60 * 40)))
+                    bar_len = max(0, min(40, int(dbfs_to_level(dbfs) * 40)))
                     print(
                         f"\r[wakeword] {dbfs:6.1f} dBFS |{'#' * bar_len:<40}| "
                         f"score={score:.2f}   ",
@@ -212,7 +233,7 @@ class WakeWordListener:
                     if self.debug:
                         print()  # move off the overwritten debug line
                     print(f"[wakeword] Mot d'activation detecte (score={score:.2f}).")
-                    instruction_audio = self._record_instruction(stream)
+                    instruction_audio = self._record_instruction(stream, on_level=on_level)
                     print(
                         f"[wakeword] Instruction enregistree "
                         f"({len(instruction_audio) / SAMPLE_RATE:.1f}s)."

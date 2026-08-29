@@ -10,6 +10,7 @@ from heypeer.wakeword.listener import (
     WakeWordListener,
     _ensure_openwakeword_models,
     chunk_dbfs,
+    dbfs_to_level,
     save_wav,
 )
 from heypeer.wakeword.train import export_onnx, train
@@ -177,6 +178,27 @@ def test_record_instruction_stops_after_trailing_silence(toy_model: Path) -> Non
 
     # Stopped well before exhausting the fake stream's trailing loud chunks.
     assert len(audio) < CHUNK_SAMPLES * 30
+
+
+def test_dbfs_to_level_is_clamped_to_0_1() -> None:
+    assert dbfs_to_level(-120) == 0.0
+    assert dbfs_to_level(0) == 1.0
+    assert 0.0 < dbfs_to_level(-30) < 1.0
+
+
+def test_record_instruction_reports_level_with_recording_true(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model))
+    chunks = [_loud_chunk()] * 4 + [_quiet_chunk()] * 15
+    stream = _FakeStream(chunks)
+    levels = []
+
+    listener._record_instruction(stream, on_level=lambda level, recording: levels.append(
+        (level, recording)
+    ))
+
+    assert len(levels) > 0
+    assert all(recording is True for _level, recording in levels)
+    assert all(0.0 <= level <= 1.0 for level, _recording in levels)
 
 
 def test_record_instruction_respects_max_duration_cap(toy_model: Path) -> None:

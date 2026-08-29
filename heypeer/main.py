@@ -184,12 +184,25 @@ class HeyPeer:
         """Speaks `text` aloud (Piper TTS) — best-effort: a TTS failure
         (missing audio output device, voice download failure, ...) must
         never block the actual confirm/execute flow."""
+        if self.debug_window is not None:
+            self.debug_window.set_state("speaking")
         try:
             from heypeer.tray.tts import speak
 
             speak(text)
         except Exception as exc:
             print(f"[tts] Speak failed: {exc}")
+        finally:
+            if self.debug_window is not None:
+                self.debug_window.set_state("listening")
+
+    def _on_audio_level(self, level: float, recording: bool) -> None:
+        """Forwards live mic level (and whether it's mid-instruction-
+        recording) to the conversation window's audio-reactive circle."""
+        if self.debug_window is None:
+            return
+        self.debug_window.set_level(level)
+        self.debug_window.set_state("recording" if recording else "listening")
 
     def _run_wake_listener(self) -> None:
         try:
@@ -217,7 +230,9 @@ class HeyPeer:
         # Signal readiness *before* entering the blocking mic loop below,
         # which only returns once stop() is called.
         self._wake_ready.set()
-        self._wake_listener.start(on_detected=self._on_wake_detected)
+        if self.debug_window is not None:
+            self.debug_window.set_state("listening")
+        self._wake_listener.start(on_detected=self._on_wake_detected, on_level=self._on_audio_level)
 
     def _on_wake_detected(self, audio: np.ndarray) -> None:
         """Called from the wake-word audio thread once a detection fires and
@@ -231,6 +246,8 @@ class HeyPeer:
             self._wake_listener.stop()
             self._wake_listener = None
         self.cursor.reset()
+        if self.debug_window is not None:
+            self.debug_window.set_state("idle")
 
     def _on_quit(self) -> None:
         self._stop_voice()
@@ -261,12 +278,14 @@ class HeyPeer:
 
     def on_wake_word(self, audio: np.ndarray | None = None) -> None:
         """Handles one wake-word turn. If real recorded audio is given (the
-        normal case once a mic is available), it's routed straight to
-        Nemotron's omni `interpret()` - no separate speech-to-text step.
-        Otherwise falls back to typed text via `get_instruction()` (manual
-        Enter-key simulation, the tray prompt, tests). Must be called from a
-        thread where blocking is safe - see module docstring."""
+        normal case once a mic is available), it's transcribed locally then
+        sent to Nemotron (see `_interpret_audio` for why not native audio
+        input). Otherwise falls back to typed text via `get_instruction()`
+        (manual Enter-key simulation, the tray prompt, tests). Must be
+        called from a thread where blocking is safe - see module docstring."""
         self._log("Hey Peer detected.")
+        if self.debug_window is not None:
+            self.debug_window.set_state("thinking")
         try:
             if audio is not None and len(audio) > 0:
                 intent = self._interpret_audio(audio)

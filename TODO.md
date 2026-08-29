@@ -342,18 +342,28 @@ real UI" — an actual interaction design):
       picking the right file out of a mixed watched-folder listing.
       `interpret()` itself is left in the codebase (commented on why it's
       unused) in case the Nebius deployment adds audio support later.
-- [ ] **Corner popup UI on wake-word detection** — a first, debug-oriented
-      step toward this landed already (`heypeer/tray/debug_window.py`, logs
-      the conversation live), but it's a plain scrolling text log, not the
-      polished per-turn floating window described below — that's still open:
-      a modern light-mode floating window appears in a screen corner the
-      moment "Hey Peer"
-      fires, live-transcribing what's said (like OS dictation UI), closing
-      once the instruction is captured. Needs a design pass: candidates are
-      a lightweight always-on-top Tk/PyQt window, or a small local web view.
-      Should reuse/replace the existing "Demander à Hey Peer..." tkinter
-      dialog rather than duplicate it — that one is manual-trigger-only
-      today, this one is wake-word-triggered.
+- [x] **Conversation window with an audio-reactive circle** — done
+      2026-08-30. `heypeer/tray/debug_window.py` evolved from a plain
+      scrolling log into a small always-on-top window: a Tk Canvas circle
+      above the transcript, whose radius/color react to state and live mic
+      level — grey/still when idle, gently "breathing" while listening,
+      growing with the actual input level while recording an instruction,
+      breathing again (different colors) while thinking/speaking. This is a
+      deliberately simplified take on "voice mode"-style UIs — a Canvas
+      oval with linear-interpolated smoothing, not a shader/glow blob;
+      called out explicitly so nobody mistakes it for more than it is.
+      `WakeWordListener.start()`/`_record_instruction()` gained an optional
+      `on_level(level, recording)` callback (0-1 normalized, `recording`
+      distinguishes "still scanning for the wake word" from "capturing the
+      instruction") to drive it. Verified running for real in this sandbox
+      (state/level transitions exercised without crashing) — the visual
+      result (does it actually look decent trying to react smoothly) is
+      unverified, no way to eyeball a Tk window from here.
+      Still open, if the plain conversation window isn't enough: a true
+      per-turn *popup* window that appears in a screen corner specifically
+      on wake-word detection and closes after, rather than one persistent
+      window — and reusing/replacing the "Demander à Hey Peer..." tkinter
+      dialog (manual-trigger-only today) with this one (wake-word-triggered).
 - [x] **Spoken confirmation (TTS)** — done 2026-08-30, alongside (not instead
       of) the existing text confirm prompt. `heypeer/tray/tts.py` wraps Piper
       (already a dependency, chosen specifically for "léger" — local, fast on
