@@ -5,13 +5,19 @@ chosen here for being local, fast on CPU, and reasonably natural-sounding
 ("léger" was an explicit requirement) rather than adding a second, heavier
 TTS engine.
 
+Defaults to a French voice since the user speaks French natively and all of
+Hey Peer's own spoken confirmations (`heypeer/main.py`) are phrased in
+French; Whisper transcription of the user's *own* instructions still
+auto-detects English just fine (see `heypeer/wakeword/stt.py`), so English
+input still works even though Hey Peer's spoken replies are French-first.
+
 Auto-downloads a default voice if none is available yet, mirroring
 `heypeer/wakeword/listener.py`'s `_ensure_openwakeword_models()`.
 """
 
 from pathlib import Path
 
-DEFAULT_VOICE_NAME = "en_US-lessac-medium"
+DEFAULT_VOICE_NAME = "fr_FR-siwis-medium"
 VOICES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "wakeword" / "piper_voices"
 
 _voice = None

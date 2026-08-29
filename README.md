@@ -31,8 +31,11 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
    that doesn't need any learned skill at all (e.g. "déplace le fichier facture
    vers Archives" — grounded against the watched folder's actual file listing), or
    report the instruction as unrecognized.
-5. The user is shown exactly what will be done and must explicitly confirm before
-   anything executes — no exception for direct actions either.
+5. The user is shown (and told out loud, in French by default) exactly what will be
+   done, and must explicitly confirm before anything executes — no exception for
+   direct actions either. A real spoken wake-word activation confirms **by voice**
+   (say "oui"/"yes" or "non"/"no" after Hey Peer asks); the tray's manual typed
+   prompt still uses a console y/N since there's no mic context to react to there.
 6. Once confirmed, it's carried out — via direct filesystem operations for
    file-organizing skills and direct file moves, or mouse/keyboard automation with a
    visual check between steps for anything else. The tray icon turns blue while
@@ -99,7 +102,8 @@ heypeer/
 │                   # and a watchdog-based file-move watcher (demo scenario)
 ├── patterns/       # repeated-sequence detector + JSON-backed skill memory
 ├── nemotron/       # Nebius Token Factory client for Nemotron 3 Nano Omni
-├── confirmation/   # user confirmation gate (CLI)
+├── confirmation/   # user confirmation gate (voice, after a real spoken wake-word
+│                   # activation; console y/N as a fallback for typed prompts)
 ├── executor/       # automated replay: pyautogui for input skills, direct
 │                   # filesystem ops (shutil) for file-move skills
 ├── tray/           # system tray icon (voice-activation toggle, live status,

@@ -39,6 +39,12 @@ INSTRUCTION_SILENCE_CHUNKS = 10  # ~0.8s of trailing silence ends the recording
 INSTRUCTION_MIN_SPEECH_CHUNKS = 3
 SPEECH_DBFS_THRESHOLD = -40.0  # chunks louder than this count as "speech"
 
+# Same end-pointing, tuned shorter for a one-word spoken yes/no confirmation
+# reply rather than a full instruction.
+CONFIRMATION_MAX_SECONDS = 4.0
+CONFIRMATION_SILENCE_CHUNKS = 6  # ~0.5s trailing silence - a short reply needs less patience
+CONFIRMATION_MIN_SPEECH_CHUNKS = 2
+
 
 def _ensure_openwakeword_models() -> None:
     """openWakeWord's melspectrogram/embedding ONNX models are bundled in
@@ -88,6 +94,72 @@ def save_wav(audio: np.ndarray, path) -> None:
     import soundfile as sf
 
     sf.write(str(path), audio, SAMPLE_RATE, subtype="PCM_16")
+
+
+def _record_with_vad(
+    stream,
+    max_seconds: float,
+    silence_chunks: int,
+    min_speech_chunks: int,
+    on_level: "Callable[[float, bool], None] | None" = None,
+) -> np.ndarray:
+    """Shared energy-based end-pointing loop behind both `_record_instruction`
+    (reuses the wake-word listener's already-open stream) and
+    `record_voice_reply` (opens its own short-lived stream) — same idea,
+    different timing constants for a full instruction vs. a short yes/no."""
+    frames = []
+    speech_started = False
+    speech_chunks = 0
+    quiet_run = 0
+    max_chunks = int(max_seconds * SAMPLE_RATE / CHUNK_SAMPLES)
+    for _ in range(max_chunks):
+        raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
+        chunk = np.frombuffer(raw, dtype=np.int16)
+        frames.append(chunk)
+        dbfs = chunk_dbfs(chunk)
+        if on_level is not None:
+            on_level(dbfs_to_level(dbfs), True)
+        if dbfs > SPEECH_DBFS_THRESHOLD:
+            speech_started = True
+            speech_chunks += 1
+            quiet_run = 0
+        elif speech_started:
+            quiet_run += 1
+        if speech_started and speech_chunks >= min_speech_chunks and quiet_run >= silence_chunks:
+            break
+    return np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
+
+
+def record_voice_reply(on_level: "Callable[[float, bool], None] | None" = None) -> np.ndarray:
+    """Records a brief spoken reply (a yes/no confirmation) on its own
+    short-lived mic stream. Doesn't reuse the wake-word listener's own
+    stream — confirmation is handled on a different thread than the
+    continuously-running wake-word audio loop (see main.py's module
+    docstring on why `on_detected` only enqueues rather than handling things
+    inline), and only needs the mic for a couple of seconds, not
+    continuously."""
+    import pyaudio
+
+    pa = pyaudio.PyAudio()
+    stream = pa.open(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=SAMPLE_RATE,
+        input=True,
+        frames_per_buffer=CHUNK_SAMPLES,
+    )
+    try:
+        return _record_with_vad(
+            stream,
+            CONFIRMATION_MAX_SECONDS,
+            CONFIRMATION_SILENCE_CHUNKS,
+            CONFIRMATION_MIN_SPEECH_CHUNKS,
+            on_level,
+        )
+    finally:
+        stream.stop_stream()
+        stream.close()
+        pa.terminate()
 
 
 class WakeWordListener:
@@ -156,31 +228,13 @@ class WakeWordListener:
         mic stream, until the user stops talking or a max-duration safety
         cap is hit. Wake-word scoring is paused for this stretch — it's
         the instruction being captured, not more "Hey Peer"s to detect."""
-        frames = []
-        speech_started = False
-        speech_chunks = 0
-        quiet_run = 0
-        max_chunks = int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
-        for _ in range(max_chunks):
-            raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
-            chunk = np.frombuffer(raw, dtype=np.int16)
-            frames.append(chunk)
-            dbfs = chunk_dbfs(chunk)
-            if on_level is not None:
-                on_level(dbfs_to_level(dbfs), True)
-            if dbfs > SPEECH_DBFS_THRESHOLD:
-                speech_started = True
-                speech_chunks += 1
-                quiet_run = 0
-            elif speech_started:
-                quiet_run += 1
-            if (
-                speech_started
-                and speech_chunks >= INSTRUCTION_MIN_SPEECH_CHUNKS
-                and quiet_run >= INSTRUCTION_SILENCE_CHUNKS
-            ):
-                break
-        return np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
+        return _record_with_vad(
+            stream,
+            INSTRUCTION_MAX_SECONDS,
+            INSTRUCTION_SILENCE_CHUNKS,
+            INSTRUCTION_MIN_SPEECH_CHUNKS,
+            on_level,
+        )
 
     def start(
         self,

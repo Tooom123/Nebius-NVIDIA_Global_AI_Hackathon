@@ -501,6 +501,55 @@ or measured in this sandbox, not profiled on a real end-to-end turn on
 Windows. If it still feels slow after all of the above, the next step is
 timing each stage for real rather than guessing further.
 
+### Voice confirmation, French-first TTS, and console-noise fix (2026-08-29)
+
+Real-hardware testing surfaced three concrete complaints: couldn't confirm an
+action *by voice* (only by typing into the console), the console felt noisy
+("moins loud" - less heavy) while listening, and Hey Peer's spoken
+confirmations should be French by default.
+
+- [x] **Voice-based confirmation**. Previously `confirm()` was always a
+      console `input()` y/N prompt, even after a real spoken wake-word
+      activation with a mic already in use - awkward, and the actual
+      complaint here. Added `heypeer/confirmation/voice.py`
+      (`parse_confirmation(text)`, recognizing French - oui/non/vas-y/
+      d'accord/annule/arrete - and English - yes/no/sure/cancel - tokens,
+      returns `None` for an unclear reply) and
+      `heypeer.wakeword.listener.record_voice_reply()` (a short, ~4s VAD
+      recording tuned for a one-word reply rather than a full instruction).
+      `HeyPeer._confirm()` picks voice vs. the console gate based on whether
+      the current turn started from real mic audio
+      (`_last_turn_was_voice`) - the tray's manual typed prompt has no mic
+      context to react to, so it still falls back to typing y/N. An unclear
+      or failed voice reply defaults to "no" (safer than assuming yes).
+      `_record_instruction`'s VAD loop was refactored into a shared
+      `_record_with_vad()` helper so the two recording paths (a full
+      instruction vs. a short yes/no) don't duplicate the end-pointing logic.
+      Unit-tested (parsing, dispatch-by-turn-type, error handling); the
+      actual live-mic round trip is unverified here, same as the rest of
+      this project's audio-hardware-dependent code.
+- [x] **French-first spoken responses**. `heypeer/tray/tts.py`'s default
+      Piper voice switched from `en_US-lessac-medium` to `fr_FR-siwis-medium`
+      (auto-downloads on first use, same as before); every `_speak(...)`
+      call in `main.py` rephrased in French ("Je vais faire : ... Tu
+      confirmes ?", "C'est fait.", "Je me suis arrete..."), plus a new
+      spoken "Je n'ai pas compris cette instruction." for the
+      previously-silent unrecognized-intent case. The user's own spoken
+      *input* still works in English too - Whisper auto-detects language
+      regardless (see `heypeer/wakeword/stt.py`), and `parse_confirmation`
+      accepts both languages for the yes/no reply itself. Console log text
+      (`_log`) is untouched/still English+ASCII - this only changes what's
+      actually spoken aloud.
+- [x] **Console noise**: `HEYPEER_WAKEWORD_DEBUG` now defaults to **off**
+      (was on) - the live per-chunk dB meter was interleaving with actual
+      conversation output (wake-word/instruction/confirmation logs from a
+      different thread), reported as making the console "moins fluide".
+      Wake-word detection is now confirmed reliable on real hardware (0.93-
+      1.00 scores across multiple real utterances), so the meter's original
+      purpose - diagnosing "nothing happens, is the mic even working" - is
+      no longer the common case. Set `HEYPEER_WAKEWORD_DEBUG=1` to bring it
+      back if a mic issue needs diagnosing again.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
