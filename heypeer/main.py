@@ -14,11 +14,15 @@ Two independent PatternDetectors are used — one for generic input events
 can't spuriously "complete" a file-move pattern with the wrong actions, or
 have a file move interrupt a click-sequence pattern.
 
-By default this runs as a background app with a system tray icon (`TrayApp`):
-the "Mode auto" menu toggle arms/disarms the whole pipeline (capture watchers +
-wake-word listener) and drives the colored-cursor indicator (`CursorIndicator`).
-Pass `--cli` to instead run the old foreground console loop, useful for
-headless dev boxes without a tray host.
+By default this runs as a background app with a system tray icon (`TrayApp`).
+Capture (learning skills from repeated action sequences / file moves) starts
+natively as soon as the app launches — it's passive observation and nothing
+ever executes from it without a separate, explicit confirmation, so there's no
+real "off" state worth having for it. The "Mode auto" tray toggle and the
+colored-cursor indicator are about something narrower: whether Hey Peer is
+actually listening for the wake word and able to act on it. Pass `--cli` to
+instead run the old foreground console loop, useful for headless dev boxes
+without a tray host.
 """
 
 import argparse
@@ -87,17 +91,31 @@ class HeyPeer:
         self._wake_listener = None
         self._wake_thread: threading.Thread | None = None
 
-    def _set_auto_mode(self, enabled: bool) -> None:
-        self.cursor.set_active(enabled)
-        if enabled:
-            self._start_pipeline()
-        else:
-            self._stop_pipeline()
-
-    def _start_pipeline(self) -> None:
+    def start_capture(self) -> None:
+        """Starts passive skill-learning capture (input events + file moves).
+        Native/always-on: called once at app startup, independent of the
+        "Mode auto" voice-activation toggle, since observation alone never
+        executes anything without a separate confirmation."""
         self.watcher.start()
         if self.file_watcher is not None:
             self.file_watcher.start()
+
+    def stop_capture(self) -> None:
+        self.watcher.stop()
+        if self.file_watcher is not None:
+            self.file_watcher.stop()
+
+    def _set_auto_mode(self, enabled: bool) -> None:
+        """"Mode auto": is Hey Peer listening for the wake word and able to
+        act on it. Drives the cursor indicator too — capture/learning is
+        unaffected, see `start_capture`."""
+        self.cursor.set_active(enabled)
+        if enabled:
+            self._start_voice()
+        else:
+            self._stop_voice()
+
+    def _start_voice(self) -> None:
         self._wake_thread = threading.Thread(target=self._run_wake_listener, daemon=True)
         self._wake_thread.start()
 
@@ -112,23 +130,20 @@ class HeyPeer:
             self._wake_listener.start(on_detected=self.on_wake_word)
         except (FileNotFoundError, OSError) as exc:
             print(
-                f'Wake-word listener unavailable ({exc}). Mode auto actif '
-                "mais sans activation vocale — le tri de fichiers reste surveillé "
-                '(utilise "Demander à Hey Peer..." dans le menu pour donner une '
-                "instruction sans micro)."
+                f'Wake-word listener unavailable ({exc}). Mode auto actif mais '
+                'sans activation vocale (utilise "Demander à Hey Peer..." dans '
+                "le menu pour donner une instruction sans micro)."
             )
 
-    def _stop_pipeline(self) -> None:
-        self.watcher.stop()
-        if self.file_watcher is not None:
-            self.file_watcher.stop()
+    def _stop_voice(self) -> None:
         if self._wake_listener is not None:
             self._wake_listener.stop()
             self._wake_listener = None
         self.cursor.reset()
 
     def _on_quit(self) -> None:
-        self._stop_pipeline()
+        self._stop_voice()
+        self.stop_capture()
 
     def _on_input_event(self, event: ActionEvent) -> None:
         skill = self.detector.observe(event)
@@ -235,8 +250,9 @@ def _build_peer() -> HeyPeer:
 def run_tray() -> None:
     """Default entry point: a background app living in the system tray.
 
-    "Mode auto" in the tray menu arms/disarms capture + wake-word listening
-    and the colored-cursor indicator. `TrayApp.run()` blocks the calling
+    Capture (skill learning) starts immediately — see `HeyPeer.start_capture`.
+    "Mode auto" in the tray menu arms/disarms wake-word listening and the
+    colored-cursor indicator specifically. `TrayApp.run()` blocks the calling
     thread with the tray's own event loop, so it must be called last, from
     the main thread.
 
@@ -246,17 +262,20 @@ def run_tray() -> None:
     """
     peer = _build_peer()
     atexit.register(peer.cursor.reset)
-    print("Icône dans la zone de notification. Active « Mode auto » pour démarrer.")
+    peer.start_capture()
+    print("Apprentissage de skills actif en arrière-plan.")
+    print("Icône dans la zone de notification. Active « Mode auto » pour l'écoute vocale.")
     print('Menu "Demander à Hey Peer..." disponible pour tester sans micro.')
     peer.tray.run()
 
 
 def run_cli() -> None:
     """Foreground console loop — no tray/GUI needed, useful for headless dev
-    boxes. Auto mode is always on; Enter simulates the wake word if no
-    trained wake-word model is available."""
+    boxes. Capture and voice/auto mode are both always on; Enter simulates
+    the wake word if no trained wake-word model is available."""
     peer = _build_peer()
     atexit.register(peer.cursor.reset)
+    peer.start_capture()
     peer._set_auto_mode(True)
 
     try:
@@ -268,7 +287,7 @@ def run_cli() -> None:
                 input()
                 peer.on_wake_word()
     finally:
-        peer._stop_pipeline()
+        peer._on_quit()
 
 
 def main() -> None:
