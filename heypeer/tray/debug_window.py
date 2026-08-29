@@ -1,112 +1,90 @@
-"""A small always-on-top window showing Hey Peer's conversation live:
-a circle that pulses with mic input while recording (a simplified take on
-"voice mode" style UIs — no shader/glow effects, just a Tk Canvas oval whose
-radius and color react to state and audio level) above a scrolling
-transcript of the interaction (wake word detected, instruction heard,
-resolved intent, confirmation, result).
+"""A small always-on-top window showing Hey Peer's conversation live: a
+pulsing orb that reacts to state and live mic level, above a scrolling
+transcript — rendered as a real HTML/CSS/JS page (`webui/conversation.html`)
+via `pywebview` (the OS's native web view — WebView2 on Windows, already
+present on Windows 10/11, no extra runtime to ship) instead of a Tkinter
+Canvas.
 
-Runs its own dedicated Tk mainloop in a background thread; other threads
-push updates through thread-safe queues that the Tk loop polls periodically
-via `root.after(...)` — Tkinter widgets must only ever be touched from the
-thread running their mainloop.
+The first version of this window used Tkinter, which the user flagged as
+looking dated and "not viable for a real product" — fair: Tk's default
+widget styling is hard to make look modern. A real web page gets proper
+CSS (gradients, blur/glassmorphism, transitions, animations) essentially
+for free, while staying lightweight since it reuses the OS's own browser
+engine rather than bundling one.
+
+Runs in its own **process**, not a thread. A thread-based version was tried
+first and, in this project's Linux dev sandbox, `webview.create_window()`
+hung the *entire interpreter* — including unrelated threads — apparently
+because the native call never releases the GIL while stuck (no GTK/WebKit
+backend available there). Whether that specific failure mode can also
+happen on Windows/WebView2 is unverified, but a full-process hang taking
+down all of Hey Peer with it is bad enough to guard against regardless:
+`multiprocessing.Process.start()` returns to the caller almost immediately
+no matter what the child ends up doing, so the main app can never be stuck
+waiting on this window.
 """
 
-import math
-import queue
-import threading
-import time
+import json
+import multiprocessing
+from pathlib import Path
 
-# (fill color, base radius, "breathes" on its own without live audio level)
-STATE_STYLE = {
-    "idle": ("#bdbdbd", 20, False),
-    "listening": ("#4a90d9", 24, True),
-    "recording": ("#2ecc71", 24, False),  # radius driven by live level instead
-    "thinking": ("#f39c12", 26, True),
-    "speaking": ("#9b59b6", 28, True),
-}
-MAX_LEVEL_RADIUS_BOOST = 34
-POLL_MS = 50
+HTML_PATH = Path(__file__).resolve().parent / "webui" / "conversation.html"
+
+
+def _window_process(command_queue: "multiprocessing.Queue") -> None:
+    """Runs in the child process: creates the window, then pumps `command_queue`
+    (JS snippets to evaluate) via pywebview's own background-thread hook so its
+    event loop still owns this process's main thread."""
+    import webview
+
+    window = webview.create_window(
+        "Hey Peer",
+        url=str(HTML_PATH),
+        width=380,
+        height=480,
+        frameless=True,
+        easy_drag=True,
+        on_top=True,
+        transparent=True,
+        resizable=False,
+    )
+
+    def pump_commands(_window) -> None:
+        while True:
+            js = command_queue.get()  # blocks until the next command or sentinel
+            if js is None:
+                _window.destroy()
+                return
+            try:
+                _window.evaluate_js(js)
+            except Exception:
+                pass  # window mid-close, page not ready yet, etc.
+
+    webview.start(pump_commands, window)
 
 
 class DebugWindow:
     def __init__(self) -> None:
-        self._log_queue: queue.Queue[str] = queue.Queue()
-        self._level = 0.0
-        self._state = "idle"
-        self._lock = threading.Lock()
-        self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        self._ready.wait(timeout=5)
+        self._queue: multiprocessing.Queue = multiprocessing.Queue()
+        self._process = multiprocessing.Process(
+            target=_window_process, args=(self._queue,), daemon=True
+        )
+        self._process.start()
+
+    def _send(self, js: str) -> None:
+        try:
+            self._queue.put(js)
+        except Exception:
+            pass  # queue closed / process gone — never let a UI hiccup break the app
 
     def log(self, message: str) -> None:
-        self._log_queue.put(message)
+        self._send(f"log({json.dumps(message)})")
 
     def set_level(self, level: float) -> None:
-        with self._lock:
-            self._level = max(0.0, min(1.0, level))
+        self._send(f"setLevel({float(max(0.0, min(1.0, level)))})")
 
     def set_state(self, state: str) -> None:
-        with self._lock:
-            self._state = state if state in STATE_STYLE else "idle"
+        self._send(f"setState({json.dumps(state)})")
 
-    def _run(self) -> None:
-        import tkinter as tk
-
-        root = tk.Tk()
-        root.title("Hey Peer")
-        root.attributes("-topmost", True)
-        root.geometry("420x420+40+40")
-        root.configure(bg="white")
-
-        canvas_size = 160
-        canvas = tk.Canvas(root, width=canvas_size, height=canvas_size, bg="white", highlightthickness=0)
-        canvas.pack(pady=(12, 4))
-        cx = cy = canvas_size / 2
-        circle = canvas.create_oval(cx - 20, cy - 20, cx + 20, cy + 20, fill="#bdbdbd", outline="")
-
-        text = tk.Text(root, wrap="word", state="disabled", bg="white", fg="black", bd=0)
-        text.pack(fill="both", expand=True, padx=8, pady=8)
-
-        current_radius = 20.0
-
-        def poll() -> None:
-            nonlocal current_radius
-            try:
-                while True:
-                    line = self._log_queue.get_nowait()
-                    text.configure(state="normal")
-                    text.insert("end", line + "\n")
-                    text.see("end")
-                    text.configure(state="disabled")
-            except queue.Empty:
-                pass
-
-            with self._lock:
-                state, level = self._state, self._level
-            color, base_radius, breathes = STATE_STYLE[state]
-            if state == "recording":
-                target_radius = base_radius + level * MAX_LEVEL_RADIUS_BOOST
-            elif breathes:
-                # A gentle idle pulse so "listening"/"thinking"/"speaking"
-                # read as alive even without a live audio level to react to.
-                target_radius = base_radius + 4 * math.sin(time.time() * 3)
-            else:
-                target_radius = base_radius
-            # Smooth toward the target instead of jumping, so it reads as a
-            # pulse rather than a flicker.
-            current_radius += (target_radius - current_radius) * 0.3
-            canvas.coords(
-                circle,
-                cx - current_radius,
-                cy - current_radius,
-                cx + current_radius,
-                cy + current_radius,
-            )
-            canvas.itemconfigure(circle, fill=color)
-
-            root.after(POLL_MS, poll)
-
-        self._ready.set()
-        root.after(POLL_MS, poll)
-        root.mainloop()
+    def close(self) -> None:
+        self._send(None)
