@@ -51,12 +51,34 @@
     transition: background-color 0.3s ease;
   }
   .orb-wrap {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
+    height: 100px;
     padding: 8px 0 4px 0;
   }
+  .wave-ring {
+    position: absolute;
+    width: 84px;
+    height: 84px;
+    border-radius: 50%;
+    border: 2px solid var(--orb-color-1);
+    opacity: 0;
+    pointer-events: none;
+    animation: wave 2.6s ease-out infinite;
+    animation-play-state: paused;
+  }
+  .orb-wrap.waving .wave-ring {
+    animation-play-state: running;
+  }
+  @keyframes wave {
+    0% { transform: scale(1); opacity: 0.5; }
+    100% { transform: scale(2.3); opacity: 0; }
+  }
   .orb {
+    position: relative;
+    z-index: 1;
     width: 84px;
     height: 84px;
     border-radius: 50%;
@@ -106,6 +128,22 @@
     background: rgba(0, 0, 0, 0.15);
     border-radius: 3px;
   }
+
+  /* Siri/voice-assistant orbs read as white-on-dark or blue/grey-on-light -
+     the card follows the OS theme instead of committing to one look. */
+  @media (prefers-color-scheme: dark) {
+    .card {
+      background: rgba(28, 30, 36, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .titlebar { color: #c7d0dc; }
+    .bubble {
+      color: #e7ebf1;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .bubble.you { background: rgba(122, 179, 255, 0.22); }
+    .transcript::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); }
+  }
 </style>
 </head>
 <body>
@@ -114,7 +152,12 @@
       <span id="status-label">Hey Peer</span>
       <span class="dot" id="status-dot"></span>
     </div>
-    <div class="orb-wrap"><div class="orb breathe" id="orb"></div></div>
+    <div class="orb-wrap" id="orb-wrap">
+      <div class="wave-ring" style="animation-delay: 0s"></div>
+      <div class="wave-ring" style="animation-delay: 0.7s"></div>
+      <div class="wave-ring" style="animation-delay: 1.4s"></div>
+      <div class="orb breathe" id="orb"></div>
+    </div>
     <div class="transcript" id="transcript"></div>
   </div>
 
@@ -128,6 +171,7 @@
   };
 
   const orb = document.getElementById("orb");
+  const orbWrap = document.getElementById("orb-wrap");
   const dot = document.getElementById("status-dot");
   const statusLabel = document.getElementById("status-label");
   const transcript = document.getElementById("transcript");
@@ -142,6 +186,7 @@
     root.style.setProperty("--orb-color-1", style.c1);
     root.style.setProperty("--orb-color-2", style.c2);
     orb.classList.toggle("breathe", style.breathe);
+    orbWrap.classList.toggle("waving", state !== "idle");
     dot.style.background = style.c1;
     statusLabel.textContent = style.label;
     if (state !== "recording") setLevel(0);

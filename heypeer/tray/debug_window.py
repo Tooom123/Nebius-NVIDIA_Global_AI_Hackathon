@@ -31,17 +31,32 @@ from pathlib import Path
 HTML_PATH = Path(__file__).resolve().parent / "webui" / "conversation.html"
 
 
+WINDOW_WIDTH = 380
+WINDOW_HEIGHT = 480
+TOP_MARGIN = 24  # px from the top of the screen - Siri-style assistants sit near an edge, not centered
+
+
 def _window_process(command_queue: "multiprocessing.Queue") -> None:
     """Runs in the child process: creates the window, then pumps `command_queue`
     (JS snippets to evaluate) via pywebview's own background-thread hook so its
     event loop still owns this process's main thread."""
     import webview
 
+    x, y = None, None  # None lets pywebview fall back to its own default placement
+    try:
+        screen = webview.screens[0]
+        x = max(0, (screen.width - WINDOW_WIDTH) // 2)
+        y = TOP_MARGIN
+    except Exception:
+        pass  # screen info unavailable on this backend - not worth failing window creation over
+
     window = webview.create_window(
         "Hey Peer",
         url=str(HTML_PATH),
-        width=380,
-        height=480,
+        width=WINDOW_WIDTH,
+        height=WINDOW_HEIGHT,
+        x=x,
+        y=y,
         frameless=True,
         easy_drag=True,
         on_top=True,

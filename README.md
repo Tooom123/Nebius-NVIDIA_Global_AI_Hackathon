@@ -167,8 +167,11 @@ still shows a real (detached) tray icon so "Quitter" works as a stop button
 instead of Task Manager. Both modes also open a small always-on-top
 conversation window (`heypeer/tray/debug_window.py`) — a glassmorphism-styled
 page (`heypeer/tray/webui/conversation.html`) rendered via `pywebview`
-(the OS's own web view, WebView2 on Windows) with a pulsing orb that reacts to
-state and live mic level, above a scrolling transcript of the conversation —
+(the OS's own web view, WebView2 on Windows), positioned at the top-center of
+the screen: a Siri-style pulsing orb with animated wave rings radiating
+outward while listening/thinking/speaking, reacting to state and live mic
+level, above a scrolling transcript of the conversation — automatically
+switches to a dark palette on a dark OS theme —
 logging each interaction live: wake word detected, instruction heard, resolved
 intent, confirmation, result. It runs in its own OS process (not just a
 thread) specifically so that if window creation ever hangs or fails on some
