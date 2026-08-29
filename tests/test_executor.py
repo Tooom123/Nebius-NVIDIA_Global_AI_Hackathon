@@ -20,7 +20,7 @@ def fake_pyautogui(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 from heypeer.capture.events import ActionEvent, ActionType  # noqa: E402
-from heypeer.executor.runner import ExecutionAborted, SkillRunner  # noqa: E402
+from heypeer.executor.runner import ExecutionAborted, SkillRunner, move_single_file  # noqa: E402
 from heypeer.patterns.skill import Skill  # noqa: E402
 
 
@@ -131,3 +131,20 @@ def test_run_file_move_skill_aborts_if_not_enough_matching_files(tmp_path: Path)
     runner = SkillRunner(step_delay=0)
     with pytest.raises(ExecutionAborted):
         runner.run(skill, n_repetitions=5)
+
+
+def test_move_single_file_creates_dest_dir_and_moves(tmp_path: Path) -> None:
+    src = tmp_path / "facture.pdf"
+    src.write_text("x")
+    dest_dir = tmp_path / "Archives"  # doesn't exist yet
+
+    result = move_single_file(src, dest_dir)
+
+    assert result == dest_dir / "facture.pdf"
+    assert result.exists()
+    assert not src.exists()
+
+
+def test_move_single_file_missing_source_aborts(tmp_path: Path) -> None:
+    with pytest.raises(ExecutionAborted):
+        move_single_file(tmp_path / "does_not_exist.pdf", tmp_path / "Archives")

@@ -21,14 +21,23 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
    same form, renaming/sorting the same files) and stores them as reusable "skills".
 4. Once activated, the user's spoken instruction plus a screenshot of the current
    screen are sent to **Nemotron 3 Nano Omni**, hosted on **Nebius Token Factory**,
-   which reasons over audio + vision + text to produce a structured intent
-   (`{action, skill_id, n_repetitions, ...}`).
+   which reasons over audio + vision + text to produce a structured intent.
+   Nemotron picks one of: replay a learned skill, do a **direct one-off action**
+   that doesn't need any learned skill at all (e.g. "déplace le fichier facture
+   vers Archives" — grounded against the watched folder's actual file listing), or
+   report the instruction as unrecognized.
 5. The user is shown exactly what will be done and must explicitly confirm before
-   anything executes.
-6. Once confirmed, the matched skill is replayed — via direct filesystem operations
-   for file-organizing skills, or mouse/keyboard automation with a visual check
-   between steps for anything else. The tray icon turns blue while a skill is
-   replaying, so the current status is always visible from the hidden-icons area.
+   anything executes — no exception for direct actions either.
+6. Once confirmed, it's carried out — via direct filesystem operations for
+   file-organizing skills and direct file moves, or mouse/keyboard automation with a
+   visual check between steps for anything else. The tray icon turns blue while
+   something is running, so the current status is always visible from the
+   hidden-icons area.
+
+For quick testing or debugging without a mic, the tray menu also has a **"Demander
+à Hey Peer..."** item that opens a small text-input dialog and feeds it through the
+exact same interpretation → confirmation → execution path as a real wake-word
+activation.
 
 ## Why
 
@@ -45,6 +54,14 @@ destination — and learns it as a skill. Saying "Hey Peer, do 4 more" replays i
 moving the next 4 matching files straight through the filesystem (`shutil.move`), not
 by simulating clicks — so it's robust to the file manager window being anywhere on
 screen, or not even open.
+
+Alongside that, Hey Peer can also handle a **single named file directly**, with no
+repetition and no learned skill involved at all ("déplace le fichier facture vers
+Archives") — pure Nemotron reasoning grounded against the real filenames in the
+watched folder. As a safety constraint, the destination is always resolved as a
+subfolder *of the watched directory* (created if it doesn't exist), so a
+misunderstood or ambiguous instruction can't write outside it — and it still goes
+through the same confirmation gate as everything else.
 
 ## Architecture
 
@@ -145,28 +162,32 @@ See each script's docstring for details.
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 34 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 43+ tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), user confirmation, skill execution, and the tray
-app/cursor indicator. The full pipeline (learn a file-sorting skill -> "Hey Peer, do
-N more" -> real Nemotron call -> confirm -> real file move) has been rehearsed
-end-to-end with real files and a real API call.
+app/cursor indicator. Two full pipelines have been rehearsed end-to-end with real
+files and real API calls: learn a file-sorting skill -> "Hey Peer, do N more" ->
+confirm -> real file move; and a direct one-off "déplace le fichier X vers Y" with
+no learned skill at all.
 
-What's *not* verified is anything needing real hardware/OS features this dev
-environment didn't have — a microphone, a real display/window manager, real Piper
-voices, or an actual Windows machine:
+The tray app + cursor indicator have now been smoke-tested on a real Windows
+machine, which surfaced (and fixed) three real bugs: `ActivityWatcher` and
+`FileOpWatcher` were sharing one pattern detector, so mouse noise during a
+drag-and-drop could produce a bogus click-based "skill" that silently ate the real
+file-move pattern; the hand-drawn cursor shape looked wrong (now recolors Windows'
+actual arrow bitmap instead of drawing an approximation); and quitting via the tray
+menu never actually reset the cursor. See TODO.md for the full writeup.
+
+What's still *not* verified is anything needing real hardware/OS features this dev
+environment doesn't have:
 - `WakeWordListener.start()`'s live mic loop
-- `ActivityWatcher.start()`'s live input loop
-- `SkillRunner`'s pyautogui-based replay path (the file-move replay path *is*
-  verified — it only touches the filesystem)
-- The colored-cursor indicator: the Win32 call sequence is unit-tested with a
-  mocked `ctypes.windll`, but the actual on-screen cursor swap has never been seen
-  on a real Windows machine, and there is currently **no cursor-color support at
-  all on macOS/Linux** — `set_active()` there just logs and no-ops
-- The system tray icon itself constructs and updates correctly headless in this
-  sandbox (via pystray's X11 backend), but its actual on-screen appearance in a
-  real "hidden icons" tray (Windows) or menu bar (macOS) hasn't been seen
+- The tray "Demander à Hey Peer..." dialog's actual on-screen appearance
+- **Ctrl+C does not reliably stop the tray app on Windows** — this is a pystray/
+  Win32 message-loop limitation, not a bug to fix; use the tray menu's "Quitter"
+  instead, which also resets the cursor
+- There is still **no cursor-color support at all on macOS/Linux** —
+  `set_active()` there just logs and no-ops
 
 ## Ethics & privacy notes
 

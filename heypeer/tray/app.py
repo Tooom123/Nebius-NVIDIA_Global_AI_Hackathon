@@ -37,11 +37,13 @@ class TrayApp:
         self,
         on_auto_mode_change: Callable[[bool], None] | None = None,
         on_quit: Callable[[], None] | None = None,
+        on_prompt: Callable[[str], None] | None = None,
     ) -> None:
         self.status = Status.OFF
         self.auto_mode = False
         self._on_auto_mode_change = on_auto_mode_change
         self._on_quit = on_quit
+        self._on_prompt = on_prompt
         self.icon = pystray.Icon(
             "hey_peer",
             icon=make_icon_image(Status.OFF.value),
@@ -51,12 +53,22 @@ class TrayApp:
                 pystray.MenuItem(
                     "Mode auto", self._toggle_auto_mode, checked=lambda _item: self.auto_mode
                 ),
+                pystray.MenuItem("Demander à Hey Peer...", self._prompt),
                 pystray.MenuItem("Quitter", self._quit),
             ),
         )
 
     def _toggle_auto_mode(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
         self.set_auto_mode(not self.auto_mode)
+
+    def _prompt(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
+        if self._on_prompt is None:
+            return
+        from heypeer.tray.prompt import ask_instruction
+
+        text = ask_instruction()
+        if text:
+            self._on_prompt(text)
 
     def _quit(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
         if self._on_quit is not None:

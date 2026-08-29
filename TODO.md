@@ -104,6 +104,58 @@ each major implementation (per project convention).
         documented default, and toggling auto mode with a missing watched
         directory used to crash the whole toggle instead of just skipping
         file-move detection for that session.
+- [x] Bugs found on the user's real Windows machine (first real hardware
+      test), fixed 2026-08-29:
+  - [x] **Detector cross-contamination**: `ActivityWatcher` (clicks/keys) and
+        `FileOpWatcher` (file moves) fed the *same* `PatternDetector`, so
+        mouse activity during a real drag-and-drop could spuriously
+        "complete" an unrelated click-based pattern, clearing the buffer and
+        producing a bogus skill that replayed stale click coordinates and
+        did nothing visible. Fixed by giving `HeyPeer` two independent
+        detectors (`detector` for input events, `file_detector` for file
+        moves) — regression-tested in `test_main.py`.
+  - [x] **Cursor shape**: the hand-drawn arrow polygon looked wrong on real
+        Windows. Replaced with `_extract_recolored_arrow()`, which reads
+        Windows' own default arrow cursor bitmap via `GetIconInfo`/
+        `GetDIBits` and recolors only its white fill pixels — exact shape,
+        outline, and hotspot preserved, only the color changes. Per the
+        user's request, cursor *shape* work stops here; only color changes
+        for now.
+  - [x] **Cursor never reset on quit**: `_stop_pipeline()` (called by the
+        tray's "Quitter") never reset the cursor at all — real bug, not just
+        a crash-recovery gap. Fixed: `_stop_pipeline` now calls
+        `cursor.reset()`. Also added a defensive `cursor.reset()` at
+        `HeyPeer` construction (clears a stale override left by a previous
+        crashed run) and `atexit.register(peer.cursor.reset)` in both entry
+        points, as defense-in-depth for exits Python can still catch.
+        `CursorIndicator.reset()` is new — unlike `set_active(False)`, it's
+        unconditional, not gated on the instance having seen `active=True`.
+  - [x] Documented (not "fixed", since it's a platform limitation): Ctrl+C
+        can't reliably interrupt pystray's native Windows message loop — the
+        tray menu's "Quitter" is the reliable way to exit. Gave the user an
+        immediate manual PowerShell one-liner to reset a stuck cursor
+        independent of the app's state.
+- [x] "Pure logic" direct file moves — no learned skill required
+  - [x] `Intent` gained `src_filename`/`dest_folder` fields and a `move_file`
+        action; `NemotronClient.interpret_text` now accepts an optional
+        `watched_files` listing so Nemotron can ground "the file X" against
+        real filenames instead of guessing one.
+  - [x] `move_single_file()` (executor) performs the actual move; destination
+        is always resolved as a subfolder *of the watched directory* (created
+        if needed) — a deliberate safety constraint so a hallucinated or
+        ambiguous destination can't write outside it. Still goes through the
+        same `confirm()` gate as skill replay — no exception to "confirm
+        before acting".
+  - [x] Verified against the live Nebius API: "déplace le fichier facture
+        vers Archives" correctly resolved `facture_mars.pdf` out of a listing
+        that also contained `notes.txt`/`photo.jpg`, and the file actually
+        moved on disk in an end-to-end (non-mocked) run.
+- [x] Tray "Demander à Hey Peer..." prompt for debugging without a mic
+  - [x] `heypeer/tray/prompt.py` opens a native tkinter text-input dialog;
+        wired into `TrayApp` as a new menu item and into `HeyPeer` so typed
+        text goes through the exact same `_handle_instruction()` path as a
+        real wake-word activation. Unit-tested with the dialog mocked; the
+        real on-screen dialog is unverified in this sandbox.
 - [ ] Submission polish
   - [x] README install/run instructions kept accurate as pieces land
   - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay

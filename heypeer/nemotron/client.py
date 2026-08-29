@@ -28,17 +28,34 @@ unexpected dialog, a different app in focus, an error message).
 SYSTEM_PROMPT = """\
 You are Hey Peer, a personal automation assistant. The user has just spoken a \
 command after saying the wake word "Hey Peer". You are given: (1) the user's \
-transcribed/spoken instruction, (2) a screenshot of their current screen, and \
+transcribed/spoken instruction, (2) a screenshot of their current screen, \
 (3) a list of previously learned "skills" — repeated action sequences the user \
-has performed before, each with an id and a human-readable name.
+has performed before, each with an id and a human-readable name, and \
+(4) optionally, the filenames currently present in the watched folder.
 
-Decide what the user wants and respond with ONLY a JSON object of the form:
-{"action": "<one of: run_skill, unknown>", \
-"skill_id": "<id of the matching skill from the list, or null>", \
+Decide what the user wants and respond with ONLY a JSON object of one of these
+forms:
+
+- To replay a learned skill:
+  {"action": "run_skill", "skill_id": "<id from the list>", \
 "n_repetitions": <integer, how many more times to run it, default 1>}
 
-If the instruction doesn't match any known skill, use "action": "unknown" and \
-"skill_id": null.
+- To move/organize ONE specific file the user named directly (no repetition,
+  no learned skill involved — e.g. "déplace le fichier facture vers Archives"):
+  {"action": "move_file", \
+"src_filename": "<the exact filename from the watched-folder listing that \
+best matches what the user described>", \
+"dest_folder": "<a short destination folder name, e.g. 'Archives' — an \
+existing subfolder if one clearly matches, otherwise a new short name>"}
+  Only use this when a specific single file and destination are named. Only
+  pick src_filename from the filenames actually given to you — never invent
+  one.
+
+- If neither applies:
+  {"action": "unknown"}
+
+Always include every key shown for the chosen form; use null for any you
+don't have a value for.
 """
 
 
@@ -51,7 +68,9 @@ def _parse_intent(raw_content: str) -> Intent:
     return Intent(
         action=data["action"],
         skill_id=data.get("skill_id"),
-        n_repetitions=int(data.get("n_repetitions", 1)),
+        n_repetitions=int(data.get("n_repetitions") or 1),
+        src_filename=data.get("src_filename"),
+        dest_folder=data.get("dest_folder"),
     )
 
 
@@ -62,9 +81,19 @@ class NemotronClient:
             api_key=settings.nebius_api_key, base_url=settings.nebius_base_url
         )
 
-    def interpret_text(self, instruction_text: str, skill_context: list[dict]) -> Intent:
+    def interpret_text(
+        self,
+        instruction_text: str,
+        skill_context: list[dict],
+        watched_files: list[str] | None = None,
+    ) -> Intent:
         """Text-only path — validates the prompt/skill-matching logic before
         wiring in real audio + screenshots."""
+        files_block = (
+            f"\nFiles currently in the watched folder: {json.dumps(watched_files)}"
+            if watched_files is not None
+            else ""
+        )
         response = self._client.chat.completions.create(
             model=self.settings.nemotron_model_id,
             messages=[
@@ -74,6 +103,7 @@ class NemotronClient:
                     "content": (
                         f"Instruction: {instruction_text}\n"
                         f"Known skills: {_skill_context_block(skill_context)}"
+                        f"{files_block}"
                     ),
                 },
             ],
