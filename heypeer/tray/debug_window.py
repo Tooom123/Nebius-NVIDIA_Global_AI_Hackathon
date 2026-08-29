@@ -13,6 +13,17 @@ conversation transcript entirely and keep only the circle, since the actual
 conversation is easier to follow in the terminal log anyway (see
 `HeyPeer._log`, which just prints - no `debug_window.log()` any more).
 
+Real bug reported after this rendered on actual Windows hardware: "a square
+persists around" the circle instead of a borderless orb. Windows' DWM draws
+a native drop shadow behind frameless windows by default, which reads as a
+rectangular halo around anything smaller/transparent inside it — pywebview
+exposes `shadow=False` on `create_window` specifically to disable this, now
+passed here. `webview.start()` is also given `gui="edgechromium"` explicitly,
+so if backend auto-detection ever silently fell back to the legacy MSHTML/IE
+engine (which doesn't support `transparent` at all and would paint an opaque
+rectangle — also consistent with the reported symptom), it now fails loudly
+instead of degrading quietly.
+
 Runs in its own **process**, not a thread. A thread-based version was tried
 first and, in this project's Linux dev sandbox, `webview.create_window()`
 hung the *entire interpreter* — including unrelated threads — apparently
@@ -63,6 +74,7 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
         on_top=True,
         transparent=True,
         resizable=False,
+        shadow=False,
     )
 
     def pump_commands(_window) -> None:
@@ -76,7 +88,14 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
             except Exception:
                 pass  # window mid-close, page not ready yet, etc.
 
-    webview.start(pump_commands, window)
+    # gui="edgechromium" forces the modern WebView2 backend rather than
+    # letting pywebview silently fall back to the legacy MSHTML/IE engine if
+    # backend auto-detection ever fails — MSHTML doesn't support
+    # `transparent` at all and would paint an opaque rectangle, which is
+    # plausibly why an earlier run showed "a square" around the circle
+    # instead of a borderless orb. Forcing this fails loudly (ImportError/
+    # a missing-WebView2-runtime error) instead of silently degrading.
+    webview.start(pump_commands, window, gui="edgechromium")
 
 
 class DebugWindow:

@@ -194,14 +194,12 @@ class HeyPeer:
     def _speak(self, text: str) -> None:
         """Speaks `text` aloud (Piper TTS) — best-effort: a TTS failure
         (missing audio output device, voice download failure, ...) must
-        never block the actual execution flow. Mutes the wake-word listener
-        for the duration: with some headsets Hey Peer's own voice bleeds
-        back into the mic, which could otherwise get scored as more speech
-        or even a false wake-word trigger."""
+        never block the actual execution flow. Muting the wake-word listener
+        happens for the whole turn now (see `_on_wake_detected`/
+        `on_wake_word`), not just here, so this no longer needs to touch it
+        itself — kept as a no-op-safe method regardless."""
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
-        if self._wake_listener is not None:
-            self._wake_listener.mute()
         try:
             from heypeer.tray.tts import speak
 
@@ -209,8 +207,6 @@ class HeyPeer:
         except Exception as exc:
             print(f"[tts] Speak failed: {exc}")
         finally:
-            if self._wake_listener is not None:
-                self._wake_listener.unmute()
             if self.debug_window is not None:
                 self.debug_window.set_state("listening")
 
@@ -256,7 +252,19 @@ class HeyPeer:
         """Called from the wake-word audio thread once a detection fires and
         the spoken instruction after it has already been recorded. Must stay
         cheap and non-blocking - see module docstring for why the actual
-        instruction handling doesn't happen here."""
+        instruction handling doesn't happen here.
+
+        Mutes the listener immediately, before even enqueueing - real
+        wake-word logs showed the audio thread picking up a *second*
+        "Hey Peer" (or just ambient chatter scoring above threshold) while
+        the first instruction was still being transcribed/interpreted, since
+        muting previously only covered the brief TTS-playback window. Hey
+        Peer now handles one turn fully (transcribe -> interpret -> execute
+        -> speak) before listening for another wake word at all - unmuted at
+        the very end of `on_wake_word`/`_handle_instruction`, whichever way
+        the turn ends."""
+        if self._wake_listener is not None:
+            self._wake_listener.mute()
         self._detections.put(audio)
 
     def _stop_voice(self) -> None:
@@ -300,23 +308,31 @@ class HeyPeer:
         sent to Nemotron (see `_interpret_audio` for why not native audio
         input). Otherwise falls back to typed text via `get_instruction()`
         (manual Enter-key simulation, the tray prompt, tests). Must be
-        called from a thread where blocking is safe - see module docstring."""
+        called from a thread where blocking is safe - see module docstring.
+
+        The wake-word listener stays muted (see `_on_wake_detected`) for the
+        whole turn - unmuted here in a `finally`, once fully done, however
+        the turn ends, so Hey Peer only ever handles one turn at a time."""
         self._log("Hey Peer detected.")
         if self.debug_window is not None:
             self.debug_window.set_state("thinking")
         try:
-            if audio is not None and len(audio) > 0:
-                intent = self._interpret_audio(audio)
-            else:
-                instruction_text = self.get_instruction()
-                self._log(f"> {instruction_text}")
-                intent = self.nemotron.interpret_text(
-                    instruction_text, self._skill_context(), watched_files=self._watched_files()
-                )
-        except Exception as exc:
-            self._log(f"Failed to interpret the instruction: {exc}")
-            return
-        self._dispatch_intent(intent)
+            try:
+                if audio is not None and len(audio) > 0:
+                    intent = self._interpret_audio(audio)
+                else:
+                    instruction_text = self.get_instruction()
+                    self._log(f"> {instruction_text}")
+                    intent = self.nemotron.interpret_text(
+                        instruction_text, self._skill_context(), watched_files=self._watched_files()
+                    )
+            except Exception as exc:
+                self._log(f"Failed to interpret the instruction: {exc}")
+                return
+            self._dispatch_intent(intent)
+        finally:
+            if self._wake_listener is not None:
+                self._wake_listener.unmute()
 
     def _interpret_audio(self, audio: np.ndarray) -> Intent:
         """Transcribes the recorded instruction locally (Nemotron via this
@@ -346,11 +362,21 @@ class HeyPeer:
             )
 
     def _handle_instruction(self, instruction_text: str) -> None:
-        """Text-only path used by the tray's manual prompt and by tests."""
-        intent = self.nemotron.interpret_text(
-            instruction_text, self._skill_context(), watched_files=self._watched_files()
-        )
-        self._dispatch_intent(intent)
+        """Text-only path used by the tray's manual prompt and by tests.
+        Mutes the wake-word listener for the same reason `on_wake_word` does
+        (see `_on_wake_detected`) - the spoken narration this triggers
+        shouldn't be picked up by a concurrently-running wake-word listener
+        either."""
+        if self._wake_listener is not None:
+            self._wake_listener.mute()
+        try:
+            intent = self.nemotron.interpret_text(
+                instruction_text, self._skill_context(), watched_files=self._watched_files()
+            )
+            self._dispatch_intent(intent)
+        finally:
+            if self._wake_listener is not None:
+                self._wake_listener.unmute()
 
     def _dispatch_intent(self, intent: Intent) -> None:
         if intent.action == "run_skill" and intent.skill_id is not None:

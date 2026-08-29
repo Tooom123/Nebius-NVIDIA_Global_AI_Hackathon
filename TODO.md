@@ -640,6 +640,61 @@ conversation window).
       Verified with dedicated escape-attempt tests (`../outside` for each
       action) confirming they raise and never touch the filesystem.
 
+### Engineering hardening pass (2026-08-30) — no new features, per explicit user request
+
+Real logs from a full CLI session on Windows surfaced three concrete problems
+before any further feature work: STT transcripts were often garbled or
+outright hallucinated, the wake-word listener kept re-triggering on
+background chatter/its own TTS while a previous turn was still being
+processed, and the redesigned orb UI still showed "a square" around itself
+instead of a borderless circle. All three fixed:
+
+- [x] **Whole-turn muting, not just during TTS playback.** The real log
+      showed multiple "Mot d'activation detecte" firing back-to-back while a
+      previous instruction hadn't even finished being logged/transcribed yet
+      — muting previously only wrapped the brief `_speak()` window, so the
+      wake-word audio thread kept scoring (and could re-trigger on ambient
+      chatter, or on Hey Peer's *own* narration) all through the
+      transcribe -> interpret -> execute stretch of a turn, which is by far
+      the longest part. Moved the mute to `_on_wake_detected` (fires the
+      instant a detection comes in, before even enqueueing) and the unmute to
+      a `finally` at the very end of `on_wake_word`/`_handle_instruction` —
+      Hey Peer now fully finishes one turn before it can hear a new wake word
+      at all, matching how real assistants (Alexa, Siri) turn-take rather
+      than process overlapping requests. `_speak()` no longer touches the
+      listener itself (redundant now that the whole turn is covered).
+- [x] **STT accuracy**: real transcripts showed two distinct failure modes —
+      garbled short words/filenames ("4.xt"/"4.tx" instead of "4.txt", "des
+      places" instead of "déplace") and outright hallucinated sentences over
+      background noise/silence with zero real speech in them ("Il est gigant
+      d'habille, putain." — a textbook Whisper hallucination-on-silence
+      artifact). `heypeer/wakeword/stt.py`: bumped the model from "base" to
+      "small" and added a French-biased `initial_prompt` (targets the first
+      problem — better baseline accuracy and vocabulary bias, without forcing
+      a specific language so English instructions still work), and enabled
+      `vad_filter=True` (faster-whisper's built-in Silero VAD, skips
+      non-speech stretches instead of transcribing them — targets the second
+      problem specifically). Not re-measured against a real held-out
+      accuracy benchmark (would need a fresh batch of real recordings) — this
+      is a well-targeted, reasoned fix based on the actual failure patterns
+      observed, not a measured improvement number.
+- [x] **"A square persists around" the circle** — the orb window's real
+      on-screen appearance still wasn't a clean borderless circle. Two
+      plausible causes addressed: (1) Windows' DWM draws a native drop
+      shadow behind frameless windows by default, which reads as a
+      rectangular halo around a small transparent shape inside it —
+      pywebview's `create_window(..., shadow=False)` disables this, now
+      passed. (2) if pywebview's backend auto-detection ever silently fell
+      back to the legacy MSHTML/IE engine (which doesn't support
+      `transparent` at all and paints an opaque rectangle — also consistent
+      with "a square"), it would fail silently; `webview.start(...,
+      gui="edgechromium")` now forces the modern WebView2 backend explicitly,
+      so a real failure surfaces as a loud error instead of a silently
+      degraded render. Still unverified for real (no GTK/WebKit backend in
+      this sandbox to render anything with) — needs the user to confirm
+      whether the square is actually gone now, or whether it's a third,
+      still-unidentified cause.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
