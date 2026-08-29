@@ -205,6 +205,56 @@ each major implementation (per project convention).
         `run_cli()` both call `peer.tray.set_auto_mode(True)` right after
         `start_capture()`; the tray menu item is unchanged (still a plain
         toggle) so it can still be turned off for that session.
+## Next session (2026-08-30) — planning only, nothing started yet
+
+Requested by the user before signing off for the night on 2026-08-29:
+
+- [ ] **Real wake-word training** — actually run the Piper -> openWakeWord ->
+      ONNX pipeline (`heypeer/wakeword/generate_samples.py` / `augment.py` /
+      `train.py`, all built but never run for real "Hey Peer" audio) and
+      test live voice activation on the user's Windows machine/mic. This is
+      the last major piece of the original plan that's still simulated.
+- [ ] **A real UI**, beyond the tray icon — user wants something to look at
+      and interact with beyond menu items. Needs a design conversation before
+      coding: candidates are (a) a small always-available window (system
+      tray icon click -> panel) showing status/last actions, (b) a proper
+      confirmation dialog instead of the console `input()` prompt (the CLI
+      confirm gate was always meant as an MVP stand-in), (c) a
+      settings/onboarding screen (watched dir, API key check, wake-word
+      status) so the user isn't hand-editing `.env`. Pick scope with the
+      user before building.
+- [ ] **Skill log / inspection** — right now skills only live in
+      `data/skills/skills.json` with no way to list, inspect, rename, or
+      delete them short of hand-editing the JSON. After a few days of
+      testing this is already annoying (see 2026-08-29's "trop de skills
+      appris" comment). At minimum: a way to list current skills (tray menu
+      item or small window) and delete ones that shouldn't have been
+      learned. Consider also: a run history (what executed, when, success/
+      failure), not just the learned patterns themselves.
+- [ ] **Broaden the range of executable actions** — today only two paths are
+      real: file moves (robust, filesystem-based) and generic pyautogui
+      click/keypress replay (coded in `SkillRunner`/`ActivityWatcher` since
+      the start, but **never actually exercised on a real click/keyboard
+      target** — only file-move skills have been rehearsed for real).
+      Concretely: pick a second real-world scenario that needs actual mouse/
+      keyboard automation (not just files) and run it end-to-end on real
+      hardware, exercising the pyautogui replay path and the Nemotron
+      `verify_screen` visual-check hook for the first time for real.
+
+Additional ideas worth considering (not requested yet — raise with the user
+before starting any of these):
+- [ ] **Undo for a direct file move / skill run** — a misfire currently
+      requires manually moving the file back; a lightweight "undo last
+      action" (tray menu item, keeps the last N move operations) would be
+      cheap given file moves already know src/dest.
+- [ ] **Safety limits** — a max `n_repetitions` per confirmation, and/or a
+      rate limit on how often auto-execution can fire, as a guard against a
+      Nemotron misfire looping something destructive. Currently unlimited.
+- [ ] **Windows startup integration** — run Hey Peer automatically at login
+      (Startup folder shortcut or a small installer), now that it's meant to
+      live as a background tray app.
+- [ ] **Packaging** — a one-file Windows build (PyInstaller or similar) so
+      the demo doesn't require `git clone` + `pip install` on stage/video.
 - [ ] Submission polish
   - [x] README install/run instructions kept accurate as pieces land
   - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay
