@@ -10,19 +10,25 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
 
 ## What it does
 
-1. A lightweight, fully local wake-word detector listens for "Hey Peer" (nothing is
-   sent to the cloud before activation — privacy by design).
-2. A pattern-detection module watches for repeated action sequences (e.g. filling the
+1. Hey Peer runs as a background app with a **system tray icon**. A "Mode auto"
+   toggle in its menu arms/disarms everything else — nothing runs, and no cursor
+   changes, unless auto mode is on.
+2. When armed, a lightweight, fully local wake-word detector listens for "Hey Peer"
+   (nothing is sent to the cloud before activation — privacy by design), and the
+   **mouse cursor changes color** as a visible "Hey Peer is watching" indicator
+   (Windows only for now — see Status below).
+3. A pattern-detection module watches for repeated action sequences (e.g. filling the
    same form, renaming/sorting the same files) and stores them as reusable "skills".
-3. Once activated, the user's spoken instruction plus a screenshot of the current
+4. Once activated, the user's spoken instruction plus a screenshot of the current
    screen are sent to **Nemotron 3 Nano Omni**, hosted on **Nebius Token Factory**,
    which reasons over audio + vision + text to produce a structured intent
    (`{action, skill_id, n_repetitions, ...}`).
-4. The user is shown exactly what will be done and must explicitly confirm before
+5. The user is shown exactly what will be done and must explicitly confirm before
    anything executes.
-5. Once confirmed, the matched skill is replayed — via direct filesystem operations
+6. Once confirmed, the matched skill is replayed — via direct filesystem operations
    for file-organizing skills, or mouse/keyboard automation with a visual check
-   between steps for anything else.
+   between steps for anything else. The tray icon turns blue while a skill is
+   replaying, so the current status is always visible from the hidden-icons area.
 
 ## Why
 
@@ -74,6 +80,8 @@ heypeer/
 ├── confirmation/   # user confirmation gate (CLI)
 ├── executor/       # automated replay: pyautogui for input skills, direct
 │                   # filesystem ops (shutil) for file-move skills
+├── tray/           # system tray icon (auto-mode toggle, live status) +
+│                   # colored-cursor indicator for when auto mode is armed
 ├── main.py         # wires every stage into the end-to-end demo loop
 └── config.py       # shared configuration (env vars, paths, model ids)
 ```
@@ -102,11 +110,25 @@ cp .env.example .env   # fill in NEBIUS_API_KEY
 python -m heypeer.main
 ```
 
-This starts the activity watcher and the file-move watcher (default: `~/Downloads`,
-override with `HEYPEER_WATCHED_DIR`), learning skills from repeated action sequences
-or repeated file moves. It then listens for "Hey Peer". If no trained wake-word model
-exists yet at `data/wakeword/hey_peer.onnx`, it falls back to manual activation: press
-Enter to simulate the wake word and type the instruction you'd otherwise speak.
+This starts Hey Peer as a **background app with a system tray / hidden-icons**
+entry. Nothing is captured and no cursor changes until you turn on **"Mode auto"**
+from the tray menu — the tray icon also always shows current status (paused /
+listening / executing) as both its color and its tooltip/menu text. Once armed, it
+watches for repeated action sequences and repeated file moves (default watched
+folder: `~/Downloads`, override with `HEYPEER_WATCHED_DIR`), and listens for "Hey
+Peer". If no trained wake-word model exists yet at `data/wakeword/hey_peer.onnx`,
+voice activation is unavailable for that session but file-move detection still
+works.
+
+For a headless dev box without a tray host (no display), use the foreground
+console loop instead:
+
+```bash
+python -m heypeer.main --cli
+```
+
+This always runs with auto mode on and falls back to pressing Enter to simulate
+the wake word if no trained model is available.
 
 To train the real wake-word model:
 
@@ -123,16 +145,28 @@ See each script's docstring for details.
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 21 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 34 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
-demo scenario, pattern detection, the Nemotron client, user confirmation, and skill
-execution. What's *not* verified is anything needing real hardware this dev
-environment didn't have — a microphone, a display, real Piper voices, or a live
-Nebius API key — so those paths are code-complete but only verified via mocks.
-Concretely: `WakeWordListener.start()`'s live mic loop, `ActivityWatcher.start()`'s
-live input loop, `SkillRunner`'s pyautogui-based replay path (the file-move replay
-path *is* verified — it only touches the filesystem), and any real (non-mocked)
-Nebius API round-trip.
+demo scenario, pattern detection, the Nemotron client (**verified against the live
+Nebius API**, not just mocks), user confirmation, skill execution, and the tray
+app/cursor indicator. The full pipeline (learn a file-sorting skill -> "Hey Peer, do
+N more" -> real Nemotron call -> confirm -> real file move) has been rehearsed
+end-to-end with real files and a real API call.
+
+What's *not* verified is anything needing real hardware/OS features this dev
+environment didn't have — a microphone, a real display/window manager, real Piper
+voices, or an actual Windows machine:
+- `WakeWordListener.start()`'s live mic loop
+- `ActivityWatcher.start()`'s live input loop
+- `SkillRunner`'s pyautogui-based replay path (the file-move replay path *is*
+  verified — it only touches the filesystem)
+- The colored-cursor indicator: the Win32 call sequence is unit-tested with a
+  mocked `ctypes.windll`, but the actual on-screen cursor swap has never been seen
+  on a real Windows machine, and there is currently **no cursor-color support at
+  all on macOS/Linux** — `set_active()` there just logs and no-ops
+- The system tray icon itself constructs and updates correctly headless in this
+  sandbox (via pystray's X11 backend), but its actual on-screen appearance in a
+  real "hidden icons" tray (Windows) or menu bar (macOS) hasn't been seen
 
 ## Ethics & privacy notes
 

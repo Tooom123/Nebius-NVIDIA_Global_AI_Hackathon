@@ -28,3 +28,14 @@ def test_detects_a_real_file_move(tmp_path: Path) -> None:
     assert events[0].type == ActionType.FILE_MOVE
     assert events[0].src_path == str(src)
     assert events[0].dest_path == str(dest)
+
+
+def test_start_on_missing_directory_does_not_raise(tmp_path: Path, capsys) -> None:
+    missing_dir = tmp_path / "does_not_exist"
+    watcher = FileOpWatcher(missing_dir, on_event=lambda _e: None)
+
+    watcher.start()  # must not raise
+
+    assert watcher._observer is None
+    assert "introuvable" in capsys.readouterr().out
+    watcher.stop()  # must also be a no-op, not raise

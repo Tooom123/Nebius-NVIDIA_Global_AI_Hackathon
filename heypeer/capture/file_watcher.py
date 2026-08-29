@@ -27,6 +27,13 @@ class FileOpWatcher:
         self._observer = None
 
     def start(self) -> None:
+        if not self.watch_dir.is_dir():
+            print(
+                f"[heypeer] Dossier surveillé introuvable ({self.watch_dir}) — "
+                "détection de tri de fichiers désactivée pour cette session."
+            )
+            return
+
         from watchdog.events import FileSystemEventHandler
         from watchdog.observers import Observer
 

@@ -4,6 +4,7 @@ pyaudio>=0.2.14
 pynput>=1.7.6
 pywinctl>=0.3
 watchdog>=4.0.0
+pystray>=0.19.5
 soundfile>=0.12.1
 scikit-learn>=1.4.0
 skl2onnx>=1.16.0

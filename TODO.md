@@ -25,9 +25,12 @@ each major implementation (per project convention).
         raw, which would have broken once real actions were produced)
 - [x] Nemotron 3 Nano Omni via Nebius Token Factory
   - [x] OpenAI-compatible client call (text-first, per plan step 4) — unit
-        tested with a mocked OpenAI client (no real API key in this sandbox)
+        tested with a mocked OpenAI client, **and verified against the real
+        Nebius API** once the user's API key + free hackathon credits were
+        set up (correct id: `nvidia/Nemotron-3-Nano-Omni`, casing matters)
   - [x] Extend to audio clip + screenshot (omni input) — `interpret()` sends
         base64 audio + screenshot; unverified against the live API here
+        (only `interpret_text()` has been exercised for real so far)
   - [x] Parse structured intent (`{action, skill_id, n_repetitions}`)
 - [ ] Confirmation UI
   - [x] Minimal CLI confirm gate
@@ -65,11 +68,42 @@ each major implementation (per project convention).
           of pyautogui — robust to window position/state, unlike click replay
         - All unit-tested, including a real (non-mocked) file move observed
           through `watchdog` on this sandbox's filesystem
+  - [x] **Full end-to-end rehearsal against the real Nebius API**: learned a
+        3-repeat file-sorting skill from simulated FILE_MOVE events, said
+        "fais-en 2 de plus", got back a correctly-resolved Intent from the
+        live Nemotron endpoint, confirmed, and watched SkillRunner actually
+        move the next 2 matching files via shutil. First-try success.
   - [ ] Wire real audio capture + screenshotting for `on_wake_word` (currently
         takes typed text as an instruction stand-in, per the plan's
         "text first" validation step) and swap in `NemotronClient.interpret`
-  - [ ] Rehearse the full flow on a real machine with a Downloads-like folder
-        and a live Nebius API key
+  - [ ] Rehearse the full flow on a real machine with a Downloads-like folder,
+        a real mic, and a real screen
+- [x] Background app / hidden-icons tray + auto-mode toggle + status
+  - [x] `heypeer/tray/app.py` — `TrayApp` wraps `pystray.Icon`: a "Mode auto"
+        menu toggle arms/disarms the whole capture+wake-word pipeline, and a
+        disabled menu item always shows the current status text. Icon color
+        encodes status too (gray=off, green=listening, blue=executing,
+        red=error). Unit-tested (menu state, toggle callback, status
+        updates) — pystray's Icon constructs fine headless in this sandbox
+        (X11 backend) but its real on-screen tray/menu-bar appearance is
+        unverified.
+  - [x] `heypeer/tray/cursor.py` — `CursorIndicator.set_active()` swaps the
+        system cursor to a tinted arrow while auto mode is on. **Windows
+        only** for now (`SetSystemCursor` win32 API + a generated `.cur`
+        file with a PNG-encoded frame); macOS/Linux log a clear "not
+        supported" message and no-op rather than silently doing nothing.
+        The win32 call sequence is unit-tested with a mocked `ctypes.windll`;
+        the actual on-screen result has never been seen on real Windows.
+  - [x] `heypeer/main.py` restructured: `run_tray()` (new default) blocks the
+        main thread on the tray's event loop while the capture
+        watchers/wake-word listener start in a background thread once "Mode
+        auto" is toggled on; `run_cli()` keeps the old always-on foreground
+        console loop for headless dev boxes (`python -m heypeer.main --cli`).
+  - [x] Fixed two real bugs found while smoke-testing this by hand: an empty
+        `HEYPEER_WATCHED_DIR=` in `.env` was resolving to `.` instead of the
+        documented default, and toggling auto mode with a missing watched
+        directory used to crash the whole toggle instead of just skipping
+        file-move detection for that session.
 - [ ] Submission polish
   - [x] README install/run instructions kept accurate as pieces land
   - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay

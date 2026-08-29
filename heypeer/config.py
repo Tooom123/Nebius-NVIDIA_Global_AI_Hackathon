@@ -31,7 +31,5 @@ def load_settings() -> Settings:
         nemotron_model_id=os.environ.get(
             "NEMOTRON_MODEL_ID", "nvidia/Nemotron-3-Nano-Omni"
         ),
-        watched_dir=Path(
-            os.environ.get("HEYPEER_WATCHED_DIR", str(Path.home() / "Downloads"))
-        ),
+        watched_dir=Path(os.environ.get("HEYPEER_WATCHED_DIR") or str(Path.home() / "Downloads")),
     )
