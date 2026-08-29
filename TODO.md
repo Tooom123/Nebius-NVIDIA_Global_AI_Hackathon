@@ -354,12 +354,21 @@ real UI" — an actual interaction design):
       Should reuse/replace the existing "Demander à Hey Peer..." tkinter
       dialog rather than duplicate it — that one is manual-trigger-only
       today, this one is wake-word-triggered.
-- [ ] **Spoken confirmation (TTS)** — instead of (or alongside) the current
-      text confirmation prompt, Hey Peer should *say* what it's about to do
-      and wait for a spoken/typed yes before acting. Needs a TTS engine —
-      Piper is already a project dependency (used for wake-word training
-      data) and can also do live synthesis, worth trying first before adding
-      another dependency.
+- [x] **Spoken confirmation (TTS)** — done 2026-08-30, alongside (not instead
+      of) the existing text confirm prompt. `heypeer/tray/tts.py` wraps Piper
+      (already a dependency, chosen specifically for "léger" — local, fast on
+      CPU, reasonably natural — over adding a second engine): Hey Peer speaks
+      what it's about to do before `confirm()`'s text prompt, and speaks
+      "Done"/"I stopped, something looked off" after. Auto-downloads a
+      default voice if missing, same pattern as
+      `_ensure_openwakeword_models()`. Voice load (~1-2s) is warmed up in the
+      background alongside the Whisper STT preload, not paid on first use.
+      Verified for real: synthesis itself (Piper producing correct-duration,
+      correct-sample-rate wav audio) — **not** verified: actual playback
+      through a speaker, since this sandbox has no audio output device.
+      Confirmation text is in English (matching the existing `confirm()`
+      prompt's language) regardless of the user's own French — a French
+      Piper voice could be added later if that mismatch bothers in practice.
 - [ ] **Tray icon stays minimal** per the user's explicit preference: just
       the ON/OFF toggle (green/gray light) it already is — the popup UI
       above is a separate window, not an expansion of the tray menu itself.

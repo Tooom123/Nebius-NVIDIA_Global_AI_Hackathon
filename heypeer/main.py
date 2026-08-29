@@ -162,6 +162,7 @@ class HeyPeer:
         # in parallel, rather than paying that cost on the user's first
         # spoken instruction. Doesn't block wake-word readiness.
         threading.Thread(target=self._preload_stt, daemon=True).start()
+        threading.Thread(target=self._preload_tts, daemon=True).start()
 
     def _preload_stt(self) -> None:
         try:
@@ -170,6 +171,25 @@ class HeyPeer:
             preload()
         except Exception as exc:
             print(f"[stt] Whisper preload failed (will retry on first use): {exc}")
+
+    def _preload_tts(self) -> None:
+        try:
+            from heypeer.tray.tts import preload
+
+            preload()
+        except Exception as exc:
+            print(f"[tts] Piper voice preload failed (will retry on first use): {exc}")
+
+    def _speak(self, text: str) -> None:
+        """Speaks `text` aloud (Piper TTS) — best-effort: a TTS failure
+        (missing audio output device, voice download failure, ...) must
+        never block the actual confirm/execute flow."""
+        try:
+            from heypeer.tray.tts import speak
+
+            speak(text)
+        except Exception as exc:
+            print(f"[tts] Speak failed: {exc}")
 
     def _run_wake_listener(self) -> None:
         try:
@@ -309,6 +329,8 @@ class HeyPeer:
             self._log(f"Nemotron referenced an unknown skill id: {intent.skill_id}")
             return
 
+        times = f" {intent.n_repetitions} times" if intent.n_repetitions > 1 else ""
+        self._speak(f"I'll {skill.name}{times}. Do you confirm?")
         if not confirm(intent, skill.name):
             self._log("Cancelled.")
             return
@@ -322,8 +344,10 @@ class HeyPeer:
         try:
             runner.run(skill, intent.n_repetitions)
             self._log(f'Done: "{skill.name}" x{intent.n_repetitions}.')
+            self._speak("Done.")
         except ExecutionAborted as exc:
             self._log(f"Stopped mid-replay: {exc}")
+            self._speak("I stopped partway through, something looked off.")
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 
@@ -338,7 +362,9 @@ class HeyPeer:
         # hallucinated or unexpected destination can't write outside it.
         dest_dir = self.watched_dir / intent.dest_folder
 
-        if not confirm(intent, f"move {intent.src_filename} -> {intent.dest_folder}/"):
+        description = f"move {intent.src_filename} -> {intent.dest_folder}/"
+        self._speak(f"I'll move {intent.src_filename} into {intent.dest_folder}. Do you confirm?")
+        if not confirm(intent, description):
             self._log("Cancelled.")
             return
 
@@ -346,8 +372,10 @@ class HeyPeer:
         try:
             new_path = move_single_file(src_path, dest_dir)
             self._log(f"Done: moved to {new_path}.")
+            self._speak("Done.")
         except ExecutionAborted as exc:
             self._log(f"Stopped: {exc}")
+            self._speak("I stopped, something looked off.")
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 

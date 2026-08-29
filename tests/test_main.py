@@ -14,6 +14,15 @@ from heypeer.patterns.memory import SkillMemory
 from heypeer.patterns.skill import Skill
 
 
+@pytest.fixture(autouse=True)
+def fake_tts(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Avoids loading a real Piper voice / touching an audio output device
+    on every test that reaches a confirmation prompt."""
+    speak_mock = MagicMock()
+    monkeypatch.setattr("heypeer.tray.tts.speak", speak_mock, raising=False)
+    return speak_mock
+
+
 @pytest.fixture
 def fake_pyautogui(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake = types.ModuleType("pyautogui")
@@ -36,7 +45,9 @@ def _peer(tmp_path: Path, nemotron: MagicMock) -> HeyPeer:
     )
 
 
-def test_on_wake_word_runs_confirmed_skill(tmp_path: Path, fake_pyautogui: MagicMock) -> None:
+def test_on_wake_word_runs_confirmed_skill(
+    tmp_path: Path, fake_pyautogui: MagicMock, fake_tts: MagicMock
+) -> None:
     nemotron = MagicMock()
     nemotron.interpret_text.return_value = Intent(
         action="run_skill", skill_id="sort_files", n_repetitions=2
@@ -51,6 +62,8 @@ def test_on_wake_word_runs_confirmed_skill(tmp_path: Path, fake_pyautogui: Magic
     call_args = nemotron.interpret_text.call_args.args
     assert call_args[0] == "do it 4 more times"
     assert {"id": "sort_files", "name": "Sort downloaded files"} in call_args[1]
+    # Spoken before executing (Siri-style confirmation) and again once done.
+    assert fake_tts.call_count == 2
 
 
 def test_on_wake_word_skips_execution_if_not_confirmed(
