@@ -17,8 +17,10 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
 2. A pattern-detection module watches for repeated action sequences (e.g. filling the
    same form, renaming/sorting the same files) and stores them as reusable "skills".
 3. **"Mode auto (écoute vocale)"** is a separate tray toggle for something narrower:
-   whether Hey Peer is actually listening for the wake word and able to act on it.
-   When it's on, a lightweight, fully local wake-word detector listens for "Hey Peer"
+   whether Hey Peer is actually listening for the wake word and able to act on it. It's
+   a simple ON/OFF switch, **on by default** as soon as the app starts — turn it off
+   from the tray menu if you don't want voice activation for that session. When it's
+   on, a lightweight, fully local wake-word detector listens for "Hey Peer"
    (nothing is sent to the cloud before activation — privacy by design), and the
    **mouse cursor changes color** as a visible "Hey Peer can hear you" indicator
    (Windows only for now — see Status below).
@@ -135,11 +137,11 @@ entry. Capture (learning repeated action sequences and repeated file moves —
 default watched folder `~/Downloads`, override with `HEYPEER_WATCHED_DIR`) starts
 immediately and runs natively the whole time the app is open; the tray icon's color
 and tooltip/menu text always show voice-listening status (off / listening /
-executing). Turn on **"Mode auto (écoute vocale)"** from the tray menu to start
-listening for "Hey Peer" and to color the cursor. If no trained wake-word model
-exists yet at `data/wakeword/hey_peer.onnx`, voice activation just won't come up
-for that session — use the tray's **"Demander à Hey Peer..."** item to type an
-instruction instead.
+executing). **"Mode auto (écoute vocale)"** starts ON by default — toggle it off
+from the tray menu if you don't want voice activation for that session. If no
+trained wake-word model exists yet at `data/wakeword/hey_peer.onnx`, voice
+activation just won't come up regardless of the toggle — use the tray's **"Demander
+à Hey Peer..."** item to type an instruction instead.
 
 For a headless dev box without a tray host (no display), use the foreground
 console loop instead:
@@ -176,7 +178,7 @@ confirm -> real file move; and a direct one-off "déplace le fichier X vers Y" w
 no learned skill at all.
 
 The tray app + cursor indicator have been smoke-tested on a real Windows machine
-across two rounds, surfacing (and fixing) several real bugs — see TODO.md for the
+across three rounds, surfacing (and fixing) several real bugs — see TODO.md for the
 full writeup of each:
 - `ActivityWatcher`/`FileOpWatcher` sharing one pattern detector (mouse noise
   during a drag-and-drop could eat the real file-move pattern)
@@ -189,14 +191,19 @@ full writeup of each:
   created from inside pystray's native message-dispatch callback instead of its
   own thread
 - The confusing "Mode auto" semantics that gated capture, voice, and the cursor
-  together — capture is now native/always-on, the toggle is voice-only
+  together — capture is now native/always-on, the toggle is voice-only (and now
+  starts ON by default)
+- An `OSError: Unexpected color cursor for IDC_ARROW` crash — the extraction code
+  only handled the classic monochrome cursor and hard-failed on the 32bpp color
+  cursor this user's actual Windows theme uses; both are now supported
 
 What's still *not* verified is anything needing real hardware/OS features this dev
 environment doesn't have:
 - `WakeWordListener.start()`'s live mic loop
 - The tray "Demander à Hey Peer..." dialog's actual on-screen appearance (fixed
   the threading bug behind it, but haven't seen it render for real)
-- The recolored-arrow cursor's actual on-screen shape/color, after the ctypes fix
+- The recolored-arrow cursor's actual on-screen shape/color — verified logically
+  for both the monochrome and color-cursor extraction paths, not yet seen render
 - **Ctrl+C does not reliably stop the tray app on Windows** — this is a pystray/
   Win32 message-loop limitation, not a bug to fix; use the tray menu's "Quitter"
   instead, which also resets the cursor
