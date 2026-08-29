@@ -1,4 +1,5 @@
 import sys
+import threading
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -64,8 +65,69 @@ def test_on_wake_word_runs_skill_directly_no_confirmation(
     call_args = nemotron.interpret_text.call_args.args
     assert call_args[0] == "do it 4 more times"
     assert {"id": "sort_files", "name": "Sort downloaded files"} in call_args[1]
-    # Spoken once before executing (narration) and again once done.
-    assert fake_tts.call_count == 2
+    # Narrated once, before acting. Nothing is spoken afterwards - saying
+    # what it's doing already tells the user it happened, so a trailing
+    # "C'est fait." was pure repetition.
+    assert fake_tts.call_count == 1
+
+
+def test_successful_file_action_does_not_speak_a_confirmation(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+    spoken: list[str] = []
+    peer._speak = spoken.append
+    peer._speak_async = spoken.append
+
+    peer.on_wake_word()
+
+    assert len(spoken) == 1  # the narration only
+    assert "déplace" in spoken[0].lower()
+
+
+def test_file_action_does_not_wait_for_narration_to_finish(tmp_path: Path) -> None:
+    """Regression test: speaking synchronously before acting meant the file
+    didn't move until a whole sentence had played - a large part of what the
+    user experienced as the action taking too long."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    speaking = threading.Event()
+    release = threading.Event()
+
+    def slow_speech(_text: str) -> None:
+        speaking.set()
+        release.wait(timeout=5)
+
+    peer._speak = slow_speech
+
+    peer.on_wake_word()
+
+    # The move completed even though speech is still playing.
+    assert (watched_dir / "Archives" / "facture.pdf").exists()
+    assert speaking.is_set()
+    release.set()
 
 
 def test_on_wake_word_handles_unknown_intent(tmp_path: Path, fake_pyautogui: MagicMock) -> None:

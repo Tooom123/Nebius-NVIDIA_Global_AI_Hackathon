@@ -99,8 +99,24 @@ def _skill_context_block(skill_context: list[dict]) -> str:
     return json.dumps(skill_context)
 
 
-def _parse_intent(raw_content: str) -> Intent:
-    data = json.loads(raw_content)
+def _parse_intent(raw_content: "str | None") -> Intent:
+    """Parses Nemotron's JSON answer into an `Intent`.
+
+    `raw_content` can genuinely be None: the API returns a message with no
+    content when the model produces nothing usable (hit a stop condition,
+    filtered, empty completion). That surfaced on real hardware as
+    "the JSON object must be str, bytes or bytearray, not NoneType", which
+    tells the user nothing. An empty answer means "I didn't understand",
+    so say that instead of crashing.
+    """
+    if not raw_content:
+        return Intent(action="unknown", skill_id=None, n_repetitions=1)
+    try:
+        data = json.loads(raw_content)
+    except json.JSONDecodeError:
+        # Same reasoning: a non-JSON answer is the model failing to follow
+        # the format, not something the user can act on.
+        return Intent(action="unknown", skill_id=None, n_repetitions=1)
     return Intent(
         action=data["action"],
         skill_id=data.get("skill_id"),
@@ -187,7 +203,13 @@ class NemotronClient:
             ],
             response_format={"type": "json_object"},
         )
-        data = json.loads(response.choices[0].message.content)
+        content = response.choices[0].message.content
+        if not content:
+            return False  # no answer -> can't confirm the screen is as expected
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return False
         return bool(data.get("ok", False))
 
     def interpret(
