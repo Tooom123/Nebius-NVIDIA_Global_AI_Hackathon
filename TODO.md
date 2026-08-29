@@ -432,6 +432,37 @@ before starting any of these):
   - [ ] Hosted demo URL or test build (manual follow-up — needs a real machine
         with mic/display and a live Nebius API key)
 
+### Latency/fluidity pass (2026-08-30, requested explicitly)
+
+Reviewed everything in the wake-word/instruction pipeline that could plausibly
+cause the "moins de fluidité" the user reported. Most of it was already fixed
+earlier in this same session, each for its own reason, and together they're
+most of what a "latency pass" would have found anyway:
+- The debounce fix (rising-edge + cooldown) was arguably the biggest fluidity
+  win here in disguise — before it, ONE utterance triggered 3 full redundant
+  transcribe→Nemotron→confirm→TTS cycles back to back, which reads as
+  "laggy/unresponsive" even though each individual cycle was reasonably fast.
+- The streaming-scoring switch (full-window `embed_clips()` every chunk ->
+  `get_features()` incremental) already cut per-chunk cost from reprocessing
+  ~24000 samples to ~1280.
+- The `input()`-on-the-wrong-thread fix removed what looked like a hang.
+
+One genuinely new finding from this pass: the debug dB-meter `print(...,
+flush=True)` ran on *every* 80ms chunk — real console I/O + a flush syscall
+12.5 times/second, indefinitely, whenever `HEYPEER_WAKEWORD_DEBUG` is on
+(which is the default). Throttled to every 3rd chunk (~240ms) — still reads
+as live, cuts that I/O by two thirds. Can't measure the real-world impact of
+this one from this sandbox (a different terminal than the user's Git Bash/
+MinTTY, where slow-pty console writes are the plausible failure mode) — a
+plausible, well-justified fix rather than a measured one.
+
+What's left un-investigated: actual per-step wall-clock timing on the user's
+own hardware (Whisper transcription + Nebius network round-trip + Piper
+synthesis + playback, chained) — everything in this pass was reasoned about
+or measured in this sandbox, not profiled on a real end-to-end turn on
+Windows. If it still feels slow after all of the above, the next step is
+timing each stage for real rather than guessing further.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
