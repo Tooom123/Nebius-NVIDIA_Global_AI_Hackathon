@@ -13,6 +13,7 @@ from heypeer.wakeword.listener import (
     _ensure_openwakeword_models,
     chunk_dbfs,
     dbfs_to_level,
+    play_activation_chime,
     save_wav,
 )
 from heypeer.wakeword.train import export_onnx, train
@@ -255,6 +256,70 @@ def test_start_skips_scoring_and_triggering_while_muted(
     listener.start(on_detected=MagicMock())
 
     process_spy.assert_not_called()
+
+
+def test_play_activation_chime_writes_audio_to_output_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_stream = MagicMock()
+    fake_pa = MagicMock()
+    fake_pa.open.return_value = fake_stream
+    fake_pyaudio_module = types.ModuleType("pyaudio")
+    fake_pyaudio_module.PyAudio = MagicMock(return_value=fake_pa)
+    fake_pyaudio_module.paInt16 = 8
+    monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
+
+    play_activation_chime()
+
+    fake_pa.open.assert_called_once()
+    assert fake_pa.open.call_args.kwargs["output"] is True
+    fake_stream.write.assert_called_once()
+    fake_pa.terminate.assert_called_once()
+
+
+def test_start_plays_chime_on_trigger_before_recording(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """Regression test: the chime is meant to be an *immediate* audible cue
+    that Hey Peer heard the wake word, so it must play before the (possibly
+    several-second) instruction recording, not after."""
+    listener = WakeWordListener(str(toy_model), threshold=0.0)
+    call_order = []
+    monkeypatch.setattr(
+        "heypeer.wakeword.listener.play_activation_chime",
+        lambda: call_order.append("chime"),
+    )
+    original_record = listener._record_instruction
+
+    def recording_spy(*args, **kwargs):
+        call_order.append("record")
+        return original_record(*args, **kwargs)
+
+    listener._record_instruction = recording_spy
+
+    chunks = [_loud_chunk()]
+    fake_stream = _FakeStream(chunks)
+    reads = {"n": 0}
+    real_read = fake_stream.read
+
+    def counting_read(n, exception_on_overflow=False):
+        reads["n"] += 1
+        if reads["n"] >= 2:
+            listener.stop()
+        return real_read(n, exception_on_overflow)
+
+    fake_stream.read = counting_read
+    fake_pa = MagicMock()
+    fake_pa.open.return_value = fake_stream
+    fake_pa.get_default_input_device_info.side_effect = Exception("no input device in this sandbox")
+    fake_pyaudio_module = types.ModuleType("pyaudio")
+    fake_pyaudio_module.PyAudio = MagicMock(return_value=fake_pa)
+    fake_pyaudio_module.paInt16 = 8
+    monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
+
+    listener.start(on_detected=MagicMock())
+
+    assert call_order == ["chime", "record"]
 
 
 def test_unmute_clears_the_muted_flag(toy_model: Path) -> None:

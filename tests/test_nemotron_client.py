@@ -168,6 +168,36 @@ def test_interpret_text_parses_delete_file_intent() -> None:
     assert intent.src_filename == "notes.txt"
 
 
+def test_interpret_text_includes_watched_folders_in_context() -> None:
+    """Regression test: without an existing-folder listing, Nemotron had no
+    way to know a folder like "test" already existed and would sometimes
+    invent a plausible-but-wrong variant (e.g. "tests") instead."""
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "move_file", "src_filename": "6.txt", "dest_folder": "test"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        client.interpret_text(
+            "déplace 6.txt dans le dossier test",
+            skill_context=[],
+            watched_files=["6.txt"],
+            watched_folders=["test", "Archives"],
+        )
+
+    user_message = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "test" in user_message
+    assert "Archives" in user_message
+
+
 def test_interpret_text_with_screenshot_uses_list_content(tmp_path) -> None:
     screenshot_path = tmp_path / "screen.png"
     screenshot_path.write_bytes(b"fake-png-bytes")

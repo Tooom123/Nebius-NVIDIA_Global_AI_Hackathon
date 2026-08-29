@@ -302,6 +302,15 @@ class HeyPeer:
             return None
         return sorted(p.name for p in self.watched_dir.iterdir() if p.is_file())
 
+    def _watched_folders(self) -> list[str] | None:
+        """Existing subfolders of the watched directory - given to Nemotron
+        so it can reuse a real folder instead of inventing a plausible-but-
+        wrong variant of a name the user said (a real bug: "test" ->
+        created "tests", since Nemotron had no listing to check against)."""
+        if self.watched_dir is None or not self.watched_dir.is_dir():
+            return None
+        return sorted(p.name for p in self.watched_dir.iterdir() if p.is_dir())
+
     def on_wake_word(self, audio: np.ndarray | None = None) -> None:
         """Handles one wake-word turn. If real recorded audio is given (the
         normal case once a mic is available), it's transcribed locally then
@@ -324,7 +333,10 @@ class HeyPeer:
                     instruction_text = self.get_instruction()
                     self._log(f"> {instruction_text}")
                     intent = self.nemotron.interpret_text(
-                        instruction_text, self._skill_context(), watched_files=self._watched_files()
+                        instruction_text,
+                        self._skill_context(),
+                        watched_files=self._watched_files(),
+                        watched_folders=self._watched_folders(),
                     )
             except Exception as exc:
                 self._log(f"Failed to interpret the instruction: {exc}")
@@ -358,6 +370,7 @@ class HeyPeer:
                 instruction_text,
                 self._skill_context(),
                 watched_files=self._watched_files(),
+                watched_folders=self._watched_folders(),
                 screenshot_path=str(screenshot_path),
             )
 
@@ -371,7 +384,10 @@ class HeyPeer:
             self._wake_listener.mute()
         try:
             intent = self.nemotron.interpret_text(
-                instruction_text, self._skill_context(), watched_files=self._watched_files()
+                instruction_text,
+                self._skill_context(),
+                watched_files=self._watched_files(),
+                watched_folders=self._watched_folders(),
             )
             self._dispatch_intent(intent)
         finally:

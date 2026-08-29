@@ -40,7 +40,8 @@ command after saying the wake word "Hey Peer". You are given: (1) the user's \
 transcribed/spoken instruction, (2) a screenshot of their current screen, \
 (3) a list of previously learned "skills" — repeated action sequences the user \
 has performed before, each with an id and a human-readable name, and \
-(4) optionally, the filenames currently present in the watched folder.
+(4) optionally, the filenames and folder names currently present in the \
+watched folder.
 
 Decide what the user wants and respond with ONLY a JSON object of one of these
 forms:
@@ -54,8 +55,11 @@ forms:
   {"action": "move_file", \
 "src_filename": "<the exact filename from the watched-folder listing that \
 best matches what the user described>", \
-"dest_folder": "<a short destination folder name, e.g. 'Archives' — an \
-existing subfolder if one clearly matches, otherwise a new short name>"}
+"dest_folder": "<the destination folder name — if a folder in the given \
+folder listing already matches (even loosely), use that folder's EXACT \
+existing name verbatim; otherwise use the name exactly as the user said it, \
+character for character — never pluralize, translate, capitalize \
+differently, or otherwise rephrase it>"}
 
 - To rename ONE existing file (same folder, just a new name — e.g. "renomme \
 facture.pdf en facture_mars.pdf"):
@@ -69,7 +73,9 @@ user clearly asks to change it>"}
 "target_name": "<the new filename, with an extension if one makes sense>"}
 
 - To create a new folder (e.g. "crée un dossier Factures"):
-  {"action": "create_folder", "target_name": "<the new folder name>"}
+  {"action": "create_folder", \
+"target_name": "<the folder name exactly as the user said it, character for \
+character — never pluralize, translate, or otherwise rephrase it>"}
 
 - To delete ONE existing file (e.g. "supprime le fichier notes.txt" — this \
 moves it to the recycle bin/trash, not a permanent delete):
@@ -118,6 +124,7 @@ class NemotronClient:
         instruction_text: str,
         skill_context: list[dict],
         watched_files: list[str] | None = None,
+        watched_folders: list[str] | None = None,
         screenshot_path: str | None = None,
     ) -> Intent:
         """The path actually used end to end: a transcribed instruction
@@ -125,13 +132,21 @@ class NemotronClient:
         why not raw audio), optionally with a screenshot for visual context.
         A `[text, image_url]` content list is confirmed working against the
         real Nebius endpoint; plain-string content is used when no
-        screenshot is given, keeping the original text-only path unchanged."""
+        screenshot is given, keeping the original text-only path unchanged.
+
+        `watched_folders` was added after a real bug: without it, Nemotron
+        had no way to know what subfolders already existed and would
+        sometimes invent a plausible-but-wrong variant of the name the user
+        actually said (e.g. "test" -> created "tests") instead of either
+        reusing a real existing folder or using the stated name verbatim."""
         text = (
             f"Instruction: {instruction_text}\n"
             f"Known skills: {_skill_context_block(skill_context)}"
         )
         if watched_files is not None:
             text += f"\nFiles currently in the watched folder: {json.dumps(watched_files)}"
+        if watched_folders is not None:
+            text += f"\nFolders currently in the watched folder: {json.dumps(watched_folders)}"
 
         if screenshot_path is None:
             content = text

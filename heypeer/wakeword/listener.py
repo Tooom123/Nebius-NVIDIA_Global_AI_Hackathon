@@ -90,6 +90,35 @@ def save_wav(audio: np.ndarray, path) -> None:
     sf.write(str(path), audio, SAMPLE_RATE, subtype="PCM_16")
 
 
+def play_activation_chime() -> None:
+    """A short two-tone rising chime (a la Siri's "activated" sound),
+    synthesized directly rather than played from an asset file, played the
+    instant the wake word triggers - before recording the instruction. Users
+    reported not being sure whether Hey Peer actually heard them; a
+    near-instant audible cue (much faster than speaking a full sentence via
+    Piper) gives that confirmation the same way real voice assistants do."""
+    import pyaudio
+
+    tones = [(880.0, 0.09), (1318.5, 0.09)]  # a short rising "ding-ding"
+    fade = 0.01  # seconds - avoids audible clicks at each tone's edges
+    chunks = []
+    for freq, duration in tones:
+        n = int(SAMPLE_RATE * duration)
+        t = np.linspace(0, duration, n, endpoint=False)
+        envelope = np.clip(np.minimum(t / fade, (duration - t) / fade), 0.0, 1.0)
+        chunks.append((0.2 * np.sin(2 * np.pi * freq * t) * envelope * 32767).astype(np.int16))
+    audio = np.concatenate(chunks)
+
+    pa = pyaudio.PyAudio()
+    stream = pa.open(format=pyaudio.paInt16, channels=1, rate=SAMPLE_RATE, output=True)
+    try:
+        stream.write(audio.tobytes())
+    finally:
+        stream.stop_stream()
+        stream.close()
+        pa.terminate()
+
+
 class WakeWordListener:
     """Listens to the microphone and calls `on_detected` when "Hey Peer" is heard."""
 
@@ -257,6 +286,11 @@ class WakeWordListener:
                     if self.debug:
                         print()  # move off the overwritten debug line
                     print(f"[wakeword] Mot d'activation detecte (score={score:.2f}).")
+                    try:
+                        play_activation_chime()
+                    except Exception as exc:  # best-effort - never block on a beep
+                        if self.debug:
+                            print(f"[wakeword] Chime playback failed: {exc}")
                     instruction_audio = self._record_instruction(stream, on_level=on_level)
                     print(
                         f"[wakeword] Instruction enregistree "

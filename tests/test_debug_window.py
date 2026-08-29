@@ -38,26 +38,38 @@ def test_set_level_clamps_to_0_1(fake_process: MagicMock) -> None:
     window = _make_window()
 
     window.set_level(1.5)
-    assert window._queue.put.call_args.args[0] == "setLevel(1.0)"
+    assert window._queue.put.call_args.args[0] == ("eval", "setLevel(1.0)")
 
     window.set_level(-0.5)
-    assert window._queue.put.call_args.args[0] == "setLevel(0.0)"
+    assert window._queue.put.call_args.args[0] == ("eval", "setLevel(0.0)")
 
 
-def test_set_state_queues_js(fake_process: MagicMock) -> None:
+def test_set_state_queues_js_and_shows_for_an_active_state(fake_process: MagicMock) -> None:
     window = _make_window()
 
     window.set_state("recording")
 
-    assert window._queue.put.call_args.args[0] == 'setState("recording")'
+    calls = [c.args[0] for c in window._queue.put.call_args_list]
+    assert ("eval", 'setState("recording")') in calls
+    assert ("show", None) in calls
 
 
-def test_close_sends_none_sentinel(fake_process: MagicMock) -> None:
+def test_set_state_hides_for_idle_and_listening(fake_process: MagicMock) -> None:
+    window = _make_window()
+
+    for state in ("idle", "listening"):
+        window._queue.reset_mock()
+        window.set_state(state)
+        calls = [c.args[0] for c in window._queue.put.call_args_list]
+        assert ("hide", None) in calls
+
+
+def test_close_sends_quit(fake_process: MagicMock) -> None:
     window = _make_window()
 
     window.close()
 
-    assert window._queue.put.call_args.args[0] is None
+    assert window._queue.put.call_args.args[0] == ("quit", None)
 
 
 def test_send_swallows_queue_errors(fake_process: MagicMock) -> None:
