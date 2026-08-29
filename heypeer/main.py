@@ -124,6 +124,12 @@ class HeyPeer:
         # whichever thread actually handles instructions (see module
         # docstring) - never handled inline in the audio callback.
         self._detections: queue.Queue = queue.Queue()
+        # Whether the turn currently being handled came from a real spoken
+        # wake-word activation (mic audio available to record a spoken
+        # yes/no reply) vs. typed text (the tray's manual prompt, tests) -
+        # set at the top of on_wake_word/_handle_instruction, read by
+        # _confirm to decide whether it can use voice confirmation.
+        self._last_turn_was_voice = False
 
     def _log(self, message: str) -> None:
         print(message)
@@ -286,8 +292,9 @@ class HeyPeer:
         self._log("Hey Peer detected.")
         if self.debug_window is not None:
             self.debug_window.set_state("thinking")
+        self._last_turn_was_voice = audio is not None and len(audio) > 0
         try:
-            if audio is not None and len(audio) > 0:
+            if self._last_turn_was_voice:
                 intent = self._interpret_audio(audio)
             else:
                 instruction_text = self.get_instruction()
@@ -329,6 +336,7 @@ class HeyPeer:
 
     def _handle_instruction(self, instruction_text: str) -> None:
         """Text-only path used by the tray's manual prompt and by tests."""
+        self._last_turn_was_voice = False
         intent = self.nemotron.interpret_text(
             instruction_text, self._skill_context(), watched_files=self._watched_files()
         )
@@ -341,6 +349,36 @@ class HeyPeer:
             self._run_move_file_intent(intent)
         else:
             self._log("Hey Peer didn't recognize a known skill or file action in that instruction.")
+            self._speak("Je n'ai pas compris cette instruction.")
+
+    def _confirm(self, intent: Intent, description: str) -> bool:
+        """Voice confirmation for a real spoken wake-word turn (records and
+        transcribes a short yes/no reply); falls back to the console y/N
+        gate for a typed turn (tray prompt, tests), which has no mic-audio
+        context to react to."""
+        if self._last_turn_was_voice:
+            return self._confirm_by_voice(intent, description)
+        return confirm(intent, description)
+
+    def _confirm_by_voice(self, intent: Intent, description: str) -> bool:
+        if self.debug_window is not None:
+            self.debug_window.set_state("recording")
+        try:
+            from heypeer.confirmation.voice import parse_confirmation
+            from heypeer.wakeword.listener import record_voice_reply
+            from heypeer.wakeword.stt import transcribe
+
+            reply_audio = record_voice_reply(on_level=self._on_audio_level)
+            reply_text = transcribe(reply_audio)
+            self._log(f"> {reply_text}" if reply_text else "> (no reply heard)")
+            decision = parse_confirmation(reply_text)
+            if decision is None:
+                self._log('Did not hear a clear yes/no - treating as "no".')
+                return False
+            return decision
+        except Exception as exc:
+            self._log(f'Voice confirmation failed, treating as "no": {exc}')
+            return False
 
     def _run_skill_intent(self, intent: Intent) -> None:
         skill = self.memory.get(intent.skill_id)
@@ -348,9 +386,9 @@ class HeyPeer:
             self._log(f"Nemotron referenced an unknown skill id: {intent.skill_id}")
             return
 
-        times = f" {intent.n_repetitions} times" if intent.n_repetitions > 1 else ""
-        self._speak(f"I'll {skill.name}{times}. Do you confirm?")
-        if not confirm(intent, skill.name):
+        times = f" {intent.n_repetitions} fois" if intent.n_repetitions > 1 else ""
+        self._speak(f"Je vais faire : {skill.name}{times}. Tu confirmes ?")
+        if not self._confirm(intent, skill.name):
             self._log("Cancelled.")
             return
 
@@ -363,10 +401,10 @@ class HeyPeer:
         try:
             runner.run(skill, intent.n_repetitions)
             self._log(f'Done: "{skill.name}" x{intent.n_repetitions}.')
-            self._speak("Done.")
+            self._speak("C'est fait.")
         except ExecutionAborted as exc:
             self._log(f"Stopped mid-replay: {exc}")
-            self._speak("I stopped partway through, something looked off.")
+            self._speak("Je me suis arrêté en cours de route, quelque chose semblait anormal.")
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 
@@ -382,8 +420,8 @@ class HeyPeer:
         dest_dir = self.watched_dir / intent.dest_folder
 
         description = f"move {intent.src_filename} -> {intent.dest_folder}/"
-        self._speak(f"I'll move {intent.src_filename} into {intent.dest_folder}. Do you confirm?")
-        if not confirm(intent, description):
+        self._speak(f"Je vais déplacer {intent.src_filename} vers {intent.dest_folder}. Tu confirmes ?")
+        if not self._confirm(intent, description):
             self._log("Cancelled.")
             return
 
@@ -391,10 +429,10 @@ class HeyPeer:
         try:
             new_path = move_single_file(src_path, dest_dir)
             self._log(f"Done: moved to {new_path}.")
-            self._speak("Done.")
+            self._speak("C'est fait.")
         except ExecutionAborted as exc:
             self._log(f"Stopped: {exc}")
-            self._speak("I stopped, something looked off.")
+            self._speak("Je me suis arrêté, quelque chose semblait anormal.")
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 

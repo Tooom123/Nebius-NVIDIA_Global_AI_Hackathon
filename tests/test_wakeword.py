@@ -1,3 +1,5 @@
+import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -11,6 +13,7 @@ from heypeer.wakeword.listener import (
     _ensure_openwakeword_models,
     chunk_dbfs,
     dbfs_to_level,
+    record_voice_reply,
     save_wav,
 )
 from heypeer.wakeword.train import export_onnx, train
@@ -153,6 +156,12 @@ class _FakeStream:
         self._i += 1
         return chunk.tobytes()
 
+    def stop_stream(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
 
 def _loud_chunk() -> np.ndarray:
     return np.full(CHUNK_SAMPLES, 20000, dtype=np.int16)
@@ -210,6 +219,26 @@ def test_record_instruction_respects_max_duration_cap(toy_model: Path) -> None:
     from heypeer.wakeword.listener import INSTRUCTION_MAX_SECONDS, SAMPLE_RATE
 
     assert len(audio) == int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES) * CHUNK_SAMPLES
+
+
+def test_record_voice_reply_opens_and_closes_its_own_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`record_voice_reply` must not reuse the wake-word listener's own
+    stream (it's called from a different thread, well after the wake-word
+    trigger) - it opens (and cleans up) a short-lived stream of its own."""
+    chunks = [_loud_chunk()] * 3 + [_quiet_chunk()] * 10
+    fake_stream = _FakeStream(chunks)
+    fake_pa = MagicMock()
+    fake_pa.open.return_value = fake_stream
+    fake_pyaudio_module = types.ModuleType("pyaudio")
+    fake_pyaudio_module.PyAudio = MagicMock(return_value=fake_pa)
+    fake_pyaudio_module.paInt16 = 8
+    monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
+
+    audio = record_voice_reply()
+
+    fake_pa.open.assert_called_once()
+    assert len(audio) > 0
+    fake_pa.terminate.assert_called_once()
 
 
 def test_save_wav_round_trips(tmp_path: Path) -> None:

@@ -33,16 +33,16 @@ def test_empty_string_env_vars_fall_back_to_defaults(
 
     assert settings.watched_dir == Path.home() / "Downloads"
     assert settings.wakeword_threshold == 0.9
-    assert settings.wakeword_debug is True
+    assert settings.wakeword_debug is False
 
 
 def test_explicit_env_vars_are_respected(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEYPEER_WATCHED_DIR", "/tmp/somewhere")
     monkeypatch.setenv("HEYPEER_WAKEWORD_THRESHOLD", "0.75")
-    monkeypatch.setenv("HEYPEER_WAKEWORD_DEBUG", "0")
+    monkeypatch.setenv("HEYPEER_WAKEWORD_DEBUG", "1")
 
     settings = load_settings()
 
     assert settings.watched_dir == Path("/tmp/somewhere")
     assert settings.wakeword_threshold == 0.75
-    assert settings.wakeword_debug is False
+    assert settings.wakeword_debug is True

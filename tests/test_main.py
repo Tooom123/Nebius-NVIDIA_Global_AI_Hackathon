@@ -23,6 +23,17 @@ def fake_tts(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return speak_mock
 
 
+@pytest.fixture(autouse=True)
+def fake_voice_reply(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """A real (audio-triggered) wake-word turn now confirms by voice, which
+    would otherwise open a real mic stream via pyaudio - not something any
+    test should touch. Defaults to "no audio heard" (empty array); tests
+    that need a specific spoken reply override this directly."""
+    reply_mock = MagicMock(return_value=np.zeros(0, dtype=np.int16))
+    monkeypatch.setattr("heypeer.wakeword.listener.record_voice_reply", reply_mock, raising=False)
+    return reply_mock
+
+
 @pytest.fixture
 def fake_pyautogui(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake = types.ModuleType("pyautogui")
@@ -308,6 +319,69 @@ def test_on_wake_word_with_empty_audio_falls_back_to_text(
     nemotron.interpret_text.assert_called_once()
     assert nemotron.interpret_text.call_args.args[0] == "typed instruction"
     assert nemotron.interpret_text.call_args.kwargs.get("screenshot_path") is None
+
+
+def test_confirm_uses_voice_path_after_a_real_spoken_turn(tmp_path: Path) -> None:
+    """A wake-word turn triggered by real mic audio confirms by recording
+    and transcribing a spoken reply, not the console y/N prompt."""
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer._last_turn_was_voice = True
+    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
+
+    with (
+        patch("heypeer.main.confirm") as console_confirm,
+        patch("heypeer.wakeword.stt.transcribe", return_value="oui"),
+    ):
+        result = peer._confirm(intent, "do the thing")
+
+    assert result is True
+    console_confirm.assert_not_called()
+
+
+def test_confirm_uses_console_path_after_a_typed_turn(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer._last_turn_was_voice = False
+    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
+
+    with patch("heypeer.main.confirm", return_value=True) as console_confirm:
+        result = peer._confirm(intent, "do the thing")
+
+    assert result is True
+    console_confirm.assert_called_once()
+
+
+def test_confirm_by_voice_rejects_when_reply_is_unclear(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
+
+    with patch("heypeer.wakeword.stt.transcribe", return_value="what was that"):
+        assert peer._confirm_by_voice(intent, "do the thing") is False
+
+
+def test_confirm_by_voice_rejects_on_no(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
+
+    with patch("heypeer.wakeword.stt.transcribe", return_value="non"):
+        assert peer._confirm_by_voice(intent, "do the thing") is False
+
+
+def test_confirm_by_voice_swallows_errors_and_treats_as_no(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    intent = Intent(action="run_skill", skill_id="x", n_repetitions=1)
+
+    with patch("heypeer.wakeword.stt.transcribe", side_effect=RuntimeError("model not loaded")):
+        assert peer._confirm_by_voice(intent, "do the thing") is False  # must not raise
 
 
 def test_on_wake_word_interpret_failure_does_not_raise(
