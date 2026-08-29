@@ -251,10 +251,11 @@ def run_tray() -> None:
     """Default entry point: a background app living in the system tray.
 
     Capture (skill learning) starts immediately — see `HeyPeer.start_capture`.
-    "Mode auto" in the tray menu arms/disarms wake-word listening and the
-    colored-cursor indicator specifically. `TrayApp.run()` blocks the calling
-    thread with the tray's own event loop, so it must be called last, from
-    the main thread.
+    "Mode auto" (wake-word listening + the colored-cursor indicator) is a
+    simple ON/OFF toggle in the tray menu, and starts **ON** by default —
+    turn it off from the menu if you don't want voice activation this
+    session. `TrayApp.run()` blocks the calling thread with the tray's own
+    event loop, so it must be called last, from the main thread.
 
     Note: on Windows, Ctrl+C in the console can't reliably interrupt the
     tray's native message loop — use the tray menu's "Quitter" to exit
@@ -263,8 +264,9 @@ def run_tray() -> None:
     peer = _build_peer()
     atexit.register(peer.cursor.reset)
     peer.start_capture()
+    peer.tray.set_auto_mode(True)
     print("Apprentissage de skills actif en arrière-plan.")
-    print("Icône dans la zone de notification. Active « Mode auto » pour l'écoute vocale.")
+    print("Icône dans la zone de notification. Mode auto (écoute vocale) : ON.")
     print('Menu "Demander à Hey Peer..." disponible pour tester sans micro.')
     peer.tray.run()
 
@@ -276,7 +278,7 @@ def run_cli() -> None:
     peer = _build_peer()
     atexit.register(peer.cursor.reset)
     peer.start_capture()
-    peer._set_auto_mode(True)
+    peer.tray.set_auto_mode(True)
 
     try:
         if peer._wake_thread is not None:

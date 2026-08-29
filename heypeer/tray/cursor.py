@@ -135,6 +135,94 @@ def _prepare_win32_functions(ctypes_mod, wintypes, ICONINFO):
     return user32, gdi32
 
 
+def _read_dib_bits(ctypes_mod, wintypes, user32, gdi32, BITMAPINFOHEADER, BITMAPINFO, hbitmap, width, height, bit_count):
+    """Reads a bitmap's raw pixel bytes top-down via GetDIBits. Shared by the
+    monochrome (1bpp AND/XOR mask) and color (32bpp BGRA) extraction paths."""
+    bmi = BITMAPINFO()
+    bmi.bmiHeader.biSize = ctypes_mod.sizeof(BITMAPINFOHEADER)
+    bmi.bmiHeader.biWidth = width
+    bmi.bmiHeader.biHeight = -height  # negative = top-down rows
+    bmi.bmiHeader.biPlanes = 1
+    bmi.bmiHeader.biBitCount = bit_count
+    bmi.bmiHeader.biCompression = BI_RGB
+
+    row_bytes = ((width * bit_count + 31) // 32) * 4
+    buffer = (ctypes_mod.c_ubyte * (row_bytes * height))()
+    hdc = user32.GetDC(None)
+    gdi32.GetDIBits(hdc, hbitmap, 0, height, buffer, ctypes_mod.byref(bmi), DIB_RGB_COLORS)
+    user32.ReleaseDC(None, hdc)
+    return buffer, row_bytes
+
+
+def _extract_mono_arrow(ctypes_mod, wintypes, user32, gdi32, structs, icon_info, tint):
+    """Classic monochrome cursor: hbmColor is NULL, hbmMask stacks a 1bpp AND
+    mask over a 1bpp XOR mask, each full-height."""
+    _ICONINFO, BITMAP, BITMAPINFOHEADER, BITMAPINFO = structs
+
+    bmp = BITMAP()
+    gdi32.GetObjectW(icon_info.hbmMask, ctypes_mod.sizeof(BITMAP), ctypes_mod.byref(bmp))
+    width = bmp.bmWidth
+    total_height = bmp.bmHeight
+    height = total_height // 2
+
+    buffer, row_bytes = _read_dib_bits(
+        ctypes_mod, wintypes, user32, gdi32, BITMAPINFOHEADER, BITMAPINFO,
+        icon_info.hbmMask, width, total_height, bit_count=1,
+    )
+
+    def get_bit(row_offset: int, x: int, y: int) -> int:
+        row = row_offset + y
+        byte_index = row * row_bytes + x // 8
+        bit_index = 7 - (x % 8)
+        return (buffer[byte_index] >> bit_index) & 1
+
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    pixels = image.load()
+    for y in range(height):
+        for x in range(width):
+            and_bit = get_bit(0, x, y)
+            xor_bit = get_bit(height, x, y)
+            if and_bit == 1 and xor_bit == 0:
+                pixels[x, y] = (0, 0, 0, 0)  # transparent
+            elif and_bit == 0 and xor_bit == 1:
+                pixels[x, y] = tint  # the arrow's white fill -> recolored
+            else:
+                pixels[x, y] = (0, 0, 0, 255)  # outline (and the rare invert case)
+    return image
+
+
+def _extract_color_arrow(ctypes_mod, wintypes, user32, gdi32, structs, icon_info, tint):
+    """Modern color cursor: hbmColor holds a real 32bpp BGRA bitmap with its
+    own alpha channel — common on current Windows cursor schemes/themes.
+    Recolors by brightness: bright (white-ish) pixels become `tint` at their
+    original alpha, dark (outline) pixels stay black — same idea as the
+    monochrome path's AND/XOR split, just reading real color+alpha instead."""
+    _ICONINFO, BITMAP, BITMAPINFOHEADER, BITMAPINFO = structs
+
+    bmp = BITMAP()
+    gdi32.GetObjectW(icon_info.hbmColor, ctypes_mod.sizeof(BITMAP), ctypes_mod.byref(bmp))
+    width, height = bmp.bmWidth, bmp.bmHeight
+
+    buffer, row_bytes = _read_dib_bits(
+        ctypes_mod, wintypes, user32, gdi32, BITMAPINFOHEADER, BITMAPINFO,
+        icon_info.hbmColor, width, height, bit_count=32,
+    )
+
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    pixels = image.load()
+    for y in range(height):
+        for x in range(width):
+            i = y * row_bytes + x * 4
+            b, g, r, a = buffer[i], buffer[i + 1], buffer[i + 2], buffer[i + 3]
+            if a == 0:
+                pixels[x, y] = (0, 0, 0, 0)
+            elif (r + g + b) / 3 > 128:
+                pixels[x, y] = (tint[0], tint[1], tint[2], a)
+            else:
+                pixels[x, y] = (0, 0, 0, a)
+    return image
+
+
 def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Image, tuple[int, int]]:
     """Reads Windows' own default arrow cursor bitmap and returns a copy with
     its white fill pixels replaced by `tint` — same shape, same outline, same
@@ -143,7 +231,8 @@ def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Ima
     import ctypes
     from ctypes import wintypes
 
-    ICONINFO, BITMAP, BITMAPINFOHEADER, BITMAPINFO = _win32_structures(ctypes, wintypes)
+    structs = _win32_structures(ctypes, wintypes)
+    ICONINFO = structs[0]
     user32, gdi32 = _prepare_win32_functions(ctypes, wintypes, ICONINFO)
 
     hcursor = user32.LoadCursorW(None, ctypes.cast(IDC_ARROW, wintypes.LPCWSTR))
@@ -155,52 +244,10 @@ def _extract_recolored_arrow(tint: tuple[int, int, int, int]) -> tuple[Image.Ima
         raise OSError("GetIconInfo failed")
 
     try:
-        bmp = BITMAP()
-        gdi32.GetObjectW(icon_info.hbmMask, ctypes.sizeof(BITMAP), ctypes.byref(bmp))
-        width = bmp.bmWidth
-        # The default arrow is a monochrome cursor: hbmColor is NULL and
-        # hbmMask stacks the AND mask on top of the XOR mask, each full-height.
-        mono = not icon_info.hbmColor
-        total_height = bmp.bmHeight
-        if not mono:
-            raise OSError("Unexpected color cursor for IDC_ARROW")
-        height = total_height // 2
-
-        bmi = BITMAPINFO()
-        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = width
-        bmi.bmiHeader.biHeight = -total_height  # negative = top-down rows
-        bmi.bmiHeader.biPlanes = 1
-        bmi.bmiHeader.biBitCount = 1
-        bmi.bmiHeader.biCompression = BI_RGB
-
-        row_bytes = ((width + 31) // 32) * 4
-        buffer = (ctypes.c_ubyte * (row_bytes * total_height))()
-        hdc = user32.GetDC(None)
-        gdi32.GetDIBits(
-            hdc, icon_info.hbmMask, 0, total_height, buffer, ctypes.byref(bmi), DIB_RGB_COLORS
-        )
-        user32.ReleaseDC(None, hdc)
-
-        def get_bit(row_offset: int, x: int, y: int) -> int:
-            row = row_offset + y
-            byte_index = row * row_bytes + x // 8
-            bit_index = 7 - (x % 8)
-            return (buffer[byte_index] >> bit_index) & 1
-
-        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        pixels = image.load()
-        for y in range(height):
-            for x in range(width):
-                and_bit = get_bit(0, x, y)
-                xor_bit = get_bit(height, x, y)
-                if and_bit == 1 and xor_bit == 0:
-                    pixels[x, y] = (0, 0, 0, 0)  # transparent
-                elif and_bit == 0 and xor_bit == 1:
-                    pixels[x, y] = tint  # the arrow's white fill -> recolored
-                else:
-                    pixels[x, y] = (0, 0, 0, 255)  # outline (and the rare invert case)
-
+        if icon_info.hbmColor:
+            image = _extract_color_arrow(ctypes, wintypes, user32, gdi32, structs, icon_info, tint)
+        else:
+            image = _extract_mono_arrow(ctypes, wintypes, user32, gdi32, structs, icon_info, tint)
         hotspot = (icon_info.xHotspot, icon_info.yHotspot)
         return image, hotspot
     finally:

@@ -185,6 +185,26 @@ each major implementation (per project convention).
         (renamed "Mode auto (écoute vocale)" in the menu) and the cursor
         indicator are now specifically about wake-word listening readiness.
         Regression-tested (`test_auto_mode_toggle_does_not_affect_capture`).
+- [x] Round 3 of real-Windows bugs, fixed 2026-08-29:
+  - [x] **`OSError: Unexpected color cursor for IDC_ARROW`**: the extraction
+        code assumed every default arrow cursor is the classic monochrome
+        AND/XOR-mask kind, and hard-failed otherwise. The user's actual
+        Windows cursor scheme uses a real 32bpp color+alpha bitmap (common on
+        current Windows themes) — `hbmColor` was non-NULL, which the code
+        treated as an error instead of a case to handle. Added
+        `_extract_color_arrow()`: reads the 32bpp BGRA bitmap directly via
+        `GetDIBits` and recolors by brightness (bright pixels -> tint at
+        their original alpha, dark pixels stay black), same idea as the
+        monochrome AND/XOR split, just against real color+alpha data.
+        `_extract_recolored_arrow()` now dispatches on `hbmColor` instead of
+        raising. Not independently unit-tested (would need deep ctypes
+        struct-pointer mocking for low payoff) — needs real-Windows
+        verification, like the rest of the cursor code.
+  - [x] **"Mode auto" now defaults to ON at launch** (per explicit user
+        request: "un ON/OFF... sur ON lors du lancement"). `run_tray()` and
+        `run_cli()` both call `peer.tray.set_auto_mode(True)` right after
+        `start_capture()`; the tray menu item is unchanged (still a plain
+        toggle) so it can still be turned off for that session.
 - [ ] Submission polish
   - [x] README install/run instructions kept accurate as pieces land
   - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay
