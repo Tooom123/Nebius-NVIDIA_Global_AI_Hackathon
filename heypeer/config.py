@@ -29,7 +29,7 @@ def load_settings() -> Settings:
             "NEBIUS_BASE_URL", "https://api.studio.nebius.ai/v1"
         ),
         nemotron_model_id=os.environ.get(
-            "NEMOTRON_MODEL_ID", "nvidia/nemotron-3-nano-omni"
+            "NEMOTRON_MODEL_ID", "nvidia/Nemotron-3-Nano-Omni"
         ),
         watched_dir=Path(
             os.environ.get("HEYPEER_WATCHED_DIR", str(Path.home() / "Downloads"))

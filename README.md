@@ -82,7 +82,8 @@ heypeer/
 
 - Python 3.10+
 - A [Nebius AI Studio / Token Factory](https://studio.nebius.ai/) API key with access
-  to `nvidia/nemotron-3-nano-omni` (or the current model id on the platform)
+  to `nvidia/Nemotron-3-Nano-Omni` (verify the exact id in the platform's model
+  catalog — casing has changed before)
 - A microphone and display (for the wake-word listener and skill replay,
   respectively) — not required to run the test suite
 
