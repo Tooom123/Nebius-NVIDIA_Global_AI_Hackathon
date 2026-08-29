@@ -1,10 +1,16 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import soundfile as sf
 
-from heypeer.wakeword.listener import CHUNK_SAMPLES, WakeWordListener, chunk_dbfs
+from heypeer.wakeword.listener import (
+    CHUNK_SAMPLES,
+    WakeWordListener,
+    _ensure_openwakeword_models,
+    chunk_dbfs,
+)
 from heypeer.wakeword.train import export_onnx, train
 
 SR = 16000
@@ -65,3 +71,39 @@ def test_chunk_dbfs_silence_is_much_quieter_than_full_scale() -> None:
 
 def test_chunk_dbfs_empty_chunk_does_not_crash() -> None:
     assert chunk_dbfs(np.array([], dtype=np.int16)) < 0
+
+
+def test_ensure_openwakeword_models_skips_download_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Path(fake_openwakeword.__file__).parent / "resources" / "models" is
+    # where _ensure_openwakeword_models looks for the required files.
+    pkg_dir = tmp_path / "pkg"
+    (pkg_dir / "resources" / "models").mkdir(parents=True)
+    (pkg_dir / "resources" / "models" / "melspectrogram.onnx").write_bytes(b"x")
+    (pkg_dir / "resources" / "models" / "embedding_model.onnx").write_bytes(b"x")
+    fake_openwakeword = MagicMock(__file__=str(pkg_dir / "__init__.py"))
+    monkeypatch.setattr("heypeer.wakeword.listener.openwakeword", fake_openwakeword)
+
+    download_mock = MagicMock()
+    monkeypatch.setattr("openwakeword.utils.download_models", download_mock, raising=False)
+
+    _ensure_openwakeword_models()
+
+    download_mock.assert_not_called()
+
+
+def test_ensure_openwakeword_models_downloads_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    fake_openwakeword = MagicMock(__file__=str(pkg_dir / "__init__.py"))
+    monkeypatch.setattr("heypeer.wakeword.listener.openwakeword", fake_openwakeword)
+
+    download_mock = MagicMock()
+    monkeypatch.setattr("openwakeword.utils.download_models", download_mock, raising=False)
+
+    _ensure_openwakeword_models()
+
+    download_mock.assert_called_once()
