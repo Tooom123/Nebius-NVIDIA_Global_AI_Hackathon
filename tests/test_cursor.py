@@ -40,7 +40,7 @@ def test_set_active_noop_on_non_windows(monkeypatch: pytest.MonkeyPatch, capsys)
 
     indicator.set_active(True)
 
-    assert "non supporté" in capsys.readouterr().out
+    assert "non supporte" in capsys.readouterr().out
 
 
 def test_set_active_is_idempotent_for_same_value(monkeypatch: pytest.MonkeyPatch, capsys) -> None:

@@ -4,6 +4,17 @@ Runs entirely on-device: audio never leaves the machine unless the classifier
 fires above `threshold`. Uses the same openWakeWord melspectrogram + embedding
 pipeline as `train.py`, feeding a rolling window of the last `CLIP_SECONDS` of
 microphone audio into the custom classifier head produced by that script.
+
+Scoring uses `AudioFeatures`'s own incremental streaming API
+(`_streaming_features`/`get_features`, exposed via `__call__`) rather than
+calling `embed_clips()` on the whole rolling window every chunk. The first
+version of this listener did the latter — recomputing the melspectrogram and
+embeddings for the entire ~1.5s window on every single 80ms chunk — which is
+exactly the "reprocess everything, constantly" pattern real always-listening
+wake-word engines (Hey Siri, Alexa, OK Google) specifically avoid. The
+streaming API only processes the newest samples each call and keeps a
+rolling feature buffer internally, cutting the per-chunk work roughly to the
+size of one chunk instead of the size of the whole detection window.
 """
 
 from collections.abc import Callable
@@ -37,8 +48,8 @@ def _ensure_openwakeword_models() -> None:
     from openwakeword.utils import download_models
 
     print(
-        "[wakeword] Modèles openWakeWord manquants (melspectrogram/embedding) — "
-        "téléchargement en cours..."
+        "[wakeword] Modeles openWakeWord manquants (melspectrogram/embedding) - "
+        "telechargement en cours..."
     )
     # A model name that matches nothing skips downloading the large bundle of
     # official pretrained wake words (alexa, hey_jarvis, ...) we don't use —
@@ -73,19 +84,24 @@ class WakeWordListener:
             model_path, providers=["CPUExecutionProvider"]
         )
         self._input_name = self._session.get_inputs()[0].name
-        self._buffer = np.zeros(int(CLIP_SECONDS * SAMPLE_RATE), dtype=np.int16)
+        # Number of embedding frames that add up to CLIP_SECONDS — matches
+        # what train.py's embed_clips()/.mean(axis=1) produced per training
+        # clip, so streaming scoring stays consistent with what the
+        # classifier actually learned.
+        self._n_feature_frames = self._features.get_embedding_shape(CLIP_SECONDS)[0]
         self._running = False
 
     def _score(self) -> float:
-        embedding = self._features.embed_clips(
-            self._buffer[np.newaxis, :], batch_size=1
-        ).mean(axis=1)
+        features = self._features.get_features(n_feature_frames=self._n_feature_frames)
+        embedding = features.mean(axis=1)
         probs = self._session.run(None, {self._input_name: embedding.astype(np.float32)})[1]
         return float(probs[0][1])
 
     def process_chunk(self, chunk: np.ndarray) -> float:
-        """Feed one int16 PCM chunk; returns the current detection score."""
-        self._buffer = np.concatenate([self._buffer, chunk])[-len(self._buffer) :]
+        """Feed one int16 PCM chunk (>= CHUNK_SAMPLES); incrementally updates
+        openWakeWord's internal streaming feature buffer and returns the
+        current detection score."""
+        self._features(chunk)
         return self._score()
 
     def start(self, on_detected: Callable[[], None]) -> None:
@@ -97,11 +113,11 @@ class WakeWordListener:
             try:
                 info = pa.get_default_input_device_info()
                 print(
-                    f"[wakeword] Périphérique d'entrée : {info['name']} "
+                    f"[wakeword] Peripherique d'entree : {info['name']} "
                     f"(index {info['index']}, {int(info['defaultSampleRate'])} Hz natif)"
                 )
             except Exception as exc:  # no default input device, permissions, etc.
-                print(f"[wakeword] Impossible de lire le périphérique d'entrée par défaut : {exc}")
+                print(f"[wakeword] Impossible de lire le peripherique d'entree par defaut : {exc}")
 
         stream = pa.open(
             format=pyaudio.paInt16,
@@ -111,7 +127,7 @@ class WakeWordListener:
             frames_per_buffer=CHUNK_SAMPLES,
         )
         if self.debug:
-            print(f"[wakeword] Écoute démarrée (seuil de détection = {self.threshold}).")
+            print(f"[wakeword] Ecoute demarree (seuil de detection = {self.threshold}).")
         try:
             while self._running:
                 raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
@@ -129,7 +145,7 @@ class WakeWordListener:
                 if score >= self.threshold:
                     if self.debug:
                         print()  # move off the overwritten debug line
-                    print(f"[wakeword] Mot d'activation détecté (score={score:.2f}).")
+                    print(f"[wakeword] Mot d'activation detecte (score={score:.2f}).")
                     on_detected()
         finally:
             stream.stop_stream()
