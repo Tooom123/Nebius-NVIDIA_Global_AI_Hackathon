@@ -34,16 +34,6 @@ def test_init_starts_a_daemon_process(fake_process: MagicMock) -> None:
     window._process.start.assert_called_once()
 
 
-def test_log_queues_js_with_escaped_text(fake_process: MagicMock) -> None:
-    window = _make_window()
-
-    window.log('hello "world"')
-
-    js_call = window._queue.put.call_args.args[0]
-    assert js_call.startswith("log(")
-    assert '\\"world\\"' in js_call
-
-
 def test_set_level_clamps_to_0_1(fake_process: MagicMock) -> None:
     window = _make_window()
 
@@ -74,4 +64,4 @@ def test_send_swallows_queue_errors(fake_process: MagicMock) -> None:
     window = _make_window()
     window._queue.put.side_effect = Exception("queue closed")
 
-    window.log("should not raise")  # must not propagate
+    window.set_state("should not raise")  # must not propagate

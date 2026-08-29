@@ -4,9 +4,13 @@ Flow: activity capture feeds a pattern detector, which stores newly detected
 skills in memory. Once the wake word (or the tray's manual prompt) fires, the
 user's instruction is sent to Nemotron along with the list of known skills and
 the watched folder's current contents. Nemotron either resolves it to a known
-skill, resolves it to a direct one-off file move (no skill needed - "deplace X
-vers Y"), or reports it as unknown. Either way the user confirms before
-anything executes.
+skill, resolves it to a direct one-off file action - move/rename/create/
+delete (no skill needed - "deplace X vers Y", "renomme X en Y", ...) - or
+reports it as unknown. There used to be a confirmation step before executing
+anything; removed per explicit user feedback that it caused more problems
+than it solved (voice replies were often misheard and defaulted to "no",
+blocking real actions). Hey Peer still narrates what it's about to do out
+loud before doing it, just doesn't wait for a reply any more.
 
 Two independent PatternDetectors are used - one for generic input events
 (clicks/keys/focus, from `ActivityWatcher`), one for file moves (from
@@ -25,9 +29,9 @@ today) is where the actual instruction gathering happens.
 
 By default this runs as a background app with a system tray icon (`TrayApp`).
 Capture (learning skills from repeated action sequences / file moves) starts
-natively as soon as the app launches - it's passive observation and nothing
-ever executes from it without a separate, explicit confirmation, so there's no
-real "off" state worth having for it. The "Mode auto" tray toggle and the
+natively as soon as the app launches - it's passive observation on its own
+(nothing runs until the wake word actually resolves to an action), so there's
+no real "off" state worth having for it. The "Mode auto" tray toggle and the
 colored-cursor indicator are about something narrower: whether Hey Peer is
 actually listening for the wake word and able to act on it. Pass `--cli` to
 instead run the foreground console loop (useful for headless dev boxes, or for
@@ -48,8 +52,15 @@ from heypeer.capture.events import ActionEvent
 from heypeer.capture.file_watcher import FileOpWatcher
 from heypeer.capture.watcher import ActivityWatcher
 from heypeer.config import SKILLS_DIR, load_settings
-from heypeer.confirmation.cli import confirm
-from heypeer.executor.runner import ExecutionAborted, SkillRunner, move_single_file
+from heypeer.executor.runner import (
+    ExecutionAborted,
+    SkillRunner,
+    create_file,
+    create_folder,
+    delete_file,
+    move_single_file,
+    rename_file,
+)
 from heypeer.nemotron.client import NemotronClient
 from heypeer.nemotron.intent import Intent
 from heypeer.patterns.detector import PatternDetector
@@ -68,7 +79,7 @@ def _default_get_instruction() -> str:
 
 
 class HeyPeer:
-    """Wires capture -> detection -> interpretation -> confirmation -> execution.
+    """Wires capture -> detection -> interpretation -> execution.
 
     Split out as a class (rather than one long function) so each stage can be
     exercised independently in tests via constructor injection.
@@ -124,23 +135,17 @@ class HeyPeer:
         # whichever thread actually handles instructions (see module
         # docstring) - never handled inline in the audio callback.
         self._detections: queue.Queue = queue.Queue()
-        # Whether the turn currently being handled came from a real spoken
-        # wake-word activation (mic audio available to record a spoken
-        # yes/no reply) vs. typed text (the tray's manual prompt, tests) -
-        # set at the top of on_wake_word/_handle_instruction, read by
-        # _confirm to decide whether it can use voice confirmation.
-        self._last_turn_was_voice = False
 
     def _log(self, message: str) -> None:
+        """The conversation lives in the terminal now - the debug window is
+        just the visual state/level indicator (see `debug_window.py`)."""
         print(message)
-        if self.debug_window is not None:
-            self.debug_window.log(message)
 
     def start_capture(self) -> None:
         """Starts passive skill-learning capture (input events + file moves).
         Native/always-on: called once at app startup, independent of the
-        "Mode auto" voice-activation toggle, since observation alone never
-        executes anything without a separate confirmation."""
+        "Mode auto" voice-activation toggle - observation alone never
+        executes anything on its own, only a resolved wake-word intent does."""
         self.watcher.start()
         if self.file_watcher is not None:
             self.file_watcher.start()
@@ -189,9 +194,14 @@ class HeyPeer:
     def _speak(self, text: str) -> None:
         """Speaks `text` aloud (Piper TTS) — best-effort: a TTS failure
         (missing audio output device, voice download failure, ...) must
-        never block the actual confirm/execute flow."""
+        never block the actual execution flow. Mutes the wake-word listener
+        for the duration: with some headsets Hey Peer's own voice bleeds
+        back into the mic, which could otherwise get scored as more speech
+        or even a false wake-word trigger."""
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
+        if self._wake_listener is not None:
+            self._wake_listener.mute()
         try:
             from heypeer.tray.tts import speak
 
@@ -199,6 +209,8 @@ class HeyPeer:
         except Exception as exc:
             print(f"[tts] Speak failed: {exc}")
         finally:
+            if self._wake_listener is not None:
+                self._wake_listener.unmute()
             if self.debug_window is not None:
                 self.debug_window.set_state("listening")
 
@@ -292,9 +304,8 @@ class HeyPeer:
         self._log("Hey Peer detected.")
         if self.debug_window is not None:
             self.debug_window.set_state("thinking")
-        self._last_turn_was_voice = audio is not None and len(audio) > 0
         try:
-            if self._last_turn_was_voice:
+            if audio is not None and len(audio) > 0:
                 intent = self._interpret_audio(audio)
             else:
                 instruction_text = self.get_instruction()
@@ -336,7 +347,6 @@ class HeyPeer:
 
     def _handle_instruction(self, instruction_text: str) -> None:
         """Text-only path used by the tray's manual prompt and by tests."""
-        self._last_turn_was_voice = False
         intent = self.nemotron.interpret_text(
             instruction_text, self._skill_context(), watched_files=self._watched_files()
         )
@@ -346,39 +356,38 @@ class HeyPeer:
         if intent.action == "run_skill" and intent.skill_id is not None:
             self._run_skill_intent(intent)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
-            self._run_move_file_intent(intent)
+            self._run_file_action(
+                narration=f"Je déplace {intent.src_filename} vers {intent.dest_folder}.",
+                run=lambda: move_single_file(self.watched_dir, intent.src_filename, intent.dest_folder),
+                done=lambda path: f"Done: moved to {path}.",
+            )
+        elif intent.action == "rename_file" and intent.src_filename and intent.new_name:
+            self._run_file_action(
+                narration=f"Je renomme {intent.src_filename} en {intent.new_name}.",
+                run=lambda: rename_file(self.watched_dir, intent.src_filename, intent.new_name),
+                done=lambda path: f"Done: renamed to {path}.",
+            )
+        elif intent.action == "create_file" and intent.target_name:
+            self._run_file_action(
+                narration=f"Je crée le fichier {intent.target_name}.",
+                run=lambda: create_file(self.watched_dir, intent.target_name),
+                done=lambda path: f"Done: created {path}.",
+            )
+        elif intent.action == "create_folder" and intent.target_name:
+            self._run_file_action(
+                narration=f"Je crée le dossier {intent.target_name}.",
+                run=lambda: create_folder(self.watched_dir, intent.target_name),
+                done=lambda path: f"Done: created {path}.",
+            )
+        elif intent.action == "delete_file" and intent.src_filename:
+            self._run_file_action(
+                narration=f"Je supprime {intent.src_filename}.",
+                run=lambda: delete_file(self.watched_dir, intent.src_filename),
+                done=lambda path: f"Done: moved {path} to the recycle bin.",
+            )
         else:
             self._log("Hey Peer didn't recognize a known skill or file action in that instruction.")
             self._speak("Je n'ai pas compris cette instruction.")
-
-    def _confirm(self, intent: Intent, description: str) -> bool:
-        """Voice confirmation for a real spoken wake-word turn (records and
-        transcribes a short yes/no reply); falls back to the console y/N
-        gate for a typed turn (tray prompt, tests), which has no mic-audio
-        context to react to."""
-        if self._last_turn_was_voice:
-            return self._confirm_by_voice(intent, description)
-        return confirm(intent, description)
-
-    def _confirm_by_voice(self, intent: Intent, description: str) -> bool:
-        if self.debug_window is not None:
-            self.debug_window.set_state("recording")
-        try:
-            from heypeer.confirmation.voice import parse_confirmation
-            from heypeer.wakeword.listener import record_voice_reply
-            from heypeer.wakeword.stt import transcribe
-
-            reply_audio = record_voice_reply(on_level=self._on_audio_level)
-            reply_text = transcribe(reply_audio)
-            self._log(f"> {reply_text}" if reply_text else "> (no reply heard)")
-            decision = parse_confirmation(reply_text)
-            if decision is None:
-                self._log('Did not hear a clear yes/no - treating as "no".')
-                return False
-            return decision
-        except Exception as exc:
-            self._log(f'Voice confirmation failed, treating as "no": {exc}')
-            return False
 
     def _run_skill_intent(self, intent: Intent) -> None:
         skill = self.memory.get(intent.skill_id)
@@ -387,10 +396,7 @@ class HeyPeer:
             return
 
         times = f" {intent.n_repetitions} fois" if intent.n_repetitions > 1 else ""
-        self._speak(f"Je vais faire : {skill.name}{times}. Tu confirmes ?")
-        if not self._confirm(intent, skill.name):
-            self._log("Cancelled.")
-            return
+        self._speak(f"Je fais : {skill.name}{times}.")
 
         runner = SkillRunner(
             verify_step=lambda png: self.nemotron.verify_screen(
@@ -408,31 +414,29 @@ class HeyPeer:
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 
-    def _run_move_file_intent(self, intent: Intent) -> None:
+    def _run_file_action(
+        self,
+        narration: str,
+        run: "Callable[[], Path]",
+        done: "Callable[[Path], str]",
+    ) -> None:
+        """Shared body for every direct, one-off file action (move/rename/
+        create file/create folder/delete) - Nemotron resolves which one and
+        the file/name(s) involved, and it runs immediately (no confirmation
+        step any more, see module docstring), narrated out loud first."""
         if self.watched_dir is None:
-            self._log("No watched directory configured - can't resolve a direct file move.")
+            self._log("No watched directory configured - can't resolve a direct file action.")
             return
 
-        src_path = self.watched_dir / intent.src_filename
-        # Kept inside the watched directory by design: Nemotron only ever
-        # names a destination *folder name*, not an arbitrary path, so a
-        # hallucinated or unexpected destination can't write outside it.
-        dest_dir = self.watched_dir / intent.dest_folder
-
-        description = f"move {intent.src_filename} -> {intent.dest_folder}/"
-        self._speak(f"Je vais déplacer {intent.src_filename} vers {intent.dest_folder}. Tu confirmes ?")
-        if not self._confirm(intent, description):
-            self._log("Cancelled.")
-            return
-
+        self._speak(narration)
         self.tray.set_status(Status.EXECUTING)
         try:
-            new_path = move_single_file(src_path, dest_dir)
-            self._log(f"Done: moved to {new_path}.")
+            result_path = run()
+            self._log(done(result_path))
             self._speak("C'est fait.")
         except ExecutionAborted as exc:
             self._log(f"Stopped: {exc}")
-            self._speak("Je me suis arrêté, quelque chose semblait anormal.")
+            self._speak("Je n'ai pas pu faire ça, quelque chose semblait anormal.")
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 

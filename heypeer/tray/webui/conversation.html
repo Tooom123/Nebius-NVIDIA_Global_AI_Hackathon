@@ -5,8 +5,8 @@
 <style>
   :root {
     --level: 0;
-    --orb-color-1: #4a90d9;
-    --orb-color-2: #2ecc71;
+    --accent-1: #d5d8dd;
+    --accent-2: #f4f5f7;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -15,55 +15,23 @@
     width: 100%;
     height: 100%;
     background: transparent;
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     overflow: hidden;
     user-select: none;
   }
-  .card {
+  .orb-wrap {
+    position: relative;
     width: 100%;
     height: 100%;
     display: flex;
-    flex-direction: column;
-    border-radius: 20px;
-    background: rgba(255, 255, 255, 0.72);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-    border: 1px solid rgba(255, 255, 255, 0.5);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
-    overflow: hidden;
-  }
-  .titlebar {
-    -webkit-app-region: drag;
-    padding: 10px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: #55606e;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .titlebar .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--orb-color-1);
-    transition: background-color 0.3s ease;
-  }
-  .orb-wrap {
-    position: relative;
-    display: flex;
-    align-items: center;
     justify-content: center;
-    height: 100px;
-    padding: 8px 0 4px 0;
   }
   .wave-ring {
     position: absolute;
-    width: 84px;
-    height: 84px;
+    top: 16px;
+    width: 60px;
+    height: 60px;
     border-radius: 50%;
-    border: 2px solid var(--orb-color-1);
+    border: 2px solid var(--accent-1);
     opacity: 0;
     pointer-events: none;
     animation: wave 2.6s ease-out infinite;
@@ -74,20 +42,23 @@
   }
   @keyframes wave {
     0% { transform: scale(1); opacity: 0.5; }
-    100% { transform: scale(2.3); opacity: 0; }
+    100% { transform: scale(2.4); opacity: 0; }
   }
   .orb {
     position: relative;
+    top: 16px;
     z-index: 1;
-    width: 84px;
-    height: 84px;
+    width: 60px;
+    height: 60px;
     border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, var(--orb-color-2), var(--orb-color-1));
-    box-shadow: 0 0 calc(18px + var(--level) * 40px) calc(2px + var(--level) * 10px)
-      color-mix(in srgb, var(--orb-color-1) 55%, transparent);
-    transform: scale(calc(1 + var(--level) * 0.35));
-    transition: transform 0.12s ease-out, box-shadow 0.12s ease-out,
-      background 0.4s ease, opacity 0.4s ease;
+    /* White base with an Apple-style colored accent (blue/green/purple/pink
+       depending on state) rather than committing to one brand color. */
+    background: radial-gradient(circle at 35% 30%, #ffffff, var(--accent-2) 55%, var(--accent-1));
+    box-shadow:
+      0 2px 10px rgba(0, 0, 0, 0.12),
+      0 0 calc(14px + var(--level) * 34px) calc(1px + var(--level) * 8px) var(--accent-1);
+    transform: scale(calc(1 + var(--level) * 0.3));
+    transition: transform 0.12s ease-out, box-shadow 0.12s ease-out, background 0.4s ease;
   }
   .orb.breathe {
     animation: breathe 2.4s ease-in-out infinite;
@@ -96,85 +67,27 @@
     0%, 100% { transform: scale(1); }
     50% { transform: scale(1.08); }
   }
-  .transcript {
-    flex: 1;
-    overflow-y: auto;
-    padding: 6px 14px 14px 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .bubble {
-    max-width: 92%;
-    padding: 8px 12px;
-    border-radius: 14px;
-    font-size: 13px;
-    line-height: 1.35;
-    color: #1c2530;
-    background: rgba(255, 255, 255, 0.55);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-    animation: appear 0.18s ease-out;
-  }
-  .bubble.you {
-    align-self: flex-end;
-    background: rgba(74, 144, 217, 0.18);
-  }
-  @keyframes appear {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .transcript::-webkit-scrollbar { width: 6px; }
-  .transcript::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.15);
-    border-radius: 3px;
-  }
-
-  /* Siri/voice-assistant orbs read as white-on-dark or blue/grey-on-light -
-     the card follows the OS theme instead of committing to one look. */
-  @media (prefers-color-scheme: dark) {
-    .card {
-      background: rgba(28, 30, 36, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-    .titlebar { color: #c7d0dc; }
-    .bubble {
-      color: #e7ebf1;
-      background: rgba(255, 255, 255, 0.08);
-    }
-    .bubble.you { background: rgba(122, 179, 255, 0.22); }
-    .transcript::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); }
-  }
 </style>
 </head>
 <body>
-  <div class="card">
-    <div class="titlebar">
-      <span id="status-label">Hey Peer</span>
-      <span class="dot" id="status-dot"></span>
-    </div>
-    <div class="orb-wrap" id="orb-wrap">
-      <div class="wave-ring" style="animation-delay: 0s"></div>
-      <div class="wave-ring" style="animation-delay: 0.7s"></div>
-      <div class="wave-ring" style="animation-delay: 1.4s"></div>
-      <div class="orb breathe" id="orb"></div>
-    </div>
-    <div class="transcript" id="transcript"></div>
+  <div class="orb-wrap" id="orb-wrap">
+    <div class="wave-ring" style="animation-delay: 0s"></div>
+    <div class="wave-ring" style="animation-delay: 0.7s"></div>
+    <div class="wave-ring" style="animation-delay: 1.4s"></div>
+    <div class="orb breathe" id="orb"></div>
   </div>
 
 <script>
   const STATE_STYLE = {
-    idle:      { c1: "#bdbdbd", c2: "#e0e0e0", breathe: false, label: "En pause" },
-    listening: { c1: "#4a90d9", c2: "#7fc8f8", breathe: true,  label: "A l'ecoute" },
-    recording: { c1: "#2ecc71", c2: "#7be6a8", breathe: false, label: "J'ecoute..." },
-    thinking:  { c1: "#f39c12", c2: "#ffcf7a", breathe: true,  label: "Je reflechis..." },
-    speaking:  { c1: "#9b59b6", c2: "#d1a3e0", breathe: true,  label: "..." },
+    idle:      { a1: "#d5d8dd", a2: "#f4f5f7", breathe: false },
+    listening: { a1: "#5ac8fa", a2: "#ffffff", breathe: true },
+    recording: { a1: "#34c759", a2: "#ffffff", breathe: false },
+    thinking:  { a1: "#af52de", a2: "#ffffff", breathe: true },
+    speaking:  { a1: "#ff375f", a2: "#ffffff", breathe: true },
   };
 
   const orb = document.getElementById("orb");
   const orbWrap = document.getElementById("orb-wrap");
-  const dot = document.getElementById("status-dot");
-  const statusLabel = document.getElementById("status-label");
-  const transcript = document.getElementById("transcript");
   const root = document.documentElement;
 
   function setLevel(level) {
@@ -183,22 +96,11 @@
 
   function setState(state) {
     const style = STATE_STYLE[state] || STATE_STYLE.idle;
-    root.style.setProperty("--orb-color-1", style.c1);
-    root.style.setProperty("--orb-color-2", style.c2);
+    root.style.setProperty("--accent-1", style.a1);
+    root.style.setProperty("--accent-2", style.a2);
     orb.classList.toggle("breathe", style.breathe);
     orbWrap.classList.toggle("waving", state !== "idle");
-    dot.style.background = style.c1;
-    statusLabel.textContent = style.label;
     if (state !== "recording") setLevel(0);
-  }
-
-  function log(message) {
-    const bubble = document.createElement("div");
-    const isYou = message.startsWith("> ");
-    bubble.className = "bubble" + (isYou ? " you" : "");
-    bubble.textContent = isYou ? message.slice(2) : message;
-    transcript.appendChild(bubble);
-    transcript.scrollTop = transcript.scrollHeight;
   }
 
   setState("idle");
