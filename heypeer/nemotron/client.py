@@ -1,10 +1,19 @@
 """Client for Nemotron 3 Nano Omni served via Nebius Token Factory.
 
 Nebius Token Factory exposes an OpenAI-compatible Chat Completions API, so this
-uses the `openai` SDK pointed at Nebius's base URL. Per the project plan, the
-text-only path is meant to be validated first; `interpret_text` covers that.
-`interpret` sends the full omni payload (audio clip + screenshot + text) once
-that's ready to wire into the wake-word/capture pipeline.
+uses the `openai` SDK pointed at Nebius's base URL.
+
+`interpret_text` (optionally with a screenshot — `[text, image_url]` content,
+confirmed working against the real endpoint) is the path actually used by the
+running app. `interpret()` sends the full omni payload (audio clip +
+screenshot + text) and is kept here, but nothing calls it: tested directly
+against this Nebius deployment, every audio content-part shape tried
+(`input_audio`, `audio_url`, `audio`) was rejected with an identical 422 the
+moment the content list contains anything other than `text`/`image_url` —
+there is no audio-input support on this endpoint today. Spoken instructions
+are transcribed locally instead (see `heypeer/wakeword/stt.py`) and sent
+through `interpret_text`, keeping the actual reasoning/intent step on
+Nemotron while working around the missing audio input.
 """
 
 import base64
@@ -86,26 +95,35 @@ class NemotronClient:
         instruction_text: str,
         skill_context: list[dict],
         watched_files: list[str] | None = None,
+        screenshot_path: str | None = None,
     ) -> Intent:
-        """Text-only path — validates the prompt/skill-matching logic before
-        wiring in real audio + screenshots."""
-        files_block = (
-            f"\nFiles currently in the watched folder: {json.dumps(watched_files)}"
-            if watched_files is not None
-            else ""
+        """The path actually used end to end: a transcribed instruction
+        (locally, via `heypeer/wakeword/stt.py` — see module docstring for
+        why not raw audio), optionally with a screenshot for visual context.
+        A `[text, image_url]` content list is confirmed working against the
+        real Nebius endpoint; plain-string content is used when no
+        screenshot is given, keeping the original text-only path unchanged."""
+        text = (
+            f"Instruction: {instruction_text}\n"
+            f"Known skills: {_skill_context_block(skill_context)}"
         )
+        if watched_files is not None:
+            text += f"\nFiles currently in the watched folder: {json.dumps(watched_files)}"
+
+        if screenshot_path is None:
+            content = text
+        else:
+            image_b64 = base64.b64encode(Path(screenshot_path).read_bytes()).decode()
+            content = [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+            ]
+
         response = self._client.chat.completions.create(
             model=self.settings.nemotron_model_id,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Instruction: {instruction_text}\n"
-                        f"Known skills: {_skill_context_block(skill_context)}"
-                        f"{files_block}"
-                    ),
-                },
+                {"role": "user", "content": content},
             ],
             response_format={"type": "json_object"},
         )
@@ -135,11 +153,22 @@ class NemotronClient:
         return bool(data.get("ok", False))
 
     def interpret(
-        self, audio_clip_path: str, screenshot_path: str, skill_context: list[dict]
+        self,
+        audio_clip_path: str,
+        screenshot_path: str,
+        skill_context: list[dict],
+        watched_files: list[str] | None = None,
     ) -> Intent:
-        """Full omni path: audio clip + screenshot + skill list."""
+        """Full omni path: audio clip + screenshot + skill list. Nemotron
+        transcribes and reasons over the spoken instruction directly — no
+        separate STT step."""
         audio_b64 = base64.b64encode(Path(audio_clip_path).read_bytes()).decode()
         image_b64 = base64.b64encode(Path(screenshot_path).read_bytes()).decode()
+        files_block = (
+            f"\nFiles currently in the watched folder: {json.dumps(watched_files)}"
+            if watched_files is not None
+            else ""
+        )
 
         response = self._client.chat.completions.create(
             model=self.settings.nemotron_model_id,
@@ -150,7 +179,10 @@ class NemotronClient:
                     "content": [
                         {
                             "type": "text",
-                            "text": f"Known skills: {_skill_context_block(skill_context)}",
+                            "text": (
+                                f"Known skills: {_skill_context_block(skill_context)}"
+                                f"{files_block}"
+                            ),
                         },
                         {
                             "type": "input_audio",
