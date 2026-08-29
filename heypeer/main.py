@@ -142,7 +142,12 @@ class HeyPeer:
             self._wake_listener = WakeWordListener(
                 str(model_path), threshold=self.wakeword_threshold, debug=self.wakeword_debug
             )
-        except (FileNotFoundError, OSError) as exc:
+        except Exception as exc:
+            # Deliberately broad: anything that goes wrong loading the model
+            # or opening the mic (missing file, bad audio device, an
+            # onnxruntime-internal error type that isn't an OSError subclass
+            # -- this has actually happened) should degrade to this message
+            # instead of an unhandled traceback in a background thread.
             print(
                 f'Wake-word listener unavailable ({exc}). Mode auto actif mais '
                 'sans activation vocale (utilise "Demander à Hey Peer..." dans '

@@ -11,11 +11,40 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
+import openwakeword
 from openwakeword.utils import AudioFeatures
 
 SAMPLE_RATE = 16000
 CLIP_SECONDS = 1.5
 CHUNK_SAMPLES = 1280  # 80ms chunks, openWakeWord's standard streaming granularity
+
+
+def _ensure_openwakeword_models() -> None:
+    """openWakeWord's melspectrogram/embedding ONNX models are bundled in
+    some package versions but not others (0.6.0's wheel is ~60 KB — clearly
+    not including them; a version pinned only as ">=0.4.0" can land either
+    way depending on when/where `pip install` runs). Rather than pin an
+    exact version and hope, check for the files openWakeWord itself expects
+    by default and download them on the spot if missing — this is exactly
+    what surfaced as a raw onnxruntime NoSuchFile traceback on a fresh
+    Windows install after this project's own AudioFeatures() call.
+    """
+    models_dir = Path(openwakeword.__file__).parent / "resources" / "models"
+    required = [models_dir / "melspectrogram.onnx", models_dir / "embedding_model.onnx"]
+    if all(p.exists() for p in required):
+        return
+
+    from openwakeword.utils import download_models
+
+    print(
+        "[wakeword] Modèles openWakeWord manquants (melspectrogram/embedding) — "
+        "téléchargement en cours..."
+    )
+    # A model name that matches nothing skips downloading the large bundle of
+    # official pretrained wake words (alexa, hey_jarvis, ...) we don't use —
+    # download_models() unconditionally fetches melspec/embedding/VAD first
+    # regardless of model_names, which is all we actually need here.
+    download_models(model_names=["__heypeer_placeholder_no_match__"])
 
 
 def chunk_dbfs(chunk: np.ndarray) -> float:
@@ -38,6 +67,7 @@ class WakeWordListener:
         # of "nothing happens, no idea why". Remove/gate more permanently
         # once real wake-word detection is validated on real hardware.
         self.debug = debug
+        _ensure_openwakeword_models()
         self._features = AudioFeatures()
         self._session = ort.InferenceSession(
             model_path, providers=["CPUExecutionProvider"]
