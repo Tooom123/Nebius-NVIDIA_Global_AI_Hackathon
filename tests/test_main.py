@@ -289,18 +289,58 @@ def test_on_quit_enqueues_shutdown_sentinel(tmp_path: Path) -> None:
     assert peer._detections.get_nowait() is _SHUTDOWN
 
 
-def test_speak_mutes_and_unmutes_the_wake_listener(tmp_path: Path) -> None:
-    """Regression test: with some headsets, Hey Peer's own TTS output was
-    picked back up by its own mic input. The wake-word listener is muted for
-    the duration of `_speak` so its own voice can't be scored/false-trigger."""
+def test_on_wake_detected_mutes_the_listener_immediately(tmp_path: Path) -> None:
+    """Regression test: real logs showed the audio thread picking up a
+    second "Hey Peer" (or ambient chatter) while the first instruction was
+    still being transcribed/interpreted - muting now starts the instant a
+    detection comes in, not just around the later TTS-playback window."""
     nemotron = MagicMock()
     memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
     peer._wake_listener = MagicMock()
 
-    peer._speak("hello")
+    peer._on_wake_detected(np.zeros(1600, dtype=np.int16))
 
     peer._wake_listener.mute.assert_called_once()
+    peer._wake_listener.unmute.assert_not_called()
+
+
+def test_on_wake_word_unmutes_the_listener_once_the_whole_turn_is_done(
+    tmp_path: Path, fake_pyautogui: MagicMock
+) -> None:
+    """The listener stays muted through transcribe -> interpret -> execute ->
+    speak, unmuted only at the very end of the turn - not right after
+    speaking, and not right after interpreting."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "typed instruction",
+    )
+    peer._wake_listener = MagicMock()
+
+    peer.on_wake_word()
+
+    peer._wake_listener.unmute.assert_called_once()
+
+
+def test_on_wake_word_unmutes_even_if_interpretation_fails(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.side_effect = RuntimeError("network error")
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "typed instruction",
+    )
+    peer._wake_listener = MagicMock()
+
+    peer.on_wake_word()  # must not raise
+
     peer._wake_listener.unmute.assert_called_once()
 
 

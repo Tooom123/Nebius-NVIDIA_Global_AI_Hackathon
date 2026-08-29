@@ -173,13 +173,21 @@ just a thread) specifically so that if window creation ever hangs or fails on so
 machine, the rest of Hey Peer keeps running unaffected instead of the whole app
 freezing with it.
 
-Hey Peer's own TTS output is muted out of its own wake-word listening while it's
-speaking (`WakeWordListener.mute()`/`unmute()`, wired around every `_speak()` call in
-`main.py`) — with some headsets, its own voice was otherwise picked back up by the
-mic and could be scored as more speech or even a false wake-word trigger. This is
-mic *gating*, not true acoustic echo cancellation (nothing is cancelled during
-simultaneous playback+speech) — but Hey Peer never needs to listen for the wake word
-while it's actively talking anyway, so gating fully covers the symptom.
+Hey Peer mutes its own wake-word listening (`WakeWordListener.mute()`/`unmute()`) for
+the whole duration of a turn — from the instant a wake word is detected through
+transcription, interpretation, execution, and any spoken narration — not just while
+it's speaking. This is mic *gating*, not true acoustic echo cancellation (nothing is
+cancelled during genuinely simultaneous playback+speech), but it covers both of the
+practical problems it was built for: some headsets otherwise picked Hey Peer's own
+TTS back up as more input, and separately, real logs showed the wake-word listener
+re-triggering on background chatter while a previous turn was still being processed
+— Hey Peer now fully finishes one turn (like Alexa/Siri) before it can hear a new
+"Hey Peer" at all.
+
+Local transcription (`heypeer/wakeword/stt.py`) uses faster-whisper's "small" model
+with a French-biased prompt and voice-activity filtering (`vad_filter=True`) — after
+"base" produced both garbled short words/filenames and outright hallucinated
+sentences over background noise with no real speech in them.
 
 To regenerate the wake-word model (voices aren't committed — download them first):
 
@@ -204,7 +212,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 100 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 104 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
