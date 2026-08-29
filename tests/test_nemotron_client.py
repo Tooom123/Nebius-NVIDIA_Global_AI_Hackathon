@@ -98,6 +98,75 @@ def test_interpret_text_parses_move_file_intent_with_watched_files() -> None:
     assert "notes.txt" in user_message
 
 
+def test_interpret_text_with_screenshot_uses_list_content(tmp_path) -> None:
+    screenshot_path = tmp_path / "screen.png"
+    screenshot_path.write_bytes(b"fake-png-bytes")
+
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "unknown", "skill_id": None, "n_repetitions": 1}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        client.interpret_text(
+            "do it again", skill_context=[], screenshot_path=str(screenshot_path)
+        )
+
+    content = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert [p["type"] for p in content] == ["text", "image_url"]
+    assert "do it again" in content[0]["text"]
+
+
+def test_interpret_sends_audio_and_screenshot_with_watched_files(tmp_path) -> None:
+    audio_path = tmp_path / "clip.wav"
+    audio_path.write_bytes(b"fake-wav-bytes")
+    screenshot_path = tmp_path / "screen.png"
+    screenshot_path.write_bytes(b"fake-png-bytes")
+
+    settings = Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {
+                "action": "move_file",
+                "src_filename": "facture_mars.pdf",
+                "dest_folder": "Archives",
+            }
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        intent = client.interpret(
+            str(audio_path),
+            str(screenshot_path),
+            skill_context=[],
+            watched_files=["facture_mars.pdf", "notes.txt"],
+        )
+
+    assert intent.action == "move_file"
+    assert intent.src_filename == "facture_mars.pdf"
+
+    call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+    content_parts = call_kwargs["messages"][1]["content"]
+    types = [p["type"] for p in content_parts]
+    assert types == ["text", "input_audio", "image_url"]
+    assert "facture_mars.pdf" in content_parts[0]["text"]
+    assert content_parts[1]["input_audio"]["format"] == "wav"
+
+
 def test_verify_screen_returns_ok_flag() -> None:
     settings = Settings(
         nebius_api_key="test-key",

@@ -316,16 +316,32 @@ without also being able to *speak* the instruction — right now
 Also asked for a proper UI, sketched out concretely this time (not just "a
 real UI" — an actual interaction design):
 
-- [ ] **Voice command capture + interpretation** — record a few seconds of
-      audio right after wake-word detection and route it through
-      `NemotronClient.interpret()` (already built, accepts an audio clip +
-      screenshot + skill context — never actually exercised end-to-end,
-      only `interpret_text()` has been) instead of `input()`. Natural fit
-      given Nemotron 3 Nano Omni is multimodal audio+vision+text already —
-      no separate STT engine needed in principle. Needs: a short recording
-      window (VAD-based end-of-speech detection, or a fixed few seconds),
-      saving it as a wav, and wiring `HeyPeer._handle_instruction` to accept
-      an audio path instead of/alongside text.
+- [x] **Voice command capture + interpretation** — done 2026-08-30. Records
+      audio right after wake-word detection (`WakeWordListener._record_instruction`:
+      simple energy-based end-pointing on the same open mic stream, stops
+      after ~0.8s of trailing silence or an 8s safety cap) and routes it
+      through Nemotron... except not the way originally planned:
+      **`NemotronClient.interpret()`'s audio content part is rejected by the
+      real Nebius endpoint** — tested directly (not read from docs): every
+      shape tried (`input_audio`, `audio_url`, `audio`, both OpenAI and vLLM
+      conventions) got an identical 422 the instant the message content list
+      contains anything but `text`/`image_url`. No `/audio/transcriptions`
+      endpoint either (404). There is no audio input support on this
+      deployment today, whatever Nemotron 3 Nano Omni supports natively.
+      Pivoted to local transcription: `heypeer/wakeword/stt.py` wraps
+      `faster-whisper`'s "base" model (CPU, int8) — auto-detects language
+      (verified working for English and French), transcribes a several-second
+      clip in well under a second once loaded, model load (~8s) is warmed up
+      in the background at auto-mode-on rather than paid on first use.
+      `NemotronClient.interpret_text()` gained an optional `screenshot_path`
+      (confirmed `[text, image_url]` content list *does* work against the
+      real endpoint) so visual context isn't lost by dropping native audio.
+      Verified end to end for real: synthetic "move the invoice file to the
+      archive folder" clip -> transcribed correctly -> Nemotron resolved
+      `action=move_file, src_filename=invoice_march.pdf, dest_folder=Archive`
+      picking the right file out of a mixed watched-folder listing.
+      `interpret()` itself is left in the codebase (commented on why it's
+      unused) in case the Nebius deployment adds audio support later.
 - [ ] **Corner popup UI on wake-word detection** — a first, debug-oriented
       step toward this landed already (`heypeer/tray/debug_window.py`, logs
       the conversation live), but it's a plain scrolling text log, not the

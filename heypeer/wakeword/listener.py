@@ -31,6 +31,14 @@ CLIP_SECONDS = 1.5
 CHUNK_SAMPLES = 1280  # 80ms chunks, openWakeWord's standard streaming granularity
 COOLDOWN_SECONDS = 1.5  # minimum gap between two separate detections
 
+# Simple energy-based end-pointing for the instruction recorded right after a
+# wake-word trigger — good enough for a spoken command a few seconds long
+# without pulling in a separate VAD model.
+INSTRUCTION_MAX_SECONDS = 8.0
+INSTRUCTION_SILENCE_CHUNKS = 10  # ~0.8s of trailing silence ends the recording
+INSTRUCTION_MIN_SPEECH_CHUNKS = 3
+SPEECH_DBFS_THRESHOLD = -40.0  # chunks louder than this count as "speech"
+
 
 def _ensure_openwakeword_models() -> None:
     """openWakeWord's melspectrogram/embedding ONNX models are bundled in
@@ -67,6 +75,13 @@ def chunk_dbfs(chunk: np.ndarray) -> float:
         return -120.0
     rms = np.sqrt(np.mean(chunk.astype(np.float64) ** 2))
     return float(20 * np.log10(rms / 32768 + 1e-9))
+
+
+def save_wav(audio: np.ndarray, path) -> None:
+    """Writes recorded int16 mono PCM audio to a 16kHz wav file."""
+    import soundfile as sf
+
+    sf.write(str(path), audio, SAMPLE_RATE, subtype="PCM_16")
 
 
 class WakeWordListener:
@@ -127,7 +142,35 @@ class WakeWordListener:
         self._features(chunk)
         return self._score()
 
-    def start(self, on_detected: Callable[[], None]) -> None:
+    def _record_instruction(self, stream) -> np.ndarray:
+        """Records audio right after a wake-word trigger, on the same open
+        mic stream, until the user stops talking or a max-duration safety
+        cap is hit. Wake-word scoring is paused for this stretch — it's
+        the instruction being captured, not more "Hey Peer"s to detect."""
+        frames = []
+        speech_started = False
+        speech_chunks = 0
+        quiet_run = 0
+        max_chunks = int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
+        for _ in range(max_chunks):
+            raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
+            chunk = np.frombuffer(raw, dtype=np.int16)
+            frames.append(chunk)
+            if chunk_dbfs(chunk) > SPEECH_DBFS_THRESHOLD:
+                speech_started = True
+                speech_chunks += 1
+                quiet_run = 0
+            elif speech_started:
+                quiet_run += 1
+            if (
+                speech_started
+                and speech_chunks >= INSTRUCTION_MIN_SPEECH_CHUNKS
+                and quiet_run >= INSTRUCTION_SILENCE_CHUNKS
+            ):
+                break
+        return np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
+
+    def start(self, on_detected: Callable[[np.ndarray], None]) -> None:
         import pyaudio
 
         self._running = True
@@ -169,7 +212,12 @@ class WakeWordListener:
                     if self.debug:
                         print()  # move off the overwritten debug line
                     print(f"[wakeword] Mot d'activation detecte (score={score:.2f}).")
-                    on_detected()
+                    instruction_audio = self._record_instruction(stream)
+                    print(
+                        f"[wakeword] Instruction enregistree "
+                        f"({len(instruction_audio) / SAMPLE_RATE:.1f}s)."
+                    )
+                    on_detected(instruction_audio)
         finally:
             stream.stop_stream()
             stream.close()

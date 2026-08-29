@@ -3,6 +3,7 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from heypeer.capture.events import ActionEvent, ActionType
@@ -19,6 +20,7 @@ def fake_pyautogui(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake.click = MagicMock()
     fake.press = MagicMock()
     fake.scroll = MagicMock()
+    fake.screenshot = MagicMock(return_value=MagicMock(save=MagicMock()))
     monkeypatch.setitem(sys.modules, "pyautogui", fake)
     return fake
 
@@ -208,10 +210,11 @@ def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: 
         get_instruction=get_instruction,
     )
 
-    peer._on_wake_detected()
+    fake_audio = MagicMock()
+    peer._on_wake_detected(fake_audio)
 
     get_instruction.assert_not_called()
-    assert peer._detections.get_nowait() is None
+    assert peer._detections.get_nowait() is fake_audio
 
 
 def test_on_quit_enqueues_shutdown_sentinel(tmp_path: Path) -> None:
@@ -235,3 +238,72 @@ def test_log_prints_and_forwards_to_debug_window(tmp_path: Path) -> None:
     peer._log("hello")
 
     debug_window.log.assert_called_once_with("hello")
+
+
+def test_on_wake_word_with_audio_transcribes_locally_then_uses_interpret_text(
+    tmp_path: Path, fake_pyautogui: MagicMock
+) -> None:
+    """Real recorded audio is transcribed locally (Nemotron via this Nebius
+    endpoint doesn't accept audio input - see nemotron/client.py's module
+    docstring) and the resulting text, with a screenshot, goes through
+    interpret_text() - no fallback to typed input()."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="run_skill", skill_id="sort_files", n_repetitions=1
+    )
+    get_instruction = MagicMock(return_value="should not be called")
+    memory = SkillMemory(tmp_path / "skills.json")
+    memory.add(Skill(id="sort_files", name="Sort downloaded files", actions=[]))
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=get_instruction,
+    )
+    audio = np.zeros(16000, dtype=np.int16)
+
+    with (
+        patch("heypeer.main.confirm", return_value=True),
+        patch("heypeer.wakeword.stt.transcribe", return_value="do it again"),
+    ):
+        peer.on_wake_word(audio)
+
+    get_instruction.assert_not_called()
+    nemotron.interpret_text.assert_called_once()
+    call_args = nemotron.interpret_text.call_args
+    assert call_args.args[0] == "do it again"
+    assert call_args.kwargs["screenshot_path"] is not None
+
+
+def test_on_wake_word_with_empty_audio_falls_back_to_text(
+    tmp_path: Path, fake_pyautogui: MagicMock
+) -> None:
+    """No usable audio (e.g. wake-word listener unavailable) -> the typed/
+    manual fallback path via get_instruction()."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "typed instruction",
+    )
+
+    peer.on_wake_word(np.zeros(0, dtype=np.int16))
+
+    nemotron.interpret_text.assert_called_once()
+    assert nemotron.interpret_text.call_args.args[0] == "typed instruction"
+    assert nemotron.interpret_text.call_args.kwargs.get("screenshot_path") is None
+
+
+def test_on_wake_word_interpret_failure_does_not_raise(
+    tmp_path: Path, fake_pyautogui: MagicMock
+) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.side_effect = RuntimeError("network error")
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+
+    with patch("heypeer.wakeword.stt.transcribe", return_value="hello"):
+        peer.on_wake_word(np.zeros(16000, dtype=np.int16))  # must not raise

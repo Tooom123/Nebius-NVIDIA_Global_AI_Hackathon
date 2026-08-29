@@ -10,6 +10,7 @@ from heypeer.wakeword.listener import (
     WakeWordListener,
     _ensure_openwakeword_models,
     chunk_dbfs,
+    save_wav,
 )
 from heypeer.wakeword.train import export_onnx, train
 
@@ -137,3 +138,64 @@ def test_maybe_trigger_requires_drop_below_threshold_to_rearm(toy_model: Path) -
     # Still above threshold without ever dropping below it -- must not
     # re-fire just because the cooldown elapsed.
     assert listener._maybe_trigger(0.9) is False
+
+
+class _FakeStream:
+    """Replays a fixed list of int16 chunks, one per .read() call."""
+
+    def __init__(self, chunks: list[np.ndarray]) -> None:
+        self._chunks = chunks
+        self._i = 0
+
+    def read(self, _n, exception_on_overflow=False):
+        chunk = self._chunks[min(self._i, len(self._chunks) - 1)]
+        self._i += 1
+        return chunk.tobytes()
+
+
+def _loud_chunk() -> np.ndarray:
+    return np.full(CHUNK_SAMPLES, 20000, dtype=np.int16)
+
+
+def _quiet_chunk() -> np.ndarray:
+    return np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+
+
+def test_record_instruction_stops_after_trailing_silence(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model))
+    # 4 loud chunks (the spoken instruction) then enough quiet chunks to
+    # cross the trailing-silence threshold, then more loud chunks that
+    # should never be reached.
+    chunks = (
+        [_loud_chunk()] * 4
+        + [_quiet_chunk()] * 15
+        + [_loud_chunk()] * 50
+    )
+    stream = _FakeStream(chunks)
+
+    audio = listener._record_instruction(stream)
+
+    # Stopped well before exhausting the fake stream's trailing loud chunks.
+    assert len(audio) < CHUNK_SAMPLES * 30
+
+
+def test_record_instruction_respects_max_duration_cap(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model))
+    stream = _FakeStream([_loud_chunk()])  # never goes quiet
+
+    audio = listener._record_instruction(stream)
+
+    from heypeer.wakeword.listener import INSTRUCTION_MAX_SECONDS, SAMPLE_RATE
+
+    assert len(audio) == int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES) * CHUNK_SAMPLES
+
+
+def test_save_wav_round_trips(tmp_path: Path) -> None:
+    audio = (0.5 * np.sin(2 * np.pi * 440 * np.linspace(0, 1, SR)) * 32767).astype(np.int16)
+    out_path = tmp_path / "clip.wav"
+
+    save_wav(audio, out_path)
+
+    read_back, sr = sf.read(str(out_path), dtype="int16")
+    assert sr == SR
+    assert len(read_back) == len(audio)

@@ -42,6 +42,8 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
+
 from heypeer.capture.events import ActionEvent
 from heypeer.capture.file_watcher import FileOpWatcher
 from heypeer.capture.watcher import ActivityWatcher
@@ -156,6 +158,18 @@ class HeyPeer:
         self._wake_ready.clear()
         self._wake_thread = threading.Thread(target=self._run_wake_listener, daemon=True)
         self._wake_thread.start()
+        # Loading the Whisper model takes several seconds - warm it up now,
+        # in parallel, rather than paying that cost on the user's first
+        # spoken instruction. Doesn't block wake-word readiness.
+        threading.Thread(target=self._preload_stt, daemon=True).start()
+
+    def _preload_stt(self) -> None:
+        try:
+            from heypeer.wakeword.stt import preload
+
+            preload()
+        except Exception as exc:
+            print(f"[stt] Whisper preload failed (will retry on first use): {exc}")
 
     def _run_wake_listener(self) -> None:
         try:
@@ -185,11 +199,12 @@ class HeyPeer:
         self._wake_ready.set()
         self._wake_listener.start(on_detected=self._on_wake_detected)
 
-    def _on_wake_detected(self) -> None:
-        """Called from the wake-word audio thread the instant a detection
-        fires. Must stay cheap and non-blocking - see module docstring for
-        why the actual instruction handling doesn't happen here."""
-        self._detections.put(None)
+    def _on_wake_detected(self, audio: np.ndarray) -> None:
+        """Called from the wake-word audio thread once a detection fires and
+        the spoken instruction after it has already been recorded. Must stay
+        cheap and non-blocking - see module docstring for why the actual
+        instruction handling doesn't happen here."""
+        self._detections.put(audio)
 
     def _stop_voice(self) -> None:
         if self._wake_listener is not None:
@@ -224,21 +239,63 @@ class HeyPeer:
             return None
         return sorted(p.name for p in self.watched_dir.iterdir() if p.is_file())
 
-    def on_wake_word(self) -> None:
-        """Handles one wake-word turn - gets the instruction (today: typed
-        text, standing in for the transcribed audio clip) and processes it.
-        Must be called from a thread where blocking on `get_instruction()`
-        (typically `input()`) is safe - see module docstring."""
+    def on_wake_word(self, audio: np.ndarray | None = None) -> None:
+        """Handles one wake-word turn. If real recorded audio is given (the
+        normal case once a mic is available), it's routed straight to
+        Nemotron's omni `interpret()` - no separate speech-to-text step.
+        Otherwise falls back to typed text via `get_instruction()` (manual
+        Enter-key simulation, the tray prompt, tests). Must be called from a
+        thread where blocking is safe - see module docstring."""
         self._log("Hey Peer detected.")
-        instruction_text = self.get_instruction()
+        try:
+            if audio is not None and len(audio) > 0:
+                intent = self._interpret_audio(audio)
+            else:
+                instruction_text = self.get_instruction()
+                self._log(f"> {instruction_text}")
+                intent = self.nemotron.interpret_text(
+                    instruction_text, self._skill_context(), watched_files=self._watched_files()
+                )
+        except Exception as exc:
+            self._log(f"Failed to interpret the instruction: {exc}")
+            return
+        self._dispatch_intent(intent)
+
+    def _interpret_audio(self, audio: np.ndarray) -> Intent:
+        """Transcribes the recorded instruction locally (Nemotron via this
+        Nebius endpoint doesn't accept audio input - see
+        heypeer/wakeword/stt.py and heypeer/nemotron/client.py's module
+        docstrings for why) and sends the resulting text, plus a screenshot,
+        to Nemotron for the actual reasoning."""
+        import tempfile
+
+        import pyautogui
+
+        from heypeer.wakeword.stt import transcribe
+
+        instruction_text = transcribe(audio)
         self._log(f"> {instruction_text}")
-        self._handle_instruction(instruction_text)
+        if not instruction_text:
+            return Intent(action="unknown", skill_id=None, n_repetitions=1)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            screenshot_path = Path(tmp_dir) / "screenshot.png"
+            pyautogui.screenshot().save(str(screenshot_path))
+            return self.nemotron.interpret_text(
+                instruction_text,
+                self._skill_context(),
+                watched_files=self._watched_files(),
+                screenshot_path=str(screenshot_path),
+            )
 
     def _handle_instruction(self, instruction_text: str) -> None:
+        """Text-only path used by the tray's manual prompt and by tests."""
         intent = self.nemotron.interpret_text(
             instruction_text, self._skill_context(), watched_files=self._watched_files()
         )
+        self._dispatch_intent(intent)
 
+    def _dispatch_intent(self, intent: Intent) -> None:
         if intent.action == "run_skill" and intent.skill_id is not None:
             self._run_skill_intent(intent)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
@@ -341,7 +398,7 @@ def run_tray() -> None:
             item = peer._detections.get()
             if item is _SHUTDOWN:
                 return
-            peer.on_wake_word()
+            peer.on_wake_word(item)
 
     threading.Thread(target=_drain_detections, daemon=True).start()
     peer.tray.run()
@@ -381,7 +438,7 @@ def run_cli() -> None:
                 item = peer._detections.get()
                 if item is _SHUTDOWN:
                     break
-                peer.on_wake_word()
+                peer.on_wake_word(item)
     finally:
         peer._on_quit()
 
