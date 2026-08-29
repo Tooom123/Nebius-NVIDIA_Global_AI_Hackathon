@@ -304,34 +304,16 @@ def test_play_activation_chime_does_not_block_the_caller(
     release.set()
 
 
-def test_start_plays_chime_on_trigger_before_recording(
-    monkeypatch: pytest.MonkeyPatch, toy_model: Path
-) -> None:
-    """Regression test: the chime is meant to be an *immediate* audible cue
-    that Hey Peer heard the wake word, so it must play before the (possibly
-    several-second) instruction recording, not after."""
-    listener = WakeWordListener(str(toy_model), threshold=0.0)
-    call_order = []
-    monkeypatch.setattr(
-        "heypeer.wakeword.listener.play_activation_chime",
-        lambda: call_order.append("chime"),
-    )
-    original_record = listener._record_instruction
-
-    def recording_spy(*args, **kwargs):
-        call_order.append("record")
-        return original_record(*args, **kwargs)
-
-    listener._record_instruction = recording_spy
-
-    chunks = [_loud_chunk()]
+def _fake_mic(monkeypatch: pytest.MonkeyPatch, listener: WakeWordListener, chunks: list, stop_after: int):
+    """Wires a fake pyaudio whose stream replays `chunks` and stops the
+    listener after `stop_after` reads. Returns the stream."""
     fake_stream = _FakeStream(chunks)
     reads = {"n": 0}
     real_read = fake_stream.read
 
     def counting_read(n, exception_on_overflow=False):
         reads["n"] += 1
-        if reads["n"] >= 2:
+        if reads["n"] >= stop_after:
             listener.stop()
         return real_read(n, exception_on_overflow)
 
@@ -343,10 +325,70 @@ def test_start_plays_chime_on_trigger_before_recording(
     fake_pyaudio_module.PyAudio = MagicMock(return_value=fake_pa)
     fake_pyaudio_module.paInt16 = 8
     monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
+    return fake_stream
 
-    listener.start(on_detected=MagicMock())
 
-    assert call_order == ["chime", "record"]
+def test_start_calls_on_verify_with_the_pre_trigger_audio(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """The wake word lives in the audio *before* the trigger, so that's what
+    verification has to receive."""
+    listener = WakeWordListener(str(toy_model), threshold=0.0)
+    listener._prebuffer.extend([_loud_chunk()] * 5)
+    _fake_mic(monkeypatch, listener, [_quiet_chunk()], stop_after=2)
+    seen = {}
+
+    def verify(pre_audio):
+        seen["len"] = len(pre_audio)
+        return True
+
+    listener.start(on_detected=MagicMock(), on_verify=verify)
+
+    assert seen["len"] > 0
+
+
+def test_start_suppresses_detection_when_verification_rejects(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """Regression test: the chime and the on-screen blob used to fire on the
+    raw detector trigger, so every false positive surfaced to the user. A
+    rejected trigger must produce no callback at all."""
+    listener = WakeWordListener(str(toy_model), threshold=0.0)
+    listener._prebuffer.extend([_loud_chunk()] * 5)
+    _fake_mic(monkeypatch, listener, [_quiet_chunk()], stop_after=2)
+    on_detected = MagicMock()
+
+    listener.start(on_detected=on_detected, on_verify=lambda _pre: False)
+
+    on_detected.assert_not_called()
+
+
+def test_start_treats_a_failing_verifier_as_accepted(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """A broken verifier (missing model, transcription error) must not make
+    Hey Peer permanently deaf - it falls back to trusting the detector."""
+    listener = WakeWordListener(str(toy_model), threshold=0.0)
+    listener._prebuffer.extend([_loud_chunk()] * 5)
+    _fake_mic(monkeypatch, listener, [_quiet_chunk()], stop_after=2)
+    on_detected = MagicMock()
+
+    def broken(_pre):
+        raise RuntimeError("model not loaded")
+
+    listener.start(on_detected=on_detected, on_verify=broken)
+
+    on_detected.assert_called_once()
+
+
+def test_record_instruction_aborts_when_asked(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model))
+    listener._prebuffer.extend([_quiet_chunk()] * 10)
+    stream = _FakeStream([_loud_chunk()] * 200)
+
+    audio = listener._record_instruction(stream, should_abort=lambda: True)
+
+    assert len(audio) == 0
 
 
 def test_speech_threshold_tracks_the_noise_floor() -> None:

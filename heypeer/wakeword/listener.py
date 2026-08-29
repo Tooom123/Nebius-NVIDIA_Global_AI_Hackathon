@@ -88,6 +88,12 @@ def estimate_noise_floor(chunks: "list[np.ndarray]") -> float:
 PREBUFFER_SECONDS = 2.0
 PREBUFFER_CHUNKS = int(PREBUFFER_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
 
+# Upper bound on waiting for `on_verify` once recording has finished. It
+# normally completes long before this (it starts at the same moment and only
+# has ~2s of audio to transcribe); the cap just guarantees the listener can
+# never wedge on a stuck verifier.
+VERIFY_TIMEOUT_SECONDS = 6.0
+
 
 def _ensure_openwakeword_models() -> None:
     """openWakeWord's melspectrogram/embedding ONNX models are bundled in
@@ -270,7 +276,10 @@ class WakeWordListener:
         return self._score()
 
     def _record_instruction(
-        self, stream, on_level: "Callable[[float, bool], None] | None" = None
+        self,
+        stream,
+        on_level: "Callable[[float, bool], None] | None" = None,
+        should_abort: "Callable[[], bool] | None" = None,
     ) -> np.ndarray:
         """Records audio right after a wake-word trigger, on the same open
         mic stream, until the user stops talking or a max-duration safety
@@ -289,6 +298,11 @@ class WakeWordListener:
         max_chunks = int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
         min_chunks = int(INSTRUCTION_MIN_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
         for i in range(max_chunks):
+            if should_abort is not None and should_abort():
+                # Verification (running concurrently on the prebuffer) has
+                # ruled this out as a false trigger - stop recording rather
+                # than hold the mic for several more seconds for nothing.
+                return np.zeros(0, dtype=np.int16)
             raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
             chunk = np.frombuffer(raw, dtype=np.int16)
             frames.append(chunk)
@@ -314,11 +328,21 @@ class WakeWordListener:
         self,
         on_detected: Callable[[np.ndarray], None],
         on_level: "Callable[[float, bool], None] | None" = None,
+        on_verify: "Callable[[np.ndarray], bool] | None" = None,
     ) -> None:
         """`on_level(level, recording)` — level normalized 0-1 (see
         `dbfs_to_level`), `recording` True while capturing the instruction
         after a trigger, False while just scanning for the wake word. Meant
-        to drive a live audio-reactive UI element; optional."""
+        to drive a live audio-reactive UI element; optional.
+
+        `on_verify(pre_trigger_audio)` decides whether a detection was real,
+        given the ~2s of audio containing the wake word itself. It runs on
+        its own thread while the instruction is being recorded, and is where
+        any user-visible reaction to a detection belongs (chime, indicator)
+        — the raw detector fires on plenty of ordinary speech, so reacting
+        before this confirms would surface every false positive. Returning
+        False aborts the in-progress recording and suppresses `on_detected`.
+        Optional; without it every trigger is treated as genuine."""
         import pyaudio
 
         self._running = True
@@ -371,27 +395,51 @@ class WakeWordListener:
                 if self._maybe_trigger(score):
                     if self.debug:
                         print()  # move off the overwritten debug line
-                    print(f"[wakeword] Mot d'activation detecte (score={score:.2f}).")
-                    try:
-                        play_activation_chime()
-                    except Exception as exc:  # best-effort - never block on a beep
-                        if self.debug:
-                            print(f"[wakeword] Chime playback failed: {exc}")
-                    instruction_audio = self._record_instruction(stream, on_level=on_level)
-                    print(
-                        f"[wakeword] Instruction enregistree "
-                        f"({len(instruction_audio) / SAMPLE_RATE:.1f}s)."
-                    )
-                    # Prepend the pre-trigger window so the wake word itself
-                    # is part of what gets transcribed — the verifier needs
-                    # it to confirm this wasn't a false trigger, and
-                    # `strip_wake_word` then removes it from the instruction.
+                        print(f"[wakeword] Candidat detecte (score={score:.2f}).")
+                    # The prebuffer already holds the wake word (detection
+                    # fires at the end of the phrase), so it can be verified
+                    # right now — before any chime or on-screen reaction.
                     pre_audio = (
                         np.concatenate(list(self._prebuffer))
                         if self._prebuffer
                         else np.zeros(0, dtype=np.int16)
                     )
                     self._prebuffer.clear()
+
+                    # Verification runs *concurrently* with recording rather
+                    # than before it. Doing it first would be simpler, but it
+                    # takes a few hundred ms, and that would be a hole in the
+                    # captured audio for anyone who runs the wake word
+                    # straight into the instruction — which is how people
+                    # actually talk ("Hey Peer, déplace le fichier...").
+                    verdict: dict = {"ok": None}
+
+                    def _verify() -> None:
+                        try:
+                            verdict["ok"] = (
+                                on_verify(pre_audio) if on_verify is not None else True
+                            )
+                        except Exception:
+                            verdict["ok"] = True  # never lose a real activation to a bug
+
+                    verifier = threading.Thread(target=_verify, daemon=True)
+                    verifier.start()
+
+                    instruction_audio = self._record_instruction(
+                        stream,
+                        on_level=on_level,
+                        should_abort=lambda: verdict["ok"] is False,
+                    )
+                    verifier.join(timeout=VERIFY_TIMEOUT_SECONDS)
+
+                    if verdict["ok"] is False:
+                        if self.debug:
+                            print("[wakeword] Rejete (pas de mot d'activation).")
+                        continue
+                    print(
+                        f"[wakeword] Instruction enregistree "
+                        f"({len(instruction_audio) / SAMPLE_RATE:.1f}s)."
+                    )
                     on_detected(np.concatenate([pre_audio, instruction_audio]))
         finally:
             stream.stop_stream()

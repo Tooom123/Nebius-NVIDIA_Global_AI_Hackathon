@@ -11,9 +11,11 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
 ## What it does
 
 1. Hey Peer runs as a background app with a **system tray icon**. Skill-learning
-   capture starts natively the moment it launches — it's passive observation, and
-   nothing it does ever executes anything on its own (see step 5), so there's no
-   real "off" state worth having for it.
+   capture of **repeated file moves** starts natively the moment it launches — it's
+   passive observation, and nothing it does ever executes anything on its own (see
+   step 5). Capturing mouse/keyboard habits is **off by default**: global input
+   hooks cost real performance, and the skills learned from incidental IDE/terminal
+   activity were mostly noise. Set `HEYPEER_CAPTURE_INPUT=1` to enable it.
 2. A pattern-detection module watches for repeated action sequences (e.g. filling the
    same form, renaming/sorting the same files) and stores them as reusable "skills".
 3. **"Mode auto (écoute vocale)"** is a separate tray toggle for something narrower:
@@ -164,9 +166,9 @@ pressing Enter to simulate the wake word if no trained model is available, and
 still shows a real (detached) tray icon so "Quitter" works as a stop button
 instead of Task Manager. **The actual conversation (wake word detected, instruction
 heard, resolved intent, result) is logged to the terminal.** A short chime plays
-the instant "Hey Peer" is detected — audible confirmation that it really heard
-you, the way Siri/Alexa do, played on its own thread so it never delays the
-start of recording — and a
+once the wake word is *confirmed* (see the cascade below) — audible confirmation
+that it really heard you, the way Siri/Alexa do, played on its own thread so it
+never delays the start of recording — and a
 visual indicator (`heypeer/tray/debug_window.py`) slides down from the top edge of
 the screen like a notification: a blue → violet → magenta gradient blob with an
 organic morphing silhouette, whose palette and morph speed shift per state and
@@ -237,7 +239,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 135 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 140 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with

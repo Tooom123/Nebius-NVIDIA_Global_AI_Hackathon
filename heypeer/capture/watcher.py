@@ -6,12 +6,22 @@ was focused, and the minimal metadata needed to later replay the action
 field, which is what "keystroke content" means here.
 """
 
+import time
 from collections.abc import Callable
 
 from heypeer.capture.active_window import ActiveWindow, get_active_window
 from heypeer.capture.events import ActionEvent, ActionType
 
 EventSink = Callable[[ActionEvent], None]
+
+# Minimum gap between two `get_active_window()` calls. That call is far more
+# expensive than it looks — on Windows it goes through Win32 plus a process
+# lookup — and it used to run on *every* keypress, click and scroll, i.e.
+# once per typed character. The user reported the whole machine feeling slow
+# with capture on, and this was the cause. Focus changes are a human-scale
+# event; sampling them a few times a second loses nothing that matters for
+# pattern detection.
+ACTIVE_WINDOW_POLL_INTERVAL = 0.5
 
 
 class ActivityWatcher:
@@ -24,6 +34,7 @@ class ActivityWatcher:
         self._current_window: ActiveWindow | None = None
         self._mouse_listener = None
         self._keyboard_listener = None
+        self._last_window_poll = 0.0
 
     def _emit(self, action_type: ActionType, **metadata: int | str | None) -> None:
         window = self._current_window or ActiveWindow(app_name="", title="")
@@ -36,7 +47,14 @@ class ActivityWatcher:
             )
         )
 
-    def _poll_active_window(self) -> None:
+    def _poll_active_window(self, force: bool = False) -> None:
+        """Refreshes the cached active window, at most every
+        `ACTIVE_WINDOW_POLL_INTERVAL` seconds — see the constant for why the
+        throttle matters. `force` bypasses it for the initial poll."""
+        now = time.monotonic()
+        if not force and now - self._last_window_poll < ACTIVE_WINDOW_POLL_INTERVAL:
+            return
+        self._last_window_poll = now
         window = get_active_window()
         if window is not None and window != self._current_window:
             self._current_window = window
@@ -45,7 +63,7 @@ class ActivityWatcher:
     def start(self) -> None:
         from pynput import keyboard, mouse
 
-        self._poll_active_window()
+        self._poll_active_window(force=True)
 
         def on_click(x: int, y: int, button, pressed: bool) -> None:
             if pressed:

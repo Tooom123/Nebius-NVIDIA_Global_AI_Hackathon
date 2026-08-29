@@ -883,6 +883,60 @@ round-3 second-stage verifier is what makes that survivable, not a fix to
 the model itself. Retraining with real recorded negatives is still the real
 fix and still needs audio that doesn't exist yet.
 
+### Round 5: stop capturing input habits, react only after verification (2026-08-30)
+
+- [x] **Input capture off by default — and the reason it was slow, fixed.**
+      The user reported the machine noticeably slowing down with capture on.
+      Root cause found: `ActivityWatcher._poll_active_window()` ran on
+      *every* keypress, click and scroll, and `get_active_window()` goes
+      through Win32 plus a process lookup — so typing in an IDE meant one
+      system query per character. Throttled it to at most once every 0.5s
+      (focus changes are a human-scale event; nothing pattern detection
+      needs is lost). Separately, and as asked, global mouse/keyboard
+      capture is now **off by default** (`HEYPEER_CAPTURE_INPUT=1` to
+      re-enable) since the skills it learned from IDE/terminal noise were
+      mostly junk anyway. File-move capture — cheap, and what the demo skill
+      actually learns from — stays on.
+- [x] **The chime and the blob no longer fire on unverified triggers.** This
+      was the substantive bug behind "il s'active même lorsque je ne le dis
+      pas" and "détecté alors que je ne l'ai pas dit, ou trop rapide entre
+      le hey et le peer". Round 3 added transcript verification, but it ran
+      *after* the whole turn, while the chime and the indicator still fired
+      on the raw detector trigger — so every false positive was still fully
+      visible and audible, just harmless afterwards.
+      Verification now happens on the prebuffer (which already contains the
+      wake word) and gates all of it: `WakeWordListener.start` takes an
+      `on_verify` callback, and `HeyPeer._verify_wake_word` transcribes,
+      checks, and only *then* plays the chime and shows the blob.
+      Verification runs on its own thread **concurrently with recording**
+      rather than before it — doing it first was simpler but would have left
+      a few hundred ms hole in the captured audio for anyone running the
+      wake word straight into the instruction, which is how the user
+      actually speaks in every log. A rejection aborts the in-progress
+      recording early. A *failing* verifier (missing model, transcription
+      error) is treated as acceptance, so a bug there can't make Hey Peer
+      deaf. `_on_audio_level` no longer sets the window state either — it
+      would have popped the blob up during the pre-verification recording.
+- [x] **The rectangle around the blob — fourth attempt, and this one doesn't
+      depend on the renderer.** Attempt 3 (pywebview `transparent=True`) got
+      WebView2 itself transparent, but a grey rectangle remained: reading
+      `platforms/winforms.py` again shows that branch sets the *WebView2*
+      background transparent and never the WinForms `Form` behind it, which
+      keeps its default Control-grey — the see-through web view was just
+      revealing the grey form. Now the window is additionally clipped with
+      `SetWindowRgn` to an inscribed ellipse. A window region is applied by
+      the window manager itself, so pixels outside it are not part of the
+      window regardless of what renders inside — independent of compositors,
+      alpha support and background colors, which is the exact class of
+      assumption the first three attempts each died on.
+      Deliberate trade-off, worth stating plainly: the silhouette is now the
+      region's circle rather than the reference design's irregular morphing
+      outline. The page paints the blob edge-to-edge so every pixel inside
+      the circle is blob (no grey gap), and the organic quality comes from a
+      drifting gradient and level-driven brightness *inside* the circle
+      instead of from the outline. A rectangle-free circle that reacts beats
+      an irregular blob sitting in a grey box.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

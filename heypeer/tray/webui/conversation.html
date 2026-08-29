@@ -9,7 +9,7 @@
     --c1: #4f8cff;
     --c2: #7b4dff;
     --c3: #e040fb;
-    --morph-speed: 9s;
+    --drift-speed: 9s;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -17,10 +17,6 @@
     padding: 0;
     width: 100%;
     height: 100%;
-    /* Genuinely transparent — WebView2's own DefaultBackgroundColor is set
-       to transparent by pywebview (see debug_window.py's module docstring).
-       This gives real per-pixel alpha, so the blob's anti-aliased edges stay
-       soft instead of fringing against a keyed-out background color. */
     background: transparent;
     overflow: hidden;
     user-select: none;
@@ -28,53 +24,64 @@
   .stage {
     width: 100%;
     height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     /* Slides in from above the screen edge, like a notification dropping
-       down; `hidden` puts it back. */
+       down; `visible` is toggled from Python. */
     transform: translateY(-130%);
     transition: transform 0.52s cubic-bezier(0.22, 1.2, 0.36, 1);
   }
   .stage.visible { transform: translateY(0); }
 
+  /* Fills the window edge to edge on purpose: the window itself is clipped
+     to an inscribed ellipse by SetWindowRgn (see debug_window.py), so the
+     circle the user sees is the window's own silhouette. Anything not
+     painted here would show as a grey gap inside that circle. */
   .blob {
-    width: 108px;
-    height: 108px;
-    background: linear-gradient(135deg, var(--c1) 0%, var(--c2) 52%, var(--c3) 100%);
-    /* The organic silhouette: an asymmetric border-radius animated between
-       several shapes reads as a soft morphing blob, without the cost (or the
-       WebGL dependency) of a real shader-based one. */
-    border-radius: 62% 38% 46% 54% / 58% 44% 56% 42%;
-    animation: morph var(--morph-speed) ease-in-out infinite;
-    /* Scale tracks the live mic level, so it visibly reacts to the voice. */
-    transform: scale(calc(1 + var(--level) * 0.28));
-    transition: transform 0.11s ease-out, background 0.5s ease, filter 0.11s ease-out;
-    /* Soft glow that swells with the voice. Only affordable now that the
-       window has real per-pixel alpha — under the previous color-key
-       approach a glow's semi-transparent pixels couldn't be keyed out and
-       showed as a halo. */
-    filter: blur(0.4px)
-      drop-shadow(0 0 calc(10px + var(--level) * 26px) var(--c2))
-      drop-shadow(0 0 calc(4px + var(--level) * 10px) var(--c3));
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 30% 28%,
+        color-mix(in srgb, #ffffff 22%, transparent) 0%,
+        transparent 45%),
+      linear-gradient(135deg, var(--c1) 0%, var(--c2) 52%, var(--c3) 100%);
+    animation: drift var(--drift-speed) ease-in-out infinite;
+    transition: background 0.5s ease, filter 0.11s ease-out;
+    /* Brightness swells with the voice. This is what makes it read as
+       reacting, since the outline is fixed by the window region and can't
+       pulse in size. */
+    filter: brightness(calc(1 + var(--level) * 0.55))
+            saturate(calc(1 + var(--level) * 0.5));
   }
-  @keyframes morph {
-    0%,100% { border-radius: 62% 38% 46% 54% / 58% 44% 56% 42%; }
-    25%     { border-radius: 44% 56% 62% 38% / 42% 62% 38% 58%; }
-    50%     { border-radius: 55% 45% 38% 62% / 50% 38% 62% 50%; }
-    75%     { border-radius: 38% 62% 54% 46% / 62% 52% 48% 38%; }
+  /* Slow internal motion so it never looks like a flat static disc. */
+  @keyframes drift {
+    0%, 100% { background-position: 0% 50%, 0% 50%; transform: rotate(0deg) scale(1.08); }
+    50%      { background-position: 100% 50%, 100% 50%; transform: rotate(9deg) scale(1.14); }
+  }
+
+  /* A soft inner rim that brightens with the voice — adds depth without
+     touching the silhouette. */
+  .rim {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    pointer-events: none;
+    box-shadow:
+      inset 0 0 calc(18px + var(--level) * 30px)
+        color-mix(in srgb, #ffffff calc(14% + var(--level) * 26%), transparent),
+      inset 0 0 6px rgba(0, 0, 0, 0.18);
+    transition: box-shadow 0.11s ease-out;
   }
 </style>
 </head>
 <body>
   <div class="stage" id="stage">
     <div class="blob" id="blob"></div>
+    <div class="rim"></div>
   </div>
 
 <script>
-  // Only the accent palette and morph speed change per state — the shape
-  // language stays identical, so transitions read as the same object
-  // reacting rather than a different indicator appearing.
+  // Only the palette and drift speed change per state — the shape stays
+  // identical, so transitions read as the same object reacting rather than
+  // a different indicator appearing.
   const STATE_STYLE = {
     idle:      { c1: "#3a4a60", c2: "#4a4a6a", c3: "#6a4a7a", speed: "12s" },
     listening: { c1: "#4f8cff", c2: "#7b4dff", c3: "#e040fb", speed: "9s" },
@@ -83,7 +90,6 @@
     speaking:  { c1: "#5fa8ff", c2: "#a05cff", c3: "#ff6ae0", speed: "5s" },
   };
 
-  const blob = document.getElementById("blob");
   const stage = document.getElementById("stage");
   const root = document.documentElement;
 
@@ -96,7 +102,7 @@
     root.style.setProperty("--c1", style.c1);
     root.style.setProperty("--c2", style.c2);
     root.style.setProperty("--c3", style.c3);
-    root.style.setProperty("--morph-speed", style.speed);
+    root.style.setProperty("--drift-speed", style.speed);
     if (state !== "recording") setLevel(0);
   }
 

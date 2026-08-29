@@ -258,7 +258,13 @@ def test_auto_mode_toggle_does_not_affect_capture(tmp_path: Path) -> None:
     """Capture (skill learning) is native/always-on and must not be started
     or stopped by the voice-activation ("Mode auto") toggle."""
     nemotron = MagicMock()
-    peer = _peer(tmp_path, nemotron)
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        capture_input=True,  # explicitly on: the toggle must still not touch it
+    )
     peer.watcher.start = MagicMock()
     peer.watcher.stop = MagicMock()
 
@@ -273,6 +279,29 @@ def test_auto_mode_toggle_does_not_affect_capture(tmp_path: Path) -> None:
 
     peer.stop_capture()
     peer.watcher.stop.assert_called_once()
+
+
+def test_input_capture_is_off_by_default(tmp_path: Path) -> None:
+    """Global mouse/keyboard hooks stay off unless explicitly enabled - they
+    were making the user's machine noticeably slow. File-move capture, which
+    is cheap and powers the demo skill, must still start."""
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        watched_dir=watched_dir,
+    )
+    peer.watcher.start = MagicMock()
+    peer.file_watcher.start = MagicMock()
+
+    peer.start_capture()
+
+    peer.watcher.start.assert_not_called()
+    peer.file_watcher.start.assert_called_once()
 
 
 def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: Path) -> None:
