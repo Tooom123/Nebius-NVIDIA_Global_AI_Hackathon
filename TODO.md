@@ -280,6 +280,33 @@ visible once the previous one was fixed and exposed the next:
    reprocessing ~1280). This is the actual mechanism real always-listening
    engines (Hey Siri, Alexa, OK Google) rely on — process only what's new,
    keep a rolling feature buffer, never recompute the whole window.
+5. **`input()` didn't actually wait for keyboard input once the wake-word
+   listener worked** — the wake-word audio thread's `on_detected` callback
+   was calling `on_wake_word()` (which blocks on `input()`) directly, inline,
+   on that same background thread. Confirmed empirically: identical
+   `input()` code worked fine when called from the *main* thread (the old
+   race-condition fallback path), but returned immediately with an empty
+   string when called from the audio thread — a real Windows-specific
+   quirk, not something documented cleanly, but reproducible. Fixed by
+   having `on_detected` only enqueue a signal onto a new
+   `HeyPeer._detections` queue; the actual instruction handling now happens
+   on a proper consumer loop (the main thread in `run_cli()`, a dedicated
+   thread in `run_tray()`) that's safe to block in.
+6. **Added `heypeer/tray/debug_window.py`** — a small always-on-top Tk
+   window logging each interaction live (wake detected, instruction heard,
+   intent, confirm, result) via `HeyPeer._log()`, so debugging doesn't
+   require untangling console output interleaved with the wake-word debug
+   dB meter's carriage-return-redrawn line. Runs its own Tk mainloop in a
+   dedicated thread; other threads only ever push through a thread-safe
+   queue it polls (Tkinter itself is not thread-safe). Verified working for
+   real in this sandbox (unlike most of this project's GUI code, which
+   could only be reasoned about, not run, here).
+7. **`--cli` mode now also shows a real (detached) tray icon** via
+   `pystray.Icon.run_detached()`, specifically so "Quitter" works as a stop
+   button — the user didn't want Task Manager to be the only way to stop a
+   console session. `_on_quit()` now also enqueues a `_SHUTDOWN` sentinel
+   onto `_detections` so the tray's Quitter can unblock the console's
+   consumer loop, not just Ctrl+C.
 
 ### Requested next: real voice command + a real UI
 
@@ -299,8 +326,12 @@ real UI" — an actual interaction design):
       window (VAD-based end-of-speech detection, or a fixed few seconds),
       saving it as a wav, and wiring `HeyPeer._handle_instruction` to accept
       an audio path instead of/alongside text.
-- [ ] **Corner popup UI on wake-word detection** — a modern light-mode
-      floating window appears in a screen corner the moment "Hey Peer"
+- [ ] **Corner popup UI on wake-word detection** — a first, debug-oriented
+      step toward this landed already (`heypeer/tray/debug_window.py`, logs
+      the conversation live), but it's a plain scrolling text log, not the
+      polished per-turn floating window described below — that's still open:
+      a modern light-mode floating window appears in a screen corner the
+      moment "Hey Peer"
       fires, live-transcribing what's said (like OS dictation UI), closing
       once the instruction is captured. Needs a design pass: candidates are
       a lightweight always-on-top Tk/PyQt window, or a small local web view.
