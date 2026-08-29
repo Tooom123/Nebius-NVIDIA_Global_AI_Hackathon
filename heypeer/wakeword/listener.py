@@ -17,6 +17,7 @@ rolling feature buffer internally, cutting the per-chunk work roughly to the
 size of one chunk instead of the size of the whole detection window.
 """
 
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -36,9 +37,50 @@ COOLDOWN_SECONDS = 1.5  # minimum gap between two separate detections
 # wake-word trigger — good enough for a spoken command a few seconds long
 # without pulling in a separate VAD model.
 INSTRUCTION_MAX_SECONDS = 8.0
-INSTRUCTION_SILENCE_CHUNKS = 10  # ~0.8s of trailing silence ends the recording
+# ~1.2s of trailing silence ends the recording. Was ~0.8s, which cut real
+# instructions off mid-sentence on the user's hardware ("déplace le fichier
+# 4.0.", "Déplace le fichier 4.txt-"): people pause naturally between a
+# filename and a destination, and that pause was being read as "done".
+INSTRUCTION_SILENCE_CHUNKS = 15
 INSTRUCTION_MIN_SPEECH_CHUNKS = 3
-SPEECH_DBFS_THRESHOLD = -40.0  # chunks louder than this count as "speech"
+# Never end-point before this much audio, regardless of silence — protects
+# against a slow start (a breath, a pause for thought) truncating the whole
+# instruction to nothing.
+INSTRUCTION_MIN_SECONDS = 1.2
+
+# Speech is detected relative to the room's own noise floor rather than at a
+# fixed level. A fixed -40 dBFS threshold assumes one particular mic gain and
+# room: too high and a quiet speaker never registers, too low and every fan
+# or keyboard click counts as speech. `SPEECH_MARGIN_DB` above the measured
+# floor is what actually separates "someone is talking" from "the room".
+SPEECH_MARGIN_DB = 12.0
+# Bounds keep the adaptive threshold sane if calibration lands somewhere odd
+# (a muted mic reads ~-90 dBFS; a very loud room could otherwise push the
+# threshold above normal speech).
+SPEECH_THRESHOLD_MIN_DBFS = -55.0
+SPEECH_THRESHOLD_MAX_DBFS = -25.0
+# Fallback for the very first detection, before any noise floor is measured.
+SPEECH_DBFS_THRESHOLD = -40.0
+
+
+def speech_threshold_dbfs(noise_floor_dbfs: float) -> float:
+    """Speech/silence cutoff for a room whose measured noise floor is
+    `noise_floor_dbfs`, clamped to a sane range."""
+    return max(
+        SPEECH_THRESHOLD_MIN_DBFS,
+        min(SPEECH_THRESHOLD_MAX_DBFS, noise_floor_dbfs + SPEECH_MARGIN_DB),
+    )
+
+
+def estimate_noise_floor(chunks: "list[np.ndarray]") -> float:
+    """Estimates the ambient noise floor from recent audio, as the 20th
+    percentile of per-chunk levels — a low percentile rather than the
+    minimum (robust to one freak-quiet chunk) and rather than the mean
+    (which speech in the same window would drag upward)."""
+    if not chunks:
+        return SPEECH_DBFS_THRESHOLD - SPEECH_MARGIN_DB
+    levels = [chunk_dbfs(c) for c in chunks]
+    return float(np.percentile(levels, 20))
 
 # How much audio from *before* a trigger to keep and hand to the verifier.
 # Detection fires at the end of the spoken phrase, so the wake word lives
@@ -97,25 +139,46 @@ def save_wav(audio: np.ndarray, path) -> None:
     sf.write(str(path), audio, SAMPLE_RATE, subtype="PCM_16")
 
 
+CHIME_PATH = Path(__file__).resolve().parent.parent / "assets" / "activation_chime.wav"
+
+_chime_audio: "np.ndarray | None" = None
+
+
+def _load_chime() -> np.ndarray:
+    """Loads (and caches) the activation chime. Shipped as a pre-decoded
+    16kHz mono WAV rather than the original mp3 the user supplied: decoding
+    mp3 needs libsndfile >= 1.1, which isn't guaranteed on every install,
+    and this keeps playback on the same int16/pyaudio path as the rest of
+    the audio pipeline."""
+    global _chime_audio
+    if _chime_audio is None:
+        import soundfile as sf
+
+        data, _sr = sf.read(str(CHIME_PATH), dtype="int16")
+        _chime_audio = data if data.ndim == 1 else data.mean(axis=1).astype(np.int16)
+    return _chime_audio
+
+
 def play_activation_chime() -> None:
-    """A short two-tone rising chime (a la Siri's "activated" sound),
-    synthesized directly rather than played from an asset file, played the
-    instant the wake word triggers - before recording the instruction. Users
-    reported not being sure whether Hey Peer actually heard them; a
-    near-instant audible cue (much faster than speaking a full sentence via
-    Piper) gives that confirmation the same way real voice assistants do."""
+    """Plays the activation chime the instant the wake word triggers. The
+    user reported not being sure whether Hey Peer had actually heard them; a
+    near-instant audible cue (far faster than speaking a full sentence via
+    Piper) gives that confirmation the same way real voice assistants do.
+
+    Plays on its own thread so it does **not** delay the start of instruction
+    recording: people run the wake word straight into the instruction ("Hey
+    Peer, déplace le fichier..."), and blocking here for the chime's duration
+    would drop the first fraction of a second of what they said. The chime
+    does bleed into the mic as a result, which is harmless — it's a short
+    tone at the very start, and Whisper's VAD skips non-speech anyway.
+    """
+    threading.Thread(target=_play_chime_blocking, daemon=True).start()
+
+
+def _play_chime_blocking() -> None:
     import pyaudio
 
-    tones = [(880.0, 0.09), (1318.5, 0.09)]  # a short rising "ding-ding"
-    fade = 0.01  # seconds - avoids audible clicks at each tone's edges
-    chunks = []
-    for freq, duration in tones:
-        n = int(SAMPLE_RATE * duration)
-        t = np.linspace(0, duration, n, endpoint=False)
-        envelope = np.clip(np.minimum(t / fade, (duration - t) / fade), 0.0, 1.0)
-        chunks.append((0.2 * np.sin(2 * np.pi * freq * t) * envelope * 32767).astype(np.int16))
-    audio = np.concatenate(chunks)
-
+    audio = _load_chime()
     pa = pyaudio.PyAudio()
     stream = pa.open(format=pyaudio.paInt16, channels=1, rate=SAMPLE_RATE, output=True)
     try:
@@ -212,27 +275,35 @@ class WakeWordListener:
         """Records audio right after a wake-word trigger, on the same open
         mic stream, until the user stops talking or a max-duration safety
         cap is hit. Wake-word scoring is paused for this stretch — it's
-        the instruction being captured, not more "Hey Peer"s to detect."""
+        the instruction being captured, not more "Hey Peer"s to detect.
+
+        End-pointing reads the level relative to the room's own noise floor
+        (measured from the prebuffer, which is real audio from the seconds
+        just before the user started speaking) rather than a fixed dBFS
+        cutoff — see `speech_threshold_dbfs`."""
+        threshold = speech_threshold_dbfs(estimate_noise_floor(list(self._prebuffer)))
         frames = []
         speech_started = False
         speech_chunks = 0
         quiet_run = 0
         max_chunks = int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
-        for _ in range(max_chunks):
+        min_chunks = int(INSTRUCTION_MIN_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
+        for i in range(max_chunks):
             raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
             chunk = np.frombuffer(raw, dtype=np.int16)
             frames.append(chunk)
             dbfs = chunk_dbfs(chunk)
             if on_level is not None:
                 on_level(dbfs_to_level(dbfs), True)
-            if dbfs > SPEECH_DBFS_THRESHOLD:
+            if dbfs > threshold:
                 speech_started = True
                 speech_chunks += 1
                 quiet_run = 0
             elif speech_started:
                 quiet_run += 1
             if (
-                speech_started
+                i + 1 >= min_chunks
+                and speech_started
                 and speech_chunks >= INSTRUCTION_MIN_SPEECH_CHUNKS
                 and quiet_run >= INSTRUCTION_SILENCE_CHUNKS
             ):

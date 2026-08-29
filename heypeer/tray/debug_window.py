@@ -20,24 +20,36 @@ that a wake-word engine (à la Siri) should surface *when it's actually
 heard something*, not sit there all the time. `set_state()` below drives
 `window.show()`/`window.hide()`, not just the CSS.
 
-Real bug reported after this rendered on actual Windows hardware, in two
-rounds: first "a square persists around" the circle, which `shadow=False`
-(disables Windows' native drop shadow behind frameless windows) and forcing
-`gui="edgechromium"` (avoids a silent fallback to the legacy MSHTML/IE
-backend, which doesn't support transparency at all) were meant to fix — but
-a white rectangle was still visible afterwards. Rather than keep
-special-casing pywebview's own `transparent` support (version- and
-backend-dependent, and evidently still not reliable even with both of the
-above), this now bypasses it entirely: the page renders on a solid "magic
-pink" background (`MAGIC_BACKGROUND_CSS`) and, once loaded,
-`_make_colorkey_transparent` applies the classic Win32 layered-window
-color-key technique directly (`SetLayeredWindowAttributes` with
-`LWA_COLORKEY`) — every pixel matching that exact color becomes fully
-transparent/click-through, independent of whatever pywebview's own
-transparency flag does. Same technique many Windows overlay/widget apps use
-for non-rectangular windows. `transparent=True` is no longer passed to
-`create_window` to avoid pywebview applying its own (possibly conflicting)
-layered-window attributes first.
+Getting the window to render as *just the blob* — no rectangle around it —
+took three attempts, the first two of which were wrong for reasons worth
+recording:
+
+1. `shadow=False` + forcing `gui="edgechromium"`. Addressed real things
+   (Windows draws a native drop shadow behind frameless windows; the legacy
+   MSHTML backend can't do transparency at all) but a rectangle remained.
+2. A Win32 layered-window color key (`SetLayeredWindowAttributes` with
+   `LWA_COLORKEY`) over a solid-color page background. This *cannot* work
+   here: WebView2 renders through DirectComposition into its own child
+   surface, which the parent window's layered color-keying never sees. It's
+   the right technique for a plain GDI window and the wrong one for a
+   hardware-composited web view.
+3. What's here now — pywebview's own `transparent=True`, which reading its
+   source (`platforms/winforms.py`, `platforms/edgechromium.py` in 6.2.1)
+   shows *is* properly implemented for EdgeChromium: it sets the WebView2
+   controller's `DefaultBackgroundColor` to `Color.Transparent` and runs a
+   Show/Hide dance to make it take effect.
+
+The reason attempt 3 hadn't been tried successfully before is a genuine
+conflict with `hidden=True`, visible in that same source as an `if/elif`:
+
+    if window.hidden:            # our old case - transparency hack skipped
+        ...
+    elif window.transparent and is_chromium:
+        browser.Show(); browser.Hide()   # the hack that makes it work
+
+Passing `hidden=True` therefore silently disabled the very transparency
+setup we needed. So the window is now created *not* hidden (letting that
+path run) and hidden immediately afterwards from the command pump instead.
 
 Runs in its own **process**, not a thread. A thread-based version was tried
 first and, in this project's Linux dev sandbox, `webview.create_window()`
@@ -53,7 +65,6 @@ waiting on this window.
 
 import json
 import multiprocessing
-import platform
 import time
 from pathlib import Path
 
@@ -64,65 +75,20 @@ WINDOW_WIDTH = 190
 WINDOW_HEIGHT = 190  # room for the blob at its peak level-driven scale
 TOP_MARGIN = 0  # flush with the screen's top edge - the blob drops in from above it
 
-# Must match `webui/conversation.html`'s `html, body { background: ... }`
-# exactly - every pixel this color becomes fully transparent/click-through.
-# Black rather than a "magic" color like magenta: magenta sits inside the
-# blob's own blue->violet->magenta palette, so anti-aliased edge pixels
-# blended toward it left a pink fringe. Edge pixels blended toward black
-# instead read as a natural soft shadow.
-COLORKEY_CSS = "#000000"
-COLORKEY_COLORREF = 0x00000000  # COLORREF is 0x00BBGGRR
-
 # How long the page's slide-out animation takes - the window is only really
 # hidden after this, so the animation is actually seen instead of the window
 # vanishing mid-transition. Must stay >= the CSS transition duration.
 HIDE_ANIMATION_SECONDS = 0.55
 
+# Grace period before hiding the window at startup: pywebview's transparency
+# path shows the window itself (on the navigation-start event), so hiding it
+# too eagerly races that and can leave it stuck visible.
+STARTUP_HIDE_DELAY_SECONDS = 1.0
+
 # Only shown (see `DebugWindow.set_state`) while a turn is actually active -
 # hidden the rest of the time, per explicit feedback that the indicator
 # should appear on detection, not sit there continuously.
 _VISIBLE_STATES = {"recording", "thinking", "speaking"}
-
-
-def _make_colorkey_transparent(title: str) -> None:
-    """Windows-only: makes every `COLORKEY_COLORREF` pixel in the window
-    titled `title` fully transparent, via the classic layered-window
-    color-key technique — see module docstring for why this replaces
-    relying on pywebview's own `transparent` flag. Every win32 call gets
-    explicit argtypes/restype (see heypeer/tray/cursor.py's module docstring
-    for why that matters — undeclared args silently truncate 64-bit
-    handles). Best-effort: finding the window by title can only fail softly
-    here (a plain rectangle beats crashing the whole indicator)."""
-    if platform.system() != "Windows":
-        return
-    import ctypes
-    from ctypes import wintypes
-
-    GWL_EXSTYLE = -20
-    WS_EX_LAYERED = 0x00080000
-    LWA_COLORKEY = 0x00000001
-
-    user32 = ctypes.windll.user32
-    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-    user32.FindWindowW.restype = wintypes.HWND
-    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.GetWindowLongW.restype = ctypes.c_long
-    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
-    user32.SetWindowLongW.restype = ctypes.c_long
-    user32.SetLayeredWindowAttributes.argtypes = [
-        wintypes.HWND, wintypes.COLORREF, ctypes.c_ubyte, wintypes.DWORD
-    ]
-    user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
-
-    try:
-        hwnd = user32.FindWindowW(None, title)
-        if not hwnd:
-            return
-        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
-        user32.SetLayeredWindowAttributes(hwnd, COLORKEY_COLORREF, 0, LWA_COLORKEY)
-    except Exception:
-        pass
 
 
 def _window_process(command_queue: "multiprocessing.Queue") -> None:
@@ -151,11 +117,21 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
         on_top=True,
         resizable=False,
         shadow=False,
-        hidden=True,  # starts hidden - only shown on an actual turn, see set_state
+        # Deliberately NOT hidden=True: that would skip pywebview's
+        # transparency setup entirely (see module docstring). The window is
+        # hidden from the pump below instead.
+        transparent=True,
     )
-    window.events.loaded += lambda *_a, **_k: _make_colorkey_transparent(WINDOW_TITLE)
 
     def pump_commands(_window) -> None:
+        # Start hidden, but only after pywebview's own transparency
+        # show/hide dance has settled - see STARTUP_HIDE_DELAY_SECONDS.
+        time.sleep(STARTUP_HIDE_DELAY_SECONDS)
+        try:
+            _window.hide()
+        except Exception:
+            pass
+
         while True:
             kind, payload = command_queue.get()  # blocks until the next command
             try:
