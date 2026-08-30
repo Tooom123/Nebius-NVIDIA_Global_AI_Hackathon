@@ -1689,6 +1689,28 @@ premultiply, so drawing was never the problem. Two other things were.
 matches the slide at 0.30s, so "blob on screen" and "Hey Peer is listening"
 stay the same moment.
 
+### Round 25: the chime now lands with the blob (2026-08-30)
+
+Requested: sound the cue once the indicator has arrived, rather than before
+it. Straightforward, except for one thing worth noticing — playing the beep
+at the instant recording starts means the **mic records the beep**, which
+would also confuse the energy-based end-pointing.
+
+- [x] `on_ready` fires after the slide and immediately before the mic opens,
+      so anything it does lands exactly on "speak now". The chime is played
+      **synchronously** there: it is the cue, so recording must begin after
+      it, not during it.
+- [x] The chime asset was 0.66s, which as dead time before the user may
+      speak is too much. Its energy is heavily front-loaded — measured 90%
+      within the first 0.29s, the rest an inaudible decay — so it is trimmed
+      to 0.32s with a short fade to avoid a click. 90% of the energy kept.
+- [x] `play_activation_chime(blocking=...)`, since the two call sites now
+      want opposite behaviour and the difference matters.
+
+Sequence: "Hey Peer" -> verification -> blob descends (0.30s) -> chime
+(0.32s) -> mic opens. One unambiguous cue instead of a sound followed a
+moment later by something appearing.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
