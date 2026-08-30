@@ -39,3 +39,35 @@ def test_report_handles_empty_input(capsys) -> None:
     report([], [])  # must not raise
 
     assert "0 positive clip(s)" in capsys.readouterr().out
+
+
+def test_report_names_the_worst_clips(capsys) -> None:
+    """"Record more samples" is not advice anyone can act on; naming the take
+    that is dragging the number down is."""
+    from pathlib import Path
+
+    report(
+        [(Path("pos_000.wav"), 1.0), (Path("pos_017.wav"), 0.10)],
+        [(Path("neg_000.wav"), 0.97), (Path("neg_009.wav"), 0.12)],
+    )
+
+    out = capsys.readouterr().out
+    assert "pos_017.wav" in out
+    assert "neg_000.wav" in out
+
+
+def test_report_shows_which_phrase_a_negative_was(capsys) -> None:
+    """Negative clips are written one per prompt, so the index recovers what
+    was actually said — the difference between "some negative is confusable"
+    and "it struggles with 'Hey Pierre'"."""
+    from pathlib import Path
+
+    report([(Path("pos_000.wav"), 1.0)], [(Path("neg_000.wav"), 0.97)])
+
+    assert "Hey Pierre" in capsys.readouterr().out
+
+
+def test_report_still_accepts_bare_scores(capsys) -> None:
+    report([0.9, 0.95], [0.1, 0.2])  # must not raise
+
+    assert "2 positive clip(s)" in capsys.readouterr().out

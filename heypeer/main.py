@@ -108,7 +108,7 @@ class HeyPeer:
         get_instruction: GetInstruction = _default_get_instruction,
         file_detector: PatternDetector | None = None,
         wakeword_debug: bool = False,
-        wakeword_threshold: float = 0.55,
+        wakeword_threshold: float = 0.9,
         debug_window: DebugWindow | None = None,
         capture_input: bool = False,
         learn_skills: bool = False,

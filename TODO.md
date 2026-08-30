@@ -1335,6 +1335,36 @@ are harder to separate than real words, so the post-fix margin measured here
 clips were used for training. The real verdict is the user retraining on his
 own recordings and running the app.
 
+### Round 14: the personalised model works — threshold raised, diagnostics named (2026-08-30)
+
+Retraining on the user's own recordings with the round-13 fixes produced a
+model that genuinely discriminates, where the previous one answered 1.00 to
+everything:
+
+    positives: min 0.10  median 1.00
+    negatives: max 0.97  median 0.17
+    at 0.95 -> 98% recall, 4% false accepts
+
+Reading it: recall is flat at 98% across every threshold, so exactly one
+positive take is unrecoverable (it scores 0.10 — almost certainly a bad
+recording), and one negative reaches 0.97 while the rest sit near 0.17.
+
+- [x] **Threshold back to 0.9** (from 0.55). The loose threshold was a
+      workaround for a model whose false positives outscored many true ones —
+      the only workable arrangement was a permissive first stage and a strict
+      verifier. Now that the classes separate, the threshold can do real work
+      again. 0.9 rather than 0.95 because these numbers are optimistic (the
+      model was scored on the clips it trained on) and the two failure modes
+      are not symmetric: a miss costs a repeat, while a false trigger is
+      caught by the verifier moments later.
+- [x] **`evaluate` names the problem clips** instead of advising "record more
+      samples", which nobody can act on. It lists the lowest-scoring
+      positives and the highest-scoring negatives by filename — and for
+      negatives it resolves the filename index back to **the phrase that was
+      actually said**, since `record_samples` writes one file per prompt. The
+      difference between "some negative is confusable" and "it struggles with
+      'Hey Pierre', record a few more of those".
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

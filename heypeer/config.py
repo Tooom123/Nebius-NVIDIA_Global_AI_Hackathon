@@ -27,17 +27,18 @@ class Settings:
     # HEYPEER_WAKEWORD_DEBUG=1 to bring it back if a mic/hardware issue needs
     # diagnosing again.
     wakeword_debug: bool = False
-    # Lowered from 0.9 to 0.55 deliberately. The threshold used to be the
-    # *only* thing standing between a detection and an action, so it had to
-    # be strict — at the cost of missing real "Hey Peer"s. Since the
-    # second-stage verifier landed (heypeer/wakeword/verify.py checks the
-    # transcript before anything is chimed, shown or executed), being
-    # permissive here is nearly free: extra false positives are dropped
-    # silently a fraction of a second later, while genuine activations that
-    # scored 0.6-0.85 now get through instead of being discarded. Being
-    # permissive at stage one and strict at stage two is the whole point of
-    # a cascade. Override with HEYPEER_WAKEWORD_THRESHOLD.
-    wakeword_threshold: float = 0.55
+    # 0.55 was a workaround for a model that couldn't discriminate: trained
+    # on synthetic speech only, its false positives outscored many true ones,
+    # so a loose threshold plus a strict second stage was the only workable
+    # arrangement. A model personalised on the user's own voice separates the
+    # classes properly — measured on their recordings, negatives sit at a
+    # median of 0.17 against positives at 1.00 — so the threshold can do real
+    # work again. 0.9 rather than 0.95 because those measurements are
+    # optimistic (scored on the clips the model trained on), and a missed
+    # activation costs the user a repeat while a false one is caught by the
+    # verifier moments later. Raise it if false triggers persist.
+    # Override with HEYPEER_WAKEWORD_THRESHOLD.
+    wakeword_threshold: float = 0.9
     # Global mouse/keyboard capture (learning click/keystroke habits) is OFF
     # by default: the user reported it noticeably slowing their machine, and
     # the skills it learned from IDE/terminal activity were mostly noise
@@ -69,7 +70,7 @@ def load_settings() -> Settings:
         ),
         watched_dir=Path(os.environ.get("HEYPEER_WATCHED_DIR") or str(Path.home() / "Downloads")),
         wakeword_debug=(os.environ.get("HEYPEER_WAKEWORD_DEBUG") or "0") != "0",
-        wakeword_threshold=float(os.environ.get("HEYPEER_WAKEWORD_THRESHOLD") or 0.55),
+        wakeword_threshold=float(os.environ.get("HEYPEER_WAKEWORD_THRESHOLD") or 0.9),
         capture_input=(os.environ.get("HEYPEER_CAPTURE_INPUT") or "0") != "0",
         learn_skills=(os.environ.get("HEYPEER_LEARN_SKILLS") or "0") != "0",
     )

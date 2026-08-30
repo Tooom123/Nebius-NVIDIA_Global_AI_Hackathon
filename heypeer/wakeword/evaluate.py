@@ -65,18 +65,64 @@ def peak_score(path: Path, session, features: AudioFeatures, n_frames: int) -> f
     return best
 
 
-def score_directory(wav_dir: Path, session, n_frames: int) -> "list[float]":
-    """Peak score per clip. A fresh `AudioFeatures` per clip keeps one clip's
-    audio from bleeding into the next through the rolling buffer."""
-    scores = []
-    for path in sorted(wav_dir.glob("*.wav")):
-        scores.append(peak_score(path, session, AudioFeatures(), n_frames))
-    return scores
+def score_directory(wav_dir: Path, session, n_frames: int) -> "list[tuple[Path, float]]":
+    """Peak score per clip, paired with its path. A fresh `AudioFeatures` per
+    clip keeps one clip's audio from bleeding into the next through the
+    rolling buffer."""
+    return [
+        (path, peak_score(path, session, AudioFeatures(), n_frames))
+        for path in sorted(wav_dir.glob("*.wav"))
+    ]
 
 
-def report(positive_scores: "list[float]", negative_scores: "list[float]") -> None:
-    pos = np.asarray(positive_scores)
-    neg = np.asarray(negative_scores)
+# How many problem clips to name. "Record more samples" is not advice anyone
+# can act on; "this specific take is the one dragging the number down" is.
+WORST_CLIPS_SHOWN = 5
+
+
+def _prompt_for(path: Path) -> str:
+    """The phrase a negative clip was recorded for, from its index.
+
+    `record_samples` writes one file per prompt as `neg_NNN.wav`, so the
+    index recovers what was actually said — and knowing it is the difference
+    between "some negative is confusable" and "the model struggles with 'Hey
+    Pierre', record a few more of those".
+    """
+    from heypeer.wakeword.record_samples import NEGATIVE_PROMPTS
+
+    stem = path.stem
+    if not stem.startswith("neg_"):
+        return ""
+    try:
+        index = int(stem.split("_")[-1])
+    except ValueError:
+        return ""
+    return NEGATIVE_PROMPTS[index] if 0 <= index < len(NEGATIVE_PROMPTS) else ""
+
+
+def _list_worst(
+    scored: "list[tuple[Path, float]]", label: str, worst_first_high: bool
+) -> None:
+    if not scored:
+        return
+    ranked = sorted(scored, key=lambda item: item[1], reverse=worst_first_high)
+    print(f"\n{label}")
+    for path, score in ranked[:WORST_CLIPS_SHOWN]:
+        prompt = _prompt_for(path)
+        suffix = f'   "{prompt}"' if prompt else ""
+        print(f"  {score:.2f}  {path.name}{suffix}")
+
+
+def report(
+    positive_scores: "list[float] | list[tuple[Path, float]]",
+    negative_scores: "list[float] | list[tuple[Path, float]]",
+) -> None:
+    """Accepts bare scores or (path, score) pairs; naming the problem clips
+    is only possible with the latter."""
+    positive_pairs = [s for s in positive_scores if isinstance(s, tuple)]
+    negative_pairs = [s for s in negative_scores if isinstance(s, tuple)]
+    pos = np.asarray([s[1] if isinstance(s, tuple) else s for s in positive_scores])
+    neg = np.asarray([s[1] if isinstance(s, tuple) else s for s in negative_scores])
     print(f"\n{len(pos)} positive clip(s), {len(neg)} negative clip(s)\n")
     print(f"{'threshold':>10}  {'recall':>8}  {'false accepts':>14}")
     print("-" * 36)
@@ -105,6 +151,20 @@ def report(positive_scores: "list[float]", negative_scores: "list[float]") -> No
                 "perfectly. Pick from the table above, or record more samples "
                 "(especially negatives that sound close to the wake word)."
             )
+
+        # Naming names turns "record more samples" into something the user
+        # can actually do: delete a bad take, or record a few more of the one
+        # phrase that keeps being confused for the wake word.
+        _list_worst(
+            positive_pairs,
+            "Positives scoring lowest (missed activations — often a bad take):",
+            worst_first_high=False,
+        )
+        _list_worst(
+            negative_pairs,
+            "Negatives scoring highest (false triggers — record more like these):",
+            worst_first_high=True,
+        )
 
         print(
             "\nNote: these clips were almost certainly also used for training, "
