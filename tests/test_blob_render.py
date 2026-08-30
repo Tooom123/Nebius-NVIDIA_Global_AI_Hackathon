@@ -167,3 +167,96 @@ def test_no_state_or_level_clips_against_the_frame() -> None:
         assert max(
             alpha[0, :].max(), alpha[-1, :].max(), alpha[:, 0].max(), alpha[:, -1].max()
         ) == 0
+
+
+def _luminance(image) -> np.ndarray:
+    return np.asarray(image)[..., :3].mean(axis=-1)
+
+
+def _sample(lum: np.ndarray, fx: float, fy: float, radius: float) -> float:
+    """Luminance at a point given as a fraction of the blob's radius from its
+    centre, so a probe means the same thing whatever the blob's size."""
+    centre = (SIZE - 1) / 2
+    return float(lum[int(centre + fy * radius), int(centre + fx * radius)])
+
+
+def test_the_lit_side_is_much_brighter_than_the_shadowed_side() -> None:
+    """Diffuse shading is what makes the form read as a volume rather than a
+    disc with a gradient on it. The light comes from the upper left, so that
+    quadrant of the surface has to be plainly brighter than the lower right."""
+    lum = _luminance(_frame(amplitude=0.03))
+
+    lit = _sample(lum, -0.5, -0.5, BASE)
+    shadowed = _sample(lum, 0.5, 0.5, BASE)
+
+    assert lit > shadowed * 2
+
+
+def test_there_is_a_tight_specular_highlight() -> None:
+    """A small hard bright spot, not a broad sheen: it is the single strongest
+    signal that a surface is curved and glossy. Tight means it covers a small
+    fraction of the body, bright means it stands well clear of the rest."""
+    frame = _frame(amplitude=0.03)
+    lum = _luminance(frame)
+    body = _alpha(frame) > 245
+
+    assert lum[body].max() > np.median(lum[body]) * 2
+    # Confined: only a small part of the surface is near that peak.
+    near_peak = (lum > lum[body].max() * 0.92) & body
+    assert 0 < near_peak.sum() < body.sum() * 0.06
+
+
+def test_the_silhouette_lights_up_against_a_darker_shoulder() -> None:
+    """The Fresnel edge. Without the dark band just inside it the rim light
+    merges into the body and the sphericity collapses back into a flat disc,
+    so the ordering of these three samples is the property that matters."""
+    lum = _luminance(_frame(amplitude=0.03))
+
+    mid = _sample(lum, 0.35, 0.35, BASE)
+    shoulder = _sample(lum, 0.62, 0.62, BASE)
+    rim = _sample(lum, 0.70, 0.70, BASE)
+
+    assert shoulder < mid
+    assert rim > shoulder
+
+
+def test_the_shading_is_anchored_to_the_blob_not_to_the_frame() -> None:
+    """Regression test for what made the old look flat.
+
+    The colour used to be a radial gradient measured in *frame* coordinates,
+    with its highlight pinned at a fixed fraction of the bitmap. Growing or
+    shrinking the blob therefore slid the shading across it - the light did
+    not belong to the object, which is exactly why the user saw "bien anime
+    mais seulement en 2D". Shading from the surface normal makes the
+    highlight sit at the same place *on the sphere* whatever its size.
+    """
+
+    def highlight_offset(radius: float) -> tuple[float, float]:
+        frame = render(SIZE, radius_profile(OUTLINE_ANGLES, 0.0, 0.03), radius)
+        lum = np.where(_alpha(frame) > 245, _luminance(frame), -1.0)
+        iy, ix = np.unravel_index(np.argmax(lum), lum.shape)
+        centre = (SIZE - 1) / 2
+        return (ix - centre) / radius, (iy - centre) / radius
+
+    small = highlight_offset(SIZE * 0.20)
+    large = highlight_offset(SIZE * 0.32)
+
+    assert small[0] == pytest.approx(large[0], abs=0.05)
+    assert small[1] == pytest.approx(large[1], abs=0.05)
+
+
+def test_the_palette_reaches_violet_on_the_shadowed_side() -> None:
+    """Cyan lit, violet grazing. An earlier version only ever reached violet
+    in a thin crescent at the very bottom, so the blob read as uniformly blue
+    - the complaint the palette existed to answer."""
+    frame = _frame(amplitude=0.03)
+    rgb = np.asarray(frame)[..., :3].astype(int)
+    body = _alpha(frame) > 245
+
+    # Red above green is exactly what separates violet from the rest of the
+    # ramp: #7C3AED has more red than green, #2563EB and #7DD3FC both have
+    # more green than red. Checking the hue rather than an absolute colour
+    # keeps this honest about a shadowed side that is legitimately dark.
+    violet = body & (rgb[..., 0] > rgb[..., 1] + 4) & (rgb[..., 2] > rgb[..., 0])
+
+    assert violet.sum() > body.sum() * 0.05

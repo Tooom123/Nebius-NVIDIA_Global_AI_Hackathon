@@ -584,7 +584,7 @@ def test_recording_starts_only_after_the_indicator_has_appeared(
     listener._record_instruction = record
     _fake_mic(monkeypatch, listener, [_quiet_chunk()], stop_after=2)
 
-    listener.start(on_detected=MagicMock(), on_verify=verify, ready_delay=0.0)
+    listener.start(on_detected=MagicMock(), on_verify=verify)
 
     assert order == ["cue", "record"]
 
@@ -624,7 +624,6 @@ def test_on_ready_fires_after_the_delay_and_before_recording(
         on_detected=MagicMock(),
         on_verify=lambda _pre: (order.append("show"), True)[1],
         on_ready=lambda: order.append("chime"),
-        ready_delay=0.0,
     )
 
     assert order == ["show", "chime", "record"]

@@ -141,24 +141,36 @@ def _screen_width(default: int = 1920) -> int:
         return default
 
 
-def _window_process(command_queue: "multiprocessing.Queue") -> None:
-    """Owns the overlay window and the animation loop."""
+def _window_process(
+    command_queue: "multiprocessing.Queue", landed: "multiprocessing.Event" = None
+) -> None:
+    """Owns the overlay window and the animation loop.
+
+    `landed` is set while the blob is fully down at its resting position and
+    clear at every other time. It is how the parent knows the cue has
+    actually arrived on screen instead of guessing at a duration - see
+    `DebugWindow.wait_until_visible`."""
     from heypeer.tray.blob_render import OUTLINE_ANGLES, render
     from heypeer.tray.blob_shape import radius_profile
     from heypeer.tray.overlay import Overlay, is_supported
 
+    def _drain_until_quit() -> None:
+        # There is no blob to wait for on this machine, so "it has landed" is
+        # vacuously true. Leaving the event clear instead would make every
+        # activation wait out the parent's full timeout before chiming.
+        if landed is not None:
+            landed.set()
+        while True:
+            if command_queue.get()[0] == "quit":
+                return
 
     if not is_supported():
         # Drain commands so the parent never blocks on a full queue.
-        while True:
-            if command_queue.get()[0] == "quit":
-                return
+        return _drain_until_quit()
 
     overlay = Overlay(SIZE, SIZE)
     if not overlay.create():
-        while True:
-            if command_queue.get()[0] == "quit":
-                return
+        return _drain_until_quit()
 
     x = max(0, (_screen_width() - SIZE) // 2)
     offscreen_y = -SIZE - 20
@@ -219,6 +231,8 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
                     slide_started_at = time.time()
 
         if not on_screen and not visible:
+            if landed is not None:
+                landed.clear()
             last_frame_at = time.time()
             continue
 
@@ -261,6 +275,12 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
         radii = radius_profile(OUTLINE_ANGLES, phase, amplitude)
         overlay.update(render(SIZE, radii, radius, glow=glow), x, int(y))
 
+        if landed is not None:
+            # Re-evaluated every frame rather than only on a transition, so a
+            # state change that keeps the blob on screen (recording ->
+            # thinking) leaves it set instead of clearing it for good.
+            landed.set() if (visible and progress >= 1.0) else landed.clear()
+
         if not visible and progress >= 1.0:
             overlay.set_visible(False)
             on_screen = False
@@ -274,8 +294,12 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
 class DebugWindow:
     def __init__(self) -> None:
         self._queue: multiprocessing.Queue = multiprocessing.Queue()
+        # Set by the child while the blob is fully down. Lets the caller wait
+        # for the cue to have actually arrived rather than sleeping for a
+        # nominal slide duration - see `wait_until_visible`.
+        self._landed = multiprocessing.Event()
         self._process = multiprocessing.Process(
-            target=_window_process, args=(self._queue,), daemon=True
+            target=_window_process, args=(self._queue, self._landed), daemon=True
         )
         self._process.start()
         self._last_state: str | None = None
@@ -297,6 +321,22 @@ class DebugWindow:
             return
         self._last_state = state
         self._send("state", state)
+
+    def wait_until_visible(self, timeout: float) -> bool:
+        """Blocks until the blob is fully down, or `timeout` elapses.
+
+        Sleeping for `SLIDE_SECONDS` instead was never right, and the user
+        heard it: the slide only *starts* once the child process has woken
+        from its queue wait and drawn a frame, so the real time from "show
+        the blob" to "the blob is there" is the slide plus however long that
+        took. The chime, scheduled off the nominal duration, therefore
+        regularly played while the blob was still on its way down - the exact
+        inverse of the intended order.
+
+        Returns False on timeout, which is not treated as an error anywhere:
+        the caller carries on rather than holding a turn up for the UI.
+        """
+        return self._landed.wait(timeout)
 
     def close(self) -> None:
         self._send("quit")
