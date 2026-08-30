@@ -39,7 +39,10 @@ DEFAULT_NEGATIVE_DIRS = [_SAMPLES / "negative_user", _SAMPLES / "negative_noise"
 
 
 def _load_clip_variants(
-    path: Path, rng: np.random.Generator, n_variants: int = N_ALIGNMENT_VARIANTS
+    path: Path,
+    rng: np.random.Generator,
+    n_variants: int = N_ALIGNMENT_VARIANTS,
+    center_on_speech: bool = True,
 ) -> list[np.ndarray]:
     """Loads a clip and places it at `n_variants` random offsets within the
     fixed CLIP_SECONDS window, instead of always left-aligning it.
@@ -63,8 +66,22 @@ def _load_clip_variants(
         raise ValueError(f"{path} is {sr} Hz, expected {TARGET_SR} Hz")
 
     target_len = int(CLIP_SECONDS * TARGET_SR)
+
+    if not center_on_speech and len(audio) > target_len:
+        # Negatives: sample windows across the whole recording, deliberately
+        # including ones that straddle its start and end.
+        #
+        # A positive clip is "silence, a short word, silence" — and the
+        # *onset* of any sentence has exactly that shape. Training negatives
+        # only on their loudest, fully-voiced stretch means the model never
+        # sees a speech onset labelled "not the wake word", so every onset
+        # scores high. That is what left negatives at 1.00 after silence was
+        # already fixed. These partial windows are also precisely what the
+        # live listener sees as someone starts talking.
+        return _sliding_windows(audio, target_len, n_variants, rng)
+
     if len(audio) > target_len:
-        audio = audio[:target_len]
+        audio = _loudest_window(audio, target_len)
     max_offset = target_len - len(audio)
 
     variants = []
@@ -76,11 +93,69 @@ def _load_clip_variants(
     return variants
 
 
+def _sliding_windows(
+    audio: np.ndarray, target_len: int, n: int, rng: np.random.Generator
+) -> "list[np.ndarray]":
+    """`n` windows sampled across `audio`, allowed to hang off either end
+    (the overhang is silence), so onsets and offsets are represented."""
+    lowest = -target_len // 2
+    highest = len(audio) - target_len // 2
+    windows = []
+    for _ in range(n):
+        start = int(rng.integers(lowest, highest + 1))
+        clip = np.zeros(target_len, dtype=np.int16)
+        src_start = max(0, start)
+        src_end = min(len(audio), start + target_len)
+        if src_end > src_start:
+            clip[src_start - start : src_end - start] = audio[src_start:src_end]
+        windows.append(clip)
+    return windows
+
+
+def _loudest_window(audio: np.ndarray, target_len: int) -> np.ndarray:
+    """The `target_len` slice carrying the most energy.
+
+    Recorded takes are longer than the training window and the speaker does
+    not start on the first sample — after a countdown people typically begin
+    a few hundred milliseconds in. Blindly keeping the first `target_len`
+    samples therefore cut the wake word out of its own training clip and kept
+    the silence in front of it.
+    """
+    step = target_len // 8
+    best_start, best_energy = 0, -1.0
+    for start in range(0, len(audio) - target_len + 1, max(1, step)):
+        energy = float(np.abs(audio[start : start + target_len].astype(np.int64)).sum())
+        if energy > best_energy:
+            best_start, best_energy = start, energy
+    return audio[best_start : best_start + target_len]
+
+
+def _silence_and_noise_clips(rng: np.random.Generator, n: int = 60) -> "list[np.ndarray]":
+    """Silence and faint noise, always added to the negative class.
+
+    Not optional, and not a nicety: a wake-word model has to reject silence,
+    because a live listener spends nearly all its time looking at exactly
+    that. Training without it produced a model that scored 1.0 on pure
+    silence — every clip then peaked at 1.0 somewhere and no threshold could
+    separate anything. Generating these here means the guarantee holds
+    whatever the user happens to have recorded.
+    """
+    target_len = int(CLIP_SECONDS * TARGET_SR)
+    clips = [np.zeros(target_len, dtype=np.int16) for _ in range(n // 3)]
+    for _ in range(n - len(clips)):
+        # Faint broadband noise across a range of levels, covering quiet
+        # rooms through to a noticeable fan or hiss.
+        amplitude = float(rng.uniform(0.0005, 0.03))
+        clips.append((rng.standard_normal(target_len) * amplitude * 32767).astype(np.int16))
+    return clips
+
+
 def _embed_directory(
     wav_dir: Path,
     features: AudioFeatures,
     rng: np.random.Generator,
     n_variants: int = N_ALIGNMENT_VARIANTS,
+    center_on_speech: bool = True,
 ) -> np.ndarray:
     if not wav_dir.is_dir():
         # Distinguished from "empty" on purpose: the usual cause is a
@@ -95,7 +170,11 @@ def _embed_directory(
     paths = sorted(wav_dir.glob("*.wav"))
     if not paths:
         raise FileNotFoundError(f"No wav files found in {wav_dir}")
-    clips = [clip for p in paths for clip in _load_clip_variants(p, rng, n_variants)]
+    clips = [
+        clip
+        for p in paths
+        for clip in _load_clip_variants(p, rng, n_variants, center_on_speech)
+    ]
     embeddings = features.embed_clips(np.stack(clips))
     # (n_clips, n_frames, emb_dim) -> average-pool frames into one vector per clip
     return embeddings.mean(axis=1)
@@ -106,6 +185,7 @@ def _embed_dirs(
     features: AudioFeatures,
     rng: np.random.Generator,
     user_variants: int,
+    center_on_speech: bool = True,
 ) -> np.ndarray:
     """Embeds several directories into one array.
 
@@ -119,7 +199,9 @@ def _embed_dirs(
     arrays = []
     for wav_dir in wav_dirs:
         variants = user_variants if "user" in wav_dir.name else N_ALIGNMENT_VARIANTS
-        arrays.append(_embed_directory(wav_dir, features, rng, variants))
+        arrays.append(
+            _embed_directory(wav_dir, features, rng, variants, center_on_speech)
+        )
     return np.concatenate(arrays)
 
 
@@ -137,7 +219,13 @@ def train(
     features = AudioFeatures()
     rng = np.random.default_rng(seed)
     pos = _embed_dirs(positive_dirs, features, rng, user_variants)
-    neg = _embed_dirs(negative_dirs, features, rng, user_variants)
+    # Negatives get windows sampled across the whole recording, including
+    # onsets — see `_load_clip_variants`.
+    neg = _embed_dirs(negative_dirs, features, rng, user_variants, center_on_speech=False)
+
+    # Always present, whatever was recorded — see `_silence_and_noise_clips`.
+    quiet = features.embed_clips(np.stack(_silence_and_noise_clips(rng))).mean(axis=1)
+    neg = np.concatenate([neg, quiet])
 
     x = np.concatenate([pos, neg])
     y = np.concatenate([np.ones(len(pos)), np.zeros(len(neg))])
