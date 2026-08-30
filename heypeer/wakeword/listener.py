@@ -172,20 +172,20 @@ def _load_chime() -> np.ndarray:
     return _chime_audio
 
 
-def play_activation_chime() -> None:
+def play_activation_chime(blocking: bool = False) -> None:
     """Plays the activation chime the instant the wake word triggers. The
     user reported not being sure whether Hey Peer had actually heard them; a
     near-instant audible cue (far faster than speaking a full sentence via
     Piper) gives that confirmation the same way real voice assistants do.
 
-    Plays on its own thread so it does **not** delay the start of instruction
-    recording: people run the wake word straight into the instruction ("Hey
-    Peer, déplace le fichier..."), and blocking here for the chime's duration
-    would drop the first fraction of a second of what they said. The chime
-    does bleed into the mic as a result, which is harmless — it's a short
-    tone at the very start, and Whisper's VAD skips non-speech anyway.
+    `blocking=True` when the chime is the "speak now" cue itself: recording
+    must not start until it has finished, or the mic records the beep. The
+    asset is trimmed short (~0.3s) precisely so that wait is barely felt.
     """
-    threading.Thread(target=_play_chime_blocking, daemon=True).start()
+    if blocking:
+        _play_chime_blocking()
+    else:
+        threading.Thread(target=_play_chime_blocking, daemon=True).start()
 
 
 def _play_chime_blocking() -> None:
@@ -358,6 +358,7 @@ class WakeWordListener:
         on_detected: "Callable[[np.ndarray, bool], None]",
         on_level: "Callable[[float, bool], None] | None" = None,
         on_verify: "Callable[[np.ndarray], bool] | None" = None,
+        on_ready: "Callable[[], None] | None" = None,
         ready_delay: float = 0.0,
     ) -> None:
         """`on_level(level, recording)` — level normalized 0-1 (see
@@ -380,8 +381,10 @@ class WakeWordListener:
         every trigger is treated as genuine.
 
         `ready_delay` is how long to wait after `on_verify` succeeds before
-        listening - time for whatever it put on screen to finish appearing,
-        so the cue genuinely means "speak now"."""
+        `on_ready` fires - time for whatever it put on screen to finish
+        appearing. `on_ready()` then runs immediately before recording
+        begins, so anything it does (a chime, say) lands exactly on "speak
+        now" and is over before the mic opens."""
         import pyaudio
 
         self._running = True
@@ -506,6 +509,8 @@ class WakeWordListener:
                     # so the cue genuinely means "speak now".
                     if ready_delay > 0:
                         time.sleep(ready_delay)
+                    if on_ready is not None:
+                        on_ready()
 
                     instruction_audio = self._record_instruction(
                         stream, on_level=on_level, noise_floor_dbfs=noise_floor

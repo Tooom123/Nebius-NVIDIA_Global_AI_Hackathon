@@ -248,6 +248,7 @@ class HeyPeer:
             on_detected=self._on_wake_detected,
             on_level=self._on_audio_level,
             on_verify=self._verify_wake_word,
+            on_ready=self._on_ready_to_listen,
             ready_delay=INDICATOR_SLIDE_SECONDS,
         )
 

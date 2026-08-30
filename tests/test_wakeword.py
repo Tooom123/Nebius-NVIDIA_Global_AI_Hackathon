@@ -600,3 +600,52 @@ def test_a_rejected_trigger_never_records(
     listener.start(on_detected=MagicMock(), on_verify=lambda _pre: False)
 
     listener._record_instruction.assert_not_called()
+
+
+def test_on_ready_fires_after_the_delay_and_before_recording(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """The chime is the "speak now" cue, so it has to land once the indicator
+    has arrived and finish before the mic opens - otherwise the beep is the
+    first thing the recording contains."""
+    listener = WakeWordListener(str(toy_model), threshold=0.0)
+    listener._prebuffer.extend([_loud_chunk()] * 5)
+    order = []
+    original_record = listener._record_instruction
+
+    def record(*args, **kwargs):
+        order.append("record")
+        return original_record(*args, **kwargs)
+
+    listener._record_instruction = record
+    _fake_mic(monkeypatch, listener, [_quiet_chunk()], stop_after=2)
+
+    listener.start(
+        on_detected=MagicMock(),
+        on_verify=lambda _pre: (order.append("show"), True)[1],
+        on_ready=lambda: order.append("chime"),
+        ready_delay=0.0,
+    )
+
+    assert order == ["show", "chime", "record"]
+
+
+def test_the_chime_is_short_enough_to_precede_recording() -> None:
+    """It is played synchronously now, so its length is dead time before the
+    user may speak."""
+    import soundfile as sf
+
+    audio, sr = sf.read(str(CHIME_PATH), dtype="int16")
+
+    assert len(audio) / sr < 0.4
+
+
+def test_play_activation_chime_can_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "heypeer.wakeword.listener._play_chime_blocking", lambda: calls.append("played")
+    )
+
+    play_activation_chime(blocking=True)
+
+    assert calls == ["played"]  # already done by the time it returns
