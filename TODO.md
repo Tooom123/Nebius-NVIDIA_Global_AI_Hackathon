@@ -1223,6 +1223,59 @@ Next: retraining the wake word on the user's own voice — the root cause
 behind both the false positives and the misses, which everything above only
 works around.
 
+### Round 12: personalising the wake word on the user's own voice (2026-08-30)
+
+The root cause behind both failure modes, finally addressed rather than
+worked around. The shipped model was trained on synthetic Piper speech only —
+three English voices, no real humans, no French accent — so what it actually
+learned to separate is "speech-like audio" from "noise", not this phrase from
+other phrases. That is why it fired on ordinary speech *and* missed genuine
+activations, and why the verifier, the permissive threshold and the follow-up
+window all exist.
+
+- [x] **`heypeer/wakeword/record_samples.py`** — guided recorder. Two sets,
+      and the second matters as much as the first:
+      - positives: the user saying "Hey Peer";
+      - negatives: **the same voice** saying other things — near-misses
+        ("Hey Pierre", "Hey Peter", "peur", "père", "Hey" alone), the real
+        commands they give ("déplace le fichier facture vers Archives"), and
+        ordinary speech.
+      Recording only positives would be the classic mistake: the model could
+      then separate the classes on voice identity alone (real human vs
+      synthetic) and would fire on anything the user says. Same-voice
+      negatives force discrimination on *content*. The command phrases target
+      a specific observed failure — the detector firing partway through an
+      instruction, just after the real wake word.
+      Silent takes are rejected and the prompt retried, since a silent clip
+      banked as a positive teaches that silence is the wake word.
+- [x] **`train.py` takes multiple directories per class** (`--positive-dir`
+      repeatable) so the user's recordings train alongside the synthetic set
+      rather than replacing it. Directories whose name contains "user" get
+      **more alignment variants** (16 vs 4): ~40 real takes against a few
+      hundred synthetic clips would otherwise barely move the decision
+      boundary, and oversampling through extra random alignments adds real
+      variation instead of duplicating identical rows.
+- [x] **`heypeer/wakeword/evaluate.py`** — streaming evaluation, because
+      held-out clip accuracy has already deceived this project once: an
+      earlier model scored 96% while being broken in two distinct ways that
+      only streaming exposed. It feeds each clip through `AudioFeatures`
+      chunk by chunk exactly as the listener does and takes the **peak**
+      score, which is what the live listener actually reacts to, then reports
+      recall and false-accept rate across candidate thresholds. It also says
+      plainly whether the two distributions separate at all — if the worst
+      positive scores below the best negative, no threshold works and the
+      answer is more data, not a different number.
+      Verified end to end here on a synthetic stand-in dataset: multi-dir
+      training with user weighting, ONNX export, then evaluation correctly
+      reporting clean separation and the usable threshold range.
+
+The user's recordings stay local — `data/wakeword/samples/` is gitignored,
+so a personalised model never puts someone's voice in the repository.
+
+Once the user has recorded and retrained, the threshold should be re-chosen
+from `evaluate`'s table rather than kept at today's deliberately permissive
+0.55, and the cascade's second stage can likely be relaxed too.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
