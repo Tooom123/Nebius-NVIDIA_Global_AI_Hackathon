@@ -1,83 +1,57 @@
-"""Geometry for the animated blob indicator.
+"""The blob's silhouette, as a radius that varies with angle and time.
 
-Kept as a pure function of (time, level) deliberately, with no drawing and
-no Win32 in it, because the exact same outline has to drive two different
-things that must never disagree:
+    R(theta) = R0 * (1 + A * N(theta, phase))
 
-* the **window region** (`SetWindowRgn`), which is what actually removes the
-  rectangular window edge, and
-* the page's **`clip-path`**, which is what the gradient is clipped to.
+`N` is band-limited procedural noise: a sum of a few sinusoidal harmonics
+whose phases drift at unrelated speeds. That is deliberate rather than a
+shortcut around Perlin/Simplex — being band-limited *guarantees* the outline
+can never develop a spike or a corner, however the amplitude is driven,
+which is the one property the design cannot do without. Incommensurate drift
+speeds mean it never visibly repeats.
 
-Earlier attempts animated the silhouette in CSS and clipped the window to a
-fixed shape. Those can't stay in sync: whatever the window region doesn't
-cover is chopped off, and whatever the page doesn't paint shows through as
-the window's grey background. Deriving both from one function here removes
-that whole class of bug — and it makes the shape unit-testable without a
-display, which nothing about the previous CSS-animated version was.
+`A` is the energy, not the size. Silence still deforms the shape (`A` never
+reaches zero), and a loud voice makes it churn rather than merely inflate.
 
-The outline is a radius modulated by a few low-frequency harmonics:
-
-    r(θ, t) = R · (1 + Σ aᵢ·sin(kᵢ·θ + ωᵢ·t + φᵢ))
-
-Three harmonics with small amplitudes give the slow, organic wobble of the
-reference design; more or larger ones read as spiky rather than blobby.
+Phase is *accumulated* by the caller rather than computed from wall-clock
+time. If harmonics were evaluated as `sin(k*theta + speed*t)`, every change
+in speed would instantly rewrite the phase and the shape would jump — which
+is precisely the kind of discontinuity the smoothing elsewhere exists to
+avoid.
 """
 
 import math
 
-# (harmonic, amplitude, angular speed rad/s, phase). Deliberately
-# non-integer speed ratios so the shape never visibly repeats.
+import numpy as np
+
+# (harmonic, relative weight, drift speed). Low harmonics make broad lobes,
+# high ones the fine ripple along the rim. Weights fall off with frequency so
+# the outline stays rounded; speeds are mutually irrational so the loop never
+# closes.
 _HARMONICS = (
-    (3, 0.055, 0.42, 0.0),
-    (4, 0.038, -0.31, 1.7),
-    (5, 0.026, 0.23, 3.1),
+    (2, 0.30, 0.11),
+    (3, 0.55, 0.42),
+    (4, 0.38, -0.31),
+    (5, 0.26, 0.23),
+    (7, 0.14, 0.17),
+    (9, 0.08, -0.13),
 )
 
-# How much the blob swells at full mic level.
-LEVEL_SCALE = 0.16
-# How much *more pronounced* the wobble gets at full level, on top of the
-# swelling. Size alone reads as a balloon inflating; deepening the harmonics
-# too is what makes it look agitated by the voice rather than just bigger.
-LEVEL_WOBBLE_GAIN = 1.9
-# How much faster the outline moves at full level, so loud speech visibly
-# energizes it instead of only stretching it.
-LEVEL_SPEED_GAIN = 2.2
-# Radius headroom so the biggest possible outline still fits the window with
-# room for the glow: base radius is the inscribed radius divided by this.
-_MAX_EXTENT = (
-    1
-    + sum(a for _k, a, _w, _p in _HARMONICS) * LEVEL_WOBBLE_GAIN
-    + LEVEL_SCALE
-    + 0.06
-)
+_TOTAL_WEIGHT = sum(weight for _k, weight, _s in _HARMONICS)
+
+# Largest amplitude the renderer sizes its frame for; beyond this the glow
+# would be clipped by the edge of the bitmap.
+MAX_AMPLITUDE = 0.30
 
 
-def blob_points(
-    width: int, height: int, t: float, level: float = 0.0, n_points: int = 72
-) -> list[tuple[int, int]]:
-    """Outline of the blob at time `t` (seconds) and mic `level` (0-1), as
-    integer pixel coordinates inside a `width` x `height` window.
+def radius_profile(n_angles: int, phase: float, amplitude: float) -> np.ndarray:
+    """Radius per angle, normalised around 1.0.
 
-    `n_points` at 72 is one point per 5 degrees — smooth enough that neither
-    the window region nor the clip-path shows facets at this size, and far
-    too few points to matter for either's cost.
+    `amplitude` is how far the outline may stray from a circle — 0.03 reads
+    as a sphere breathing, 0.25 as a churning blob.
     """
-    level = max(0.0, min(1.0, level))
-    cx, cy = width / 2, height / 2
-    base_radius = min(width, height) / 2 / _MAX_EXTENT
-    radius = base_radius * (1 + LEVEL_SCALE * level)
-    # Louder speech both deepens the wobble and speeds it up, so the shape
-    # looks driven by the voice rather than merely inflated by it.
-    wobble_gain = 1 + (LEVEL_WOBBLE_GAIN - 1) * level
-    time_gain = 1 + (LEVEL_SPEED_GAIN - 1) * level
-
-    points = []
-    for i in range(n_points):
-        theta = 2 * math.pi * i / n_points
-        wobble = sum(
-            amplitude * wobble_gain * math.sin(harmonic * theta + speed * time_gain * t + phase)
-            for harmonic, amplitude, speed, phase in _HARMONICS
-        )
-        r = radius * (1 + wobble)
-        points.append((round(cx + r * math.cos(theta)), round(cy + r * math.sin(theta))))
-    return points
+    angles = np.linspace(-math.pi, math.pi, n_angles, endpoint=False)
+    noise = sum(
+        weight * np.sin(harmonic * angles + speed * phase)
+        for harmonic, weight, speed in _HARMONICS
+    )
+    return 1.0 + amplitude * (noise / _TOTAL_WEIGHT)

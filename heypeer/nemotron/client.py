@@ -43,6 +43,17 @@ has performed before, each with an id and a human-readable name, and \
 (4) optionally, the filenames and folder names currently present in the \
 watched folder.
 
+The instruction is ordinary spoken French, so the same action arrives worded
+many different ways. The verbs below are examples, not a vocabulary - match
+on what the user means, not on the exact word:
+
+- move: deplace, bouge, mets, range, place, transfere, envoie, fous, colle,
+  balance, glisse, "mets X dans Y", "range X dans Y"
+- rename: renomme, rebaptise, appelle, "change le nom de", "mets le nom"
+- delete: supprime, efface, jette, vire, enleve, "mets a la corbeille"
+- create: cree, fais, ajoute, "nouveau dossier", "nouveau fichier"
+- undo: annule, "reviens en arriere", "remets comme avant", "oublie ca"
+
 Decide what the user wants and respond with ONLY a JSON object of one of these
 forms:
 
