@@ -103,10 +103,11 @@ FRAME_INTERVAL = 1 / 30
 # instead of running the frame loop for nothing.
 IDLE_POLL_INTERVAL = 0.1
 
-# Exponential easing per frame for the slide, rather than a fixed duration,
-# so a state change mid-slide retargets smoothly instead of jumping.
-SLIDE_EASING = 0.24
-SLIDE_SETTLED_PX = 2
+# The slide runs on elapsed time, not on a per-frame easing factor. Easing
+# per frame made its duration hostage to the frame rate: 18 frames is 0.6s at
+# 30fps but 2.2s if anything slows the loop down, and the user saw the blob
+# arrive well after they had started speaking. A duration is a duration.
+SLIDE_SECONDS = 0.28
 
 # State parameters are eased toward their target rather than set. At 30fps
 # this settles in roughly half a second - the design's 400-700ms transition -
@@ -117,6 +118,18 @@ ENERGY_EASING = 0.14
 # the voice response into near-invisibility - the level was arriving, it just
 # never reached the shape in time to show.
 LEVEL_EASING = 0.45
+
+
+def slide_position(from_y: float, to_y: float, elapsed: float) -> float:
+    """Where the indicator sits `elapsed` seconds into a slide.
+
+    Time-based, not a per-frame easing factor: easing per frame made the
+    duration hostage to the frame rate, so any slowdown stretched the slide
+    and the blob landed well after the user had started speaking.
+    """
+    progress = min(1.0, max(0.0, elapsed / SLIDE_SECONDS))
+    eased = 1 - (1 - progress) ** 3  # quick to start, gentle to land
+    return from_y + (to_y - from_y) * eased
 
 
 def _screen_width(default: int = 1920) -> int:
@@ -134,6 +147,7 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
     from heypeer.tray.blob_shape import radius_profile
     from heypeer.tray.overlay import Overlay, is_supported
 
+
     if not is_supported():
         # Drain commands so the parent never blocks on a full queue.
         while True:
@@ -149,10 +163,19 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
     x = max(0, (_screen_width() - SIZE) // 2)
     offscreen_y = -SIZE - 20
 
+    # Built once here rather than on the first visible frame, so the cue
+    # doesn't pay for cache misses and GDI setup at the exact moment it is
+    # meant to feel instant.
+    render(SIZE, radius_profile(OUTLINE_ANGLES, 0.0, 0.03), BASE_RADIUS)
+    overlay.update(render(SIZE, radius_profile(OUTLINE_ANGLES, 0.0, 0.03), BASE_RADIUS),
+                   x, offscreen_y)
+
     state = "idle"
     visible = False
     level = 0.0
     smooth_level = 0.0
+    slide_from = float(offscreen_y)
+    slide_started_at = 0.0
     # Current (eased) animation parameters, started at the idle target so the
     # first frame isn't a jump from nothing.
     current = dict(STATE_ENERGY["idle"])
@@ -165,27 +188,44 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
     while True:
         overlay.pump_messages()
 
+        # Blocking with a timeout while nothing is on screen, rather than
+        # polling: a "show" used to wait out up to a full poll interval
+        # before anything happened, which is dead time added to a cue that
+        # has to feel immediate.
+        idle = not on_screen and not visible
+        try:
+            kind, payload = command_queue.get(timeout=IDLE_POLL_INTERVAL if idle else 0)
+            pending = [(kind, payload)]
+        except Exception:
+            pending = []
         while not command_queue.empty():
             try:
-                kind, payload = command_queue.get_nowait()
+                pending.append(command_queue.get_nowait())
             except Exception:
                 break
+
+        for kind, payload in pending:
             if kind == "quit":
                 overlay.destroy()
                 return
             if kind == "level":
                 level = payload
             elif kind == "state":
+                was_visible = visible
                 state = payload
                 visible = payload in _VISIBLE_STATES
+                if visible != was_visible:
+                    slide_from = y
+                    slide_started_at = time.time()
 
         if not on_screen and not visible:
-            time.sleep(IDLE_POLL_INTERVAL)
             last_frame_at = time.time()
             continue
 
         if visible and not on_screen:
             y = float(offscreen_y)
+            slide_from = y
+            slide_started_at = time.time()
             on_screen = True
             overlay.set_visible(True)
 
@@ -214,18 +254,21 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
         phase += speed * dt
 
         target_y = float(TOP_MARGIN if visible else offscreen_y)
-        y += (target_y - y) * SLIDE_EASING
-        if abs(target_y - y) < SLIDE_SETTLED_PX:
-            y = target_y
+        elapsed = now - slide_started_at
+        progress = min(1.0, elapsed / SLIDE_SECONDS)
+        y = slide_position(slide_from, target_y, elapsed)
 
         radii = radius_profile(OUTLINE_ANGLES, phase, amplitude)
         overlay.update(render(SIZE, radii, radius, glow=glow), x, int(y))
 
-        if not visible and y == target_y:
+        if not visible and progress >= 1.0:
             overlay.set_visible(False)
             on_screen = False
 
-        time.sleep(FRAME_INTERVAL)
+        # Sleep the remainder of the frame, not a whole interval on top of
+        # the work already done - otherwise the real frame rate is always
+        # below the nominal one.
+        time.sleep(max(0.0, FRAME_INTERVAL - (time.time() - now)))
 
 
 class DebugWindow:

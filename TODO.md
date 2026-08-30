@@ -1656,6 +1656,39 @@ Startup is 0.49s with none of onnxruntime, openwakeword, pynput, pywinctl,
 watchdog or pyautogui loaded. Verified a full turn end to end afterwards,
 including "bouge 4 vers test" (the synonym from last round) and undo.
 
+### Round 24: the blob arrived long after the cue (2026-08-30)
+
+The chime is now instant - the shared PortAudio instance did its job - but
+the blob still landed well after the user had started speaking, so there was
+no way to tell whether it reacted to their voice at all.
+
+Measured rather than guessed: rendering a frame costs 1.73ms including the
+premultiply, so drawing was never the problem. Two other things were.
+
+- [x] **The slide eased by a fixed fraction per frame**, which made its
+      duration hostage to the frame rate: 18 frames is 0.60s at 30fps but
+      1.20s at 15 and 2.25s at 8. Any hitch in the loop - GDI, the desktop
+      compositor, another process - stretched the cue proportionally. It is
+      now interpolated on **elapsed time**, so it takes 0.28s whatever the
+      frame rate, with an ease-out that covers most of the distance early.
+      Extracted as `slide_position` so the property is under test at 8, 15,
+      30 and 60fps rather than assumed.
+- [x] **The child polled its command queue every 0.1s while idle**, so a
+      "show" waited out up to a full interval before anything began. It now
+      blocks on the queue with a timeout and reacts the instant the message
+      lands.
+- [x] Two smaller things on the same path: the geometry and colour caches
+      and the GDI surface are built when the child starts rather than on the
+      first visible frame, so the cue doesn't pay for setup at the exact
+      moment it needs to feel immediate; and the loop now sleeps the
+      *remainder* of a frame rather than a whole interval on top of the work
+      already done, which had put the real frame rate permanently below the
+      nominal one.
+
+`INDICATOR_SLIDE_SECONDS` (how long the listener waits before recording) now
+matches the slide at 0.30s, so "blob on screen" and "Hey Peer is listening"
+stay the same moment.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
