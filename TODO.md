@@ -1832,6 +1832,59 @@ The lesson worth keeping: the two real bugs this round were both in the
 mock. Exercising the live endpoint across a handful of adversarial turns took
 two minutes and found both.
 
+### Round 28: the voice was being handed phonemes it had never heard (2026-08-31)
+
+"la voix [...] trop peu realiste et comprend mal des anglicismes ou des
+extensions de fichier". Two complaints in one, and only one of them is
+diagnosable from a machine with no speakers.
+
+**The diagnosable half was a real defect, not a matter of taste.** Piper
+phonemizes through espeak-ng, and espeak switches language per word: handed
+"Spotify" mid-French-sentence it emits English IPA, `spˈɒtɪfˌaɪ`. `ɒ` and `ɪ`
+do not occur in French. The French voice has an embedding for them - the
+phoneme table is shared across all Piper voices - but was trained only on
+French speech, so it has never heard one. The output is whatever an untrained
+embedding happens to produce.
+
+File extensions failed the same way from the other side: espeak reads some
+correctly (`4.txt` -> "quatre point te ixe te") and mangles others
+(`script.py` -> "pi", `rapport.docx` -> "docks", `config.json` -> a consonant
+cluster with no vowel), depending on whether the letters happen to look like a
+word to it.
+
+- [x] `heypeer/tray/pronounce.py`: extensions spelled out deterministically,
+      and a respelling table for the words that leak.
+- [x] Three cleverer fixes were tried first and none work. Piper's espeak
+      bridge is a compiled extension exposing three functions: SSML
+      (`<voice xml:lang="fr">`) comes out read aloud word by word, espeak's
+      `[[phoneme]]` escape is spelled out letter by letter, and there is no
+      flag to disable language switching. The input text is the only lever.
+
+**The tests decide by phonemes, not by ear.** Ordinary *accented* French prose
+is phonemized to derive the set of sounds French actually uses; every sentence
+Hey Peer says must, after respelling, stay inside it. The pairing matters:
+the same sentences are asserted to *fail* untreated, so the fix cannot pass
+vacuously. Two further tests guard the table in both directions - each entry
+must fix a real leak, and must not introduce one.
+
+That second guard immediately earned its keep: it rejected my "youtube" and
+"playlist" entries. espeak already keeps both in French (`jˈu tˈyb`,
+`plɛlˈist`), which is how a French speaker says them. I had added them by eye,
+which is exactly the mistake the test exists to catch. Also rejected
+"spotifaie" - it looks French and phonemizes as `spˈɒtɪfˌaiː`, entirely
+English. "spo-ti-fai" is the spelling that works.
+
+**The undiagnosable half is now decidable by the person with ears.**
+`python -m heypeer.tray.tts --demo` renders the same four lines through every
+French voice and speaker into `data/tts_demo/`; the choice goes in `.env`.
+Piper's French ceiling is `medium` - re-checked against the published list,
+there is no `high` French voice - so this is the range available without a
+much heavier engine.
+
+Found while writing it: `_get_voice` cached a single global voice regardless
+of the name asked for. Harmless while there was only ever one, wrong the
+moment `--demo` renders several.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
