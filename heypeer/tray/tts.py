@@ -15,18 +15,31 @@ Auto-downloads the voice if it isn't present yet, mirroring
 `heypeer/wakeword/listener.py`'s `_ensure_openwakeword_models()`.
 
 Piper has no "high" quality French voice — `medium` is the local ceiling
-(checked against the published voice list). Within that, the default here is
-`fr_FR-upmc-medium` rather than `fr_FR-siwis-medium`, and the synthesis
-parameters are tuned away from the flat defaults, both aimed at sounding
-less robotic. **Neither choice could be verified by ear while writing this**,
-so both are overridable and the alternatives are listed below rather than
-baked in: `HEYPEER_TTS_VOICE` (e.g. `fr_FR-siwis-medium`, `fr_FR-tom-medium`,
-`fr_FR-mls-medium`) and `HEYPEER_TTS_SPEAKER` (upmc ships two: 0 = jessica,
-1 = pierre).
+(re-checked against the published voice list: gilles-low, mls-medium,
+mls_1840-low, siwis-low, siwis-medium, tom-medium, upmc-medium). Within that,
+the default here is `fr_FR-upmc-medium`, and the synthesis parameters are
+tuned away from the flat defaults, both aimed at sounding less robotic.
+
+**Neither choice can be verified by ear from here**, and guessing at it in
+prose was not getting anywhere, so there is now a way to decide it properly:
+
+    python -m heypeer.tray.tts --demo
+
+renders the same four lines through every French voice and speaker into
+`data/tts_demo/`, to be listened to and chosen between. The choice then goes
+in `.env` as `HEYPEER_TTS_VOICE` and `HEYPEER_TTS_SPEAKER` (upmc ships two:
+0 = jessica, 1 = pierre).
+
+What Hey Peer says is put through `pronounce.for_speech` first — that is the
+half of "the voice is not realistic" which *is* diagnosable from here, and it
+was a real defect: a French voice was being handed English phonemes it had
+never been trained on every time it said "Spotify".
 """
 
 import os
 from pathlib import Path
+
+from heypeer.tray.pronounce import for_speech
 
 DEFAULT_VOICE_NAME = os.environ.get("HEYPEER_TTS_VOICE") or "fr_FR-upmc-medium"
 DEFAULT_SPEAKER_ID = int(os.environ.get("HEYPEER_TTS_SPEAKER") or 0)
@@ -53,7 +66,10 @@ SILENCE_TRIM_RATIO = 0.02
 SILENCE_TRIM_PADDING_SECONDS = 0.03
 TRIM_ASSUMED_RATE = 22050  # Piper medium voices' sample rate
 
-_voice = None
+# Keyed by voice name. It used to be a single global, which quietly returned
+# whichever voice was loaded first no matter what was asked for - harmless
+# while there was only ever one, wrong the moment `--demo` renders several.
+_voices: dict = {}
 
 
 def _ensure_voice_downloaded(voice_name: str) -> Path:
@@ -70,13 +86,12 @@ def _ensure_voice_downloaded(voice_name: str) -> Path:
 
 
 def _get_voice(voice_name: str = DEFAULT_VOICE_NAME):
-    global _voice
-    if _voice is None:
+    if voice_name not in _voices:
         from piper import PiperVoice
 
         model_path = _ensure_voice_downloaded(voice_name)
-        _voice = PiperVoice.load(str(model_path))
-    return _voice
+        _voices[voice_name] = PiperVoice.load(str(model_path))
+    return _voices[voice_name]
 
 
 def preload() -> None:
@@ -102,7 +117,13 @@ def preload() -> None:
 def speak(text: str) -> None:
     """Synthesizes `text` and plays it back through the default output
     device. Blocks until playback finishes — callers that don't want to wait
-    should run this in their own thread."""
+    should run this in their own thread.
+
+    The text is put through `pronounce.for_speech` first, which respells
+    anglicisms and spells out file extensions. Without it a French voice
+    reads "Spotify" with English phonemes it was never trained on, and
+    "script.py" as "pi" — see that module for why respelling the input is
+    the only lever available."""
     import io
     import wave
 
@@ -119,7 +140,7 @@ def speak(text: str) -> None:
     )
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
-        voice.synthesize_wav(text, wav_file, syn_config=config)
+        voice.synthesize_wav(for_speech(text), wav_file, syn_config=config)
     buffer.seek(0)
 
     with wave.open(buffer, "rb") as wav_file:
@@ -156,3 +177,90 @@ def _trim_silence(raw: bytes, sample_width: int) -> bytes:
     start = max(0, loud[0] - keep)
     end = min(samples.size, loud[-1] + keep)
     return samples[start:end].tobytes()
+
+
+# Every French voice Piper publishes, with how many speakers each ships. Used
+# by `--demo` so the choice can be made by ear rather than by reading a name.
+FRENCH_VOICES = {
+    "fr_FR-upmc-medium": 2,  # 0 = jessica, 1 = pierre
+    "fr_FR-siwis-medium": 1,
+    "fr_FR-tom-medium": 1,
+    "fr_FR-mls-medium": 125,  # only the first few are worth auditioning
+    "fr_FR-gilles-low": 1,
+}
+
+DEMO_SENTENCES = (
+    "Je deplace facture.pdf vers Archives.",
+    "J'ouvre Spotify.",
+    "Tres bien, et toi ?",
+    "Je n'ai pas bien compris, peux-tu repeter ?",
+)
+
+
+def render_to_file(text: str, path, voice_name: str, speaker_id: int = 0) -> None:
+    """Synthesises one line to a wav file instead of the speakers.
+
+    The point of writing files rather than playing them is `--demo`: whether a
+    voice sounds robotic is not a judgement this code can make, so it renders
+    the same lines through every French voice and leaves the choice to whoever
+    can actually listen.
+    """
+    import wave
+
+    from piper.config import SynthesisConfig
+
+    voice = _get_voice(voice_name)
+    with wave.open(str(path), "wb") as wav_file:
+        voice.synthesize_wav(
+            for_speech(text),
+            wav_file,
+            syn_config=SynthesisConfig(
+                speaker_id=speaker_id,
+                length_scale=SYNTHESIS_LENGTH_SCALE,
+                noise_scale=SYNTHESIS_NOISE_SCALE,
+                noise_w_scale=SYNTHESIS_NOISE_W_SCALE,
+            ),
+        )
+
+
+def _demo(out_dir: Path, voices: "list[str] | None" = None) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for voice_name in voices or list(FRENCH_VOICES):
+        speakers = min(FRENCH_VOICES.get(voice_name, 1), 2)
+        for speaker_id in range(speakers):
+            for index, sentence in enumerate(DEMO_SENTENCES):
+                path = out_dir / f"{voice_name}-speaker{speaker_id}-{index}.wav"
+                try:
+                    render_to_file(sentence, path, voice_name, speaker_id)
+                except Exception as exc:
+                    print(f"[tts] {voice_name} speaker {speaker_id}: {exc}")
+                    break
+            else:
+                print(f"[tts] {voice_name} speaker {speaker_id} -> {out_dir}")
+                continue
+            break
+    print(
+        f"\nEcoute les fichiers dans {out_dir}, puis mets ton choix dans .env :\n"
+        "  HEYPEER_TTS_VOICE=fr_FR-...\n"
+        "  HEYPEER_TTS_SPEAKER=0"
+    )
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Audition Hey Peer's French voices.")
+    parser.add_argument("--demo", action="store_true", help="render every French voice to wav")
+    parser.add_argument("--out", default="data/tts_demo", help="where to write them")
+    parser.add_argument("--voice", action="append", help="only this voice (repeatable)")
+    parser.add_argument("--say", help="speak one line through the configured voice")
+    args = parser.parse_args()
+
+    if args.say:
+        speak(args.say)
+    else:
+        _demo(Path(args.out), args.voice)
+
+
+if __name__ == "__main__":
+    main()
