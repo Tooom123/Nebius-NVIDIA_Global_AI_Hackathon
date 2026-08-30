@@ -1286,6 +1286,55 @@ Once the user has recorded and retrained, the threshold should be re-chosen
 from `evaluate`'s table rather than kept at today's deliberately permissive
 0.55, and the cascade's second stage can likely be relaxed too.
 
+### Round 13: two real training bugs, found by the user's first personalised model (2026-08-30)
+
+The first model trained on the user's own 40 positives and 26 negatives came
+out **degenerate**: positives *and* negatives both scored 1.00 at every
+threshold. Reproduced here from a synthetic stand-in built to match the shape
+of his data, which then confirmed each fix.
+
+- [x] **The model had learned "silence = Hey Peer".** Confirmed directly: it
+      scored **1.0 on pure silence**. Cause: his negative set is all speech
+      (near-misses, commands, ordinary sentences) because
+      `negative_noise` — the synthetic noise directory — doesn't exist on his
+      machine. His positives, meanwhile, are full of silence: 2s takes with a
+      short word inside, plus alignment padding. Nothing ever told the model
+      that quiet is *not* the wake word, and a live listener spends nearly
+      all its time looking at exactly that, so every clip peaked at 1.00
+      somewhere.
+      Fix: `_silence_and_noise_clips` generates silence and faint broadband
+      noise into the negative class on **every** run. This is categorical,
+      not a nicety — a wake-word model must reject silence — so it can't be
+      left depending on whether an optional generation script was ever run.
+      Silence went from 1.0 to 0.01.
+- [x] **Negatives were only ever seen fully voiced, so every speech onset
+      scored high.** A positive is "silence, short word, silence" — which is
+      exactly the shape of the *start* of any sentence. Negatives longer than
+      the training window were reduced to their loudest, fully-voiced
+      stretch, so the model never saw an onset labelled "not the wake word".
+      Fix: `_sliding_windows` samples negative windows across the whole
+      recording and deliberately lets them hang off either end, so onsets and
+      offsets are represented — which is also precisely what the live
+      listener sees as someone starts talking. Negatives went from max 1.00 /
+      median 1.00 to max 0.98 / median 0.93, and the classes became
+      separable.
+- [x] **Positives were being truncated to their first 1.5s**, which after a
+      countdown can be mostly silence — cutting the wake word out of its own
+      training clip. `_loudest_window` keeps the highest-energy slice
+      instead.
+- [x] **`evaluate` now says its numbers are optimistic.** It scores the same
+      clips the model trained on, and a model always fits what it was shown.
+      It is a check that nothing is structurally broken (everything at 1.00,
+      or negatives above positives) rather than a measure of accuracy — worth
+      stating outright, since the whole reason this evaluation exists is that
+      a 96% held-out score once hid two real bugs.
+
+Honest limits: the reproduction used tones as a stand-in for speech, which
+are harder to separate than real words, so the post-fix margin measured here
+(0.98 vs 1.00) is pessimistic in one way and optimistic in another — the same
+clips were used for training. The real verdict is the user retraining on his
+own recordings and running the app.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

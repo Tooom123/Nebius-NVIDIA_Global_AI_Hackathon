@@ -106,6 +106,14 @@ def report(positive_scores: "list[float]", negative_scores: "list[float]") -> No
                 "(especially negatives that sound close to the wake word)."
             )
 
+        print(
+            "\nNote: these clips were almost certainly also used for training, "
+            "so the numbers are optimistic — a model always fits what it was "
+            "shown. Treat this as a check that nothing is structurally broken "
+            "(everything scoring 1.00, or negatives above positives), not as a "
+            "measure of real accuracy. The live app is the real test."
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
