@@ -37,7 +37,7 @@ def _silent(n: int = record_samples.CHUNK) -> np.ndarray:
 @pytest.fixture(autouse=True)
 def no_countdown(monkeypatch: pytest.MonkeyPatch) -> None:
     """The countdown sleeps for real seconds; tests shouldn't."""
-    monkeypatch.setattr(record_samples, "_countdown", lambda _label: None)
+    monkeypatch.setattr(record_samples, "_countdown", lambda _label, _seconds: None)
 
 
 def test_record_clip_returns_the_requested_duration() -> None:

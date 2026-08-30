@@ -40,7 +40,10 @@ POSITIVE_SECONDS = 2.0
 NEGATIVE_SECONDS = 3.0
 
 DEFAULT_POSITIVES = 40
-COUNTDOWN_SECONDS = 1
+# Long enough to read the prompt, draw breath and be ready. One second was
+# not: the user had to ask when they were supposed to start, which is a
+# strong signal the cue was doing its job badly.
+COUNTDOWN_SECONDS = 3
 
 POSITIVE_DIR = Path("data/wakeword/samples/positive_user")
 NEGATIVE_DIR = Path("data/wakeword/samples/negative_user")
@@ -109,12 +112,18 @@ def is_usable(clip: np.ndarray) -> bool:
     return clip_peak(clip) >= MIN_PEAK
 
 
-def _countdown(label: str) -> None:
+def _countdown(label: str, seconds: float) -> None:
+    """Counts down, then hands over the instant recording starts.
+
+    The cue has to be unambiguous in both directions — when to start *and*
+    when it has stopped listening — otherwise takes end up clipped at one end
+    or the other, and the speaker has no way to tell which.
+    """
     print(f"\n{label}")
     for remaining in range(COUNTDOWN_SECONDS, 0, -1):
-        print(f"  {remaining}...", end="\r", flush=True)
+        print(f"   {remaining}...", end="\r", flush=True)
         time.sleep(1)
-    print("  >>> PARLE MAINTENANT        ", end="\r", flush=True)
+    print(f"   >>> PARLE  ({seconds:.0f}s)      ", flush=True)
 
 
 def _save(clip: np.ndarray, directory: Path, index: int, prefix: str) -> Path:
@@ -134,14 +143,15 @@ def record_set(
     saved = 0
     for index, prompt in enumerate(prompts):
         while True:
-            _countdown(f'[{index + 1}/{len(prompts)}]  Dis : "{prompt}"')
+            _countdown(f'[{index + 1}/{len(prompts)}]  Dis : "{prompt}"', seconds)
             clip = record_clip(stream, seconds)
+            print("   --- fini ---", flush=True)
             if is_usable(clip):
                 path = _save(clip, directory, index, prefix)
-                print(f"  enregistre -> {path.name} (pic {clip_peak(clip):.0%})   ")
+                print(f"   ok, enregistre ({path.name}, pic {clip_peak(clip):.0%})")
                 saved += 1
                 break
-            print("  rien entendu, on refait celui-la.                ")
+            print("   rien entendu - on refait celui-la.")
     return saved
 
 
@@ -165,6 +175,14 @@ def main() -> None:
     print(f"  1. {args.positives} fois \"Hey Peer\"")
     print(f"  2. {len(NEGATIVE_PROMPTS)} autres phrases (pour lui apprendre a NE PAS")
     print("     se declencher dessus - c'est aussi important que la serie 1)")
+    print()
+    print("Comment ca se passe : la phrase a dire s'affiche, un decompte")
+    print("3-2-1 defile, puis \">>> PARLE\" apparait. C'est a CE moment que")
+    print("l'enregistrement demarre - parle juste apres. \"--- fini ---\"")
+    print("s'affiche quand il a fini d'ecouter.")
+    print()
+    print("Pas besoin d'etre precis au dixieme de seconde : l'entrainement")
+    print("retrouve la partie parlee dans la prise.")
     print()
     print("Conseils : parle normalement, comme tu le ferais en vrai. Varie")
     print("un peu le ton, la vitesse et la distance au micro entre les prises,")
