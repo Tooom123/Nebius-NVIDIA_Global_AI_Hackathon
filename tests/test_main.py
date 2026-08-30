@@ -919,3 +919,111 @@ def test_verification_runs_normally_once_the_model_is_warm(tmp_path: Path) -> No
         accepted = peer._verify_wake_word(np.zeros(32000, dtype=np.int16))
 
     assert accepted is False  # no wake word in it
+
+
+# --- Applications and music ----------------------------------------------
+#
+# The first thing Hey Peer does that is not about files. What matters here is
+# the boundary: a name it does not recognise must never reach the OS, and it
+# must never announce music that is not playing.
+
+
+def test_an_unknown_application_is_refused_rather_than_launched(tmp_path: Path) -> None:
+    """Everything on this path started as a speech transcript and then passed
+    through a language model. "Run whatever it said" is not an option."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="open_app", skill_id=None, n_repetitions=1,
+        target_name="Machin", speech="J'ouvre Machin.",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "ouvre Machin")
+    said = _conversational(peer)
+
+    with patch("heypeer.executor.apps.launch") as launch:
+        peer.on_wake_word()
+
+    launch.assert_not_called()
+    assert said == ["Je ne connais pas l'application Machin."]
+
+
+def test_launching_spotify_starts_the_music_too(tmp_path: Path) -> None:
+    """"Lance Spotify" means start it and play. Plain `launch` would open the
+    app and leave the user in silence."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="open_app", skill_id=None, n_repetitions=1,
+        target_name="spotify", speech="Je lance Spotify.",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "lance spotify")
+    _conversational(peer)
+    peer._speak_async = MagicMock()
+
+    with patch("heypeer.executor.spotify.launch_and_play") as launch_and_play:
+        peer.on_wake_word()
+
+    launch_and_play.assert_called_once()
+
+
+def test_an_ordinary_app_is_just_launched(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="open_app", skill_id=None, n_repetitions=1, target_name="Chrome",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "ouvre Chrome")
+    _conversational(peer)
+    peer._speak_async = MagicMock()
+
+    with patch("heypeer.executor.apps.launch") as launch:
+        peer.on_wake_word()
+
+    assert launch.call_args.args[0].name == "Chrome"
+
+
+def test_a_resolved_track_is_played_and_named(tmp_path: Path) -> None:
+    """Saying what was actually found is how the user discovers the search
+    matched something other than what they asked for."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="play_music", skill_id=None, n_repetitions=1,
+        query="Alright Kendrick Lamar",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets Alright de Kendrick Lamar")
+    _conversational(peer)
+    narrated: list = []
+    peer._speak_async = narrated.append
+
+    with (
+        patch(
+            "heypeer.executor.spotify.find_track",
+            return_value=("spotify:track:abc", "Alright, de Kendrick Lamar"),
+        ),
+        patch("heypeer.executor.spotify.play_uri") as play_uri,
+    ):
+        peer.on_wake_word()
+
+    play_uri.assert_called_once_with("spotify:track:abc")
+    assert narrated == ["Je lance Alright, de Kendrick Lamar."]
+
+
+def test_without_credentials_it_opens_the_search_and_says_so(tmp_path: Path) -> None:
+    """The state the user is in until they register a Spotify app. Opening
+    the search is not playing the track, so claiming to have started the
+    music would be a lie the user hears immediately - silence."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="play_music", skill_id=None, n_repetitions=1, query="Alright Kendrick Lamar",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets Alright")
+    _conversational(peer)
+    narrated: list = []
+    peer._speak_async = narrated.append
+
+    with (
+        patch("heypeer.executor.spotify.find_track", return_value=None),
+        patch("heypeer.executor.spotify.play_uri") as play_uri,
+    ):
+        peer.on_wake_word()
+
+    assert play_uri.call_args.args[0].startswith("spotify:search:")
+    assert "recherche" in narrated[0]
+    assert "je lance" not in narrated[0].lower()

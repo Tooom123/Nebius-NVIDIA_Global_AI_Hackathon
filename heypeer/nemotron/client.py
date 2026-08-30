@@ -143,6 +143,24 @@ permanent delete (e.g. "supprime le fichier notes.txt"):
 - Undo the last file action (e.g. "annule", "reviens en arriere"):
   {"action": "undo", "speech": "<one short sentence>", "end_turn": true}
 
+- Start an application (e.g. "lance Spotify", "ouvre Chrome"). Use the app's
+  ordinary name, not a path or an executable:
+  {"action": "open_app", "target_name": "<the application name>", \
+"speech": "<one short sentence>", "end_turn": true}
+  For Spotify specifically, "lance Spotify" means start it AND start playing -
+  that is what this action does, so do not also ask what to play.
+
+- Play something specific (e.g. "mets Alright de Kendrick Lamar", "joue du
+  jazz sur Spotify", "lance Bohemian Rhapsody par Queen"):
+  {"action": "play_music", \
+"query": "<what to search for, as plain search words>", \
+"speech": "<one short sentence>", "end_turn": true}
+  `query` is a search string, not a sentence: drop "par", "de", "sur
+  Spotify", "mets", "joue". "lance Alright par Kendrick Lamar sur Spotify"
+  becomes "Alright Kendrick Lamar". Keep the words the user actually named -
+  do not correct a title you think you recognise, and do not add an artist
+  they did not mention.
+
 - Ask for the one piece you are missing, when the action itself is clear:
   {"action": "ask", \
 "question": "<one short question in French asking for exactly the missing \
@@ -165,6 +183,13 @@ user means, not on the exact word:
 - delete: supprime, efface, jette, vire, enleve, "mets a la corbeille"
 - create: cree, fais, ajoute, "nouveau dossier", "nouveau fichier"
 - undo: annule, "reviens en arriere", "remets comme avant", "oublie ca"
+- open an app: lance, ouvre, demarre, "mets-moi", "va sur"
+- play music: mets, joue, lance, "fais tourner", "envoie", "balance"
+
+"lance" is deliberately in three of those lists. It is the same word for
+starting an app, playing a track and moving a file, so the object decides:
+"lance Spotify" is an app, "lance Alright de Kendrick Lamar" is music,
+"lance le fichier 4 dans Archives" is a file.
 
 The instruction was spoken and then transcribed, so filenames arrive the way
 people say them: usually without the extension ("le fichier 4" means 4.txt if
@@ -177,7 +202,7 @@ extension, keep the original file's.
 ## Things you cannot do yet
 
 This action list will grow. Today it is file operations in one watched folder,
-plus conversation. When the user asks for anything else - open an application,
+starting applications, playing music on Spotify, and conversation. When the user asks for anything else - open an application,
 send a message, search the web, change a setting - do NOT bend it into the
 nearest file action and do NOT invent an action name. Use "reply", say plainly
 and briefly that you cannot do that yet, and set "end_turn" as the
@@ -266,6 +291,7 @@ def _parse_intent(raw_content: "str | None") -> Intent:
         dest_folder=data.get("dest_folder"),
         new_name=data.get("new_name"),
         target_name=data.get("target_name"),
+        query=data.get("query"),
         # Free text headed for a terminal and a speech synthesiser, unlike
         # the filenames above which must stay byte-exact to match real files.
         question=_plain_punctuation(data.get("question")),

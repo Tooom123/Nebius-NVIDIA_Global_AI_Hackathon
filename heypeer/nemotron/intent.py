@@ -10,6 +10,8 @@ ACTIONS = (
     "create_folder",
     "delete_file",
     "undo",  # revert the last file action ("annule")
+    "open_app",  # start an application by name ("lance Spotify")
+    "play_music",  # play something specific ("mets Alright de Kendrick Lamar")
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -36,6 +38,10 @@ class Intent:
     new_name: str | None = None
     # "create_file"/"create_folder" only: the new file/folder's name.
     target_name: str | None = None
+    # "play_music" only: what to look for, as one search string. "X par Y"
+    # is flattened to "X Y" by the model, since that is what a music search
+    # expects - the preposition is French grammar, not part of the title.
+    query: str | None = None
     # "ask" only: the single short question to put to the user, in French.
     # Lets Hey Peer say what's actually missing ("vers quel dossier ?")
     # instead of a flat "je n'ai pas compris" that leaves them guessing.
