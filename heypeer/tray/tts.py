@@ -33,13 +33,25 @@ DEFAULT_SPEAKER_ID = int(os.environ.get("HEYPEER_TTS_SPEAKER") or 0)
 VOICES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "wakeword" / "piper_voices"
 
 # Piper's defaults are length_scale=1.0, noise_scale=0.667, noise_w=0.8, which
-# come out clipped and monotone. Speaking slightly slower and allowing more
-# variation in phoneme duration is the standard way to make Piper sound less
-# mechanical — `noise_w_scale` in particular drives prosodic variation, which
-# is most of what "robotic" means here.
-SYNTHESIS_LENGTH_SCALE = 1.06
+# come out clipped and monotone. More variation in phoneme duration is the
+# standard way to make Piper sound less mechanical — `noise_w_scale` in
+# particular drives prosodic variation, which is most of what "robotic"
+# means here.
+#
+# `length_scale` is speaking rate (higher = slower). It was briefly set to
+# 1.06 on the theory that slowing down sounds more natural; the user
+# reported the result as simply slow, so it is back to slightly *faster*
+# than default. These are short confirmations, not narration — being brisk
+# matters more than being deliberate.
+SYNTHESIS_LENGTH_SCALE = 0.95
 SYNTHESIS_NOISE_SCALE = 0.70
 SYNTHESIS_NOISE_W_SCALE = 0.90
+
+# Anything quieter than this fraction of the utterance's peak counts as
+# silence for trimming, with a little padding kept so speech isn't clipped.
+SILENCE_TRIM_RATIO = 0.02
+SILENCE_TRIM_PADDING_SECONDS = 0.03
+TRIM_ASSUMED_RATE = 22050  # Piper medium voices' sample rate
 
 _voice = None
 
@@ -95,19 +107,49 @@ def speak(text: str) -> None:
     buffer.seek(0)
 
     with wave.open(buffer, "rb") as wav_file:
-        pa = pyaudio.PyAudio()
-        stream = pa.open(
-            format=pa.get_format_from_width(wav_file.getsampwidth()),
-            channels=wav_file.getnchannels(),
-            rate=wav_file.getframerate(),
-            output=True,
-        )
-        try:
-            data = wav_file.readframes(1024)
-            while data:
-                stream.write(data)
-                data = wav_file.readframes(1024)
-        finally:
-            stream.stop_stream()
-            stream.close()
-            pa.terminate()
+        frame_count = wav_file.getnframes()
+        raw = wav_file.readframes(frame_count)
+        sample_width = wav_file.getsampwidth()
+        channels = wav_file.getnchannels()
+        rate = wav_file.getframerate()
+
+    raw = _trim_silence(raw, sample_width)
+
+    pa = pyaudio.PyAudio()
+    stream = pa.open(
+        format=pa.get_format_from_width(sample_width),
+        channels=channels,
+        rate=rate,
+        output=True,
+    )
+    try:
+        stream.write(raw)
+    finally:
+        stream.stop_stream()
+        stream.close()
+        pa.terminate()
+
+
+def _trim_silence(raw: bytes, sample_width: int) -> bytes:
+    """Drops near-silent lead-in and tail from synthesized audio.
+
+    Piper pads every utterance with a couple of hundred milliseconds of
+    silence at each end. Playing it makes short confirmations feel sluggish
+    — the delay is heard as Hey Peer being slow to answer, and then slow to
+    finish — even though the speech itself is a normal length.
+    """
+    if sample_width != 2:
+        return raw  # only int16 is produced here; anything else passes through
+
+    import numpy as np
+
+    samples = np.frombuffer(raw, dtype=np.int16)
+    if samples.size == 0:
+        return raw
+    loud = np.nonzero(np.abs(samples) > np.abs(samples).max() * SILENCE_TRIM_RATIO)[0]
+    if loud.size == 0:
+        return raw
+    keep = int(SILENCE_TRIM_PADDING_SECONDS * TRIM_ASSUMED_RATE)
+    start = max(0, loud[0] - keep)
+    end = min(samples.size, loud[-1] + keep)
+    return samples[start:end].tobytes()

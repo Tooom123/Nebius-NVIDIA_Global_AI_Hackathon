@@ -1122,6 +1122,61 @@ accuracy that fixed the garbled-filename problem.
       already-imported package and never consults `sys.modules`, so the stub
       was ignored. Now patches the function on the module itself.
 
+### Round 10: chaining, detection latency, UI smoothness, voice pace (2026-08-30)
+
+- [x] **"Je ne peux pas enchaîner avec un autre Hey Peer" — a real bug, not
+      a feel.** While muted for a turn, the loop skipped `process_chunk`
+      entirely, so openWakeWord's streaming feature buffer still held the
+      wake word that had just fired. On unmute it kept scoring high, and
+      since `_maybe_trigger` only re-arms once the score drops *below*
+      threshold, the listener stayed deaf until ~1.5s of fresh audio flushed
+      it. Fixed by feeding silence during mute (keeps the buffer moving,
+      can't score high) and re-arming explicitly in `unmute()`. Two
+      regression tests cover both halves.
+- [x] **"Je dois me répéter" — the verifier was the new bottleneck**, not
+      the detector (whose threshold had just been *lowered*). Two causes:
+      the ~2s verification clip was transcribed with `vad_filter=True`,
+      which frequently discards a clip that short and returned nothing; and
+      an empty transcript was treated as a rejection. Now verification runs
+      without VAD, and an empty transcript **defers** to the full-audio
+      check rather than rejecting — uncertainty is not a refusal.
+- [x] **Chime latency**: verification runs before the chime, so its cost is
+      felt directly. Measured on a 2s clip: 0.99s with "small" vs **0.37s
+      with "base"**. Verification only has to recognise one fixed short
+      phrase (matched fuzzily afterwards), so it now uses `base` while the
+      instruction keeps `small`, where accuracy decides whether a filename
+      comes out as "4.txt" or "4.xt". Right-sized model per job.
+- [x] **UI smoothness — found the real cost.** `Overlay.update` created *and
+      destroyed* a screen DC, a memory DC and a DIB section on **every
+      frame**, 30 times a second, plus re-declaring every ctypes signature.
+      GDI objects are a finite per-process resource and allocating them is
+      not cheap; that churn is what made the indicator feel heavy on a
+      machine that should not struggle. The surface depends only on the
+      window size, which never changes, so it is created once and reused
+      (`_ensure_surface`/`_release_surface`).
+- [x] **Voice pace**: `length_scale` had been set to 1.06 on the theory that
+      slower reads as more natural; the user reported it simply as slow.
+      Back to 0.95 (slightly brisker than default) — these are short
+      confirmations, not narration. Also trimming Piper's leading and
+      trailing silence before playback (~0.12s per utterance), which is
+      heard as Hey Peer being quicker to start *and* to finish.
+
+Proposed next, not yet built (all within the voice-to-action use case):
+- **Follow-up window**: stay open for a few seconds after an action so a
+  second command needs no wake word at all. The chaining bug above is fixed,
+  but not needing to repeat the wake word would be better still. Needs care:
+  it bypasses the verifier, so it should be narrow and clearly indicated.
+- **"Annule"**: undo the last file action. Cheap — every operation already
+  knows its source and destination — and the natural safety net now that
+  there is no confirmation step.
+- **Ask instead of failing silently**: when an instruction resolves to
+  nothing, say what was missing ("quel dossier ?") rather than "je n'ai pas
+  compris", so the user knows what to add.
+- **Retrain the wake word on the user's own voice.** The detector is still
+  trained on synthetic Piper speech only; it is the root cause behind both
+  the false positives and the misses, and the cascade is a workaround for
+  it. Recording ~50 real samples would fix the cause rather than compensate.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
