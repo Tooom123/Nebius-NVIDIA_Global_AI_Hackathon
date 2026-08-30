@@ -1177,6 +1177,52 @@ Proposed next, not yet built (all within the voice-to-action use case):
   the false positives and the misses, and the cascade is a workaround for
   it. Recording ~50 real samples would fix the cause rather than compensate.
 
+### Round 11: follow-up window, undo, and asking instead of failing (2026-08-30)
+
+The three items proposed at the end of round 10, built.
+
+- [x] **Follow-up window** — after Hey Peer acts (or asks a question), speech
+      alone starts the next turn for ~6s, with no wake word at all. That is
+      how a conversation actually continues, and it sidesteps the wake-word
+      model entirely for the second command.
+      `WakeWordListener.arm_followup()` opens the window; the loop checks it
+      *before* wake-word scoring, since there is nothing to score against.
+      A follow-up turn deliberately **skips verification** — there is no wake
+      word in that audio by construction, so `on_verify` would reject every
+      one — and `on_detected(audio, followup)` carries that fact through so
+      `_interpret_audio` doesn't look for one either.
+      The risk is real and bounded on purpose: for those few seconds, room
+      speech can open a turn. It is kept short, requires speech well above
+      the measured noise floor (a stricter margin than ordinary
+      end-pointing), and the instruction still has to resolve to a concrete
+      file action — ordinary conversation resolves to "unknown" and does
+      nothing.
+- [x] **"Annule"** — undo for the last file action, in
+      `heypeer/executor/undo.py`. Each action records how to reverse itself
+      *at the moment it succeeds*, because that is the only point where the
+      resolved filename, the created folder and the extension inherited
+      during a rename are all known; reconstructing them afterwards from the
+      intent would be guesswork.
+      Two deliberate refusals rather than blind reversal: undoing a file
+      creation only removes the file if it is **still empty** (the user may
+      have typed into it since), and undoing a folder creation only removes
+      it if it is **still empty** (never take files with it).
+      Deletes are the honest exception — `send2trash` offers no programmatic
+      restore, so they are recorded as *not* undoable and Hey Peer says the
+      file is in the recycle bin instead of pretending. That is still better
+      than a permanent unlink, which is why deletes work that way.
+- [x] **Ask instead of failing silently** — a new `ask` intent carrying a
+      short French `question`. When the instruction is recognisable but
+      incomplete ("déplace facture" with no destination) or genuinely
+      ambiguous (two files match), Hey Peer says *what is missing* — "Vers
+      quel dossier ?" — instead of a flat "je n'ai pas compris" that leaves
+      the user guessing what to rephrase. It arms the follow-up window too,
+      so the answer needs no wake word.
+
+Next: retraining the wake word on the user's own voice — the root cause
+behind both the false positives and the misses, which everything above only
+works around.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

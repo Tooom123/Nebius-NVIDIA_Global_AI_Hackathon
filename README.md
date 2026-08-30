@@ -35,7 +35,11 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
    "supprime notes.txt" — all grounded against the watched folder's actual file
    listing) — or reports the instruction as unrecognized.
 5. Hey Peer narrates what it's about to do out loud (in French by default) and then
-   does it — **no confirmation prompt** stands in the way any more. There used to be
+   does it — **no confirmation prompt** stands in the way any more. Say **"annule"**
+   to reverse the last action, and for a few seconds afterwards a follow-up command
+   needs no wake word at all. If something is missing from an instruction, Hey Peer
+   asks for exactly that ("Vers quel dossier ?") rather than saying it didn't
+   understand. There used to be
    one (spoken or typed); it was removed after real-world testing showed it caused
    more problems than it solved (a misheard "yes" over a noisy mic would silently
    default to "no" and block a legitimate action). The safety net that replaces it:
@@ -251,7 +255,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 175 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 192 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with

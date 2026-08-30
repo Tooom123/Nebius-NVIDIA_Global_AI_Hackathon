@@ -412,7 +412,7 @@ def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: 
     peer._on_wake_detected(fake_audio)
 
     get_instruction.assert_not_called()
-    assert peer._detections.get_nowait() is fake_audio
+    assert peer._detections.get_nowait() == (fake_audio, False)
 
 
 def test_on_quit_enqueues_shutdown_sentinel(tmp_path: Path) -> None:
@@ -605,3 +605,148 @@ def test_on_wake_word_interpret_failure_does_not_raise(
 
     with patch("heypeer.wakeword.stt.transcribe", return_value="hello"):
         peer.on_wake_word(np.zeros(16000, dtype=np.int16))  # must not raise
+
+
+def test_undo_reverses_the_last_move(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+    peer.on_wake_word()
+    assert (watched_dir / "Archives" / "facture.pdf").exists()
+
+    nemotron.interpret_text.return_value = Intent(
+        action="undo", skill_id=None, n_repetitions=1
+    )
+    peer.on_wake_word()
+
+    assert (watched_dir / "facture.pdf").exists()
+    assert not (watched_dir / "Archives" / "facture.pdf").exists()
+
+
+def test_undo_with_nothing_to_undo_says_so(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="undo", skill_id=None, n_repetitions=1
+    )
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "annule",
+    )
+    spoken: list[str] = []
+    peer._speak = spoken.append
+
+    peer.on_wake_word()  # must not raise
+
+    assert any("rien à annuler" in s for s in spoken)
+
+
+def test_ask_speaks_the_question_instead_of_failing_silently(tmp_path: Path) -> None:
+    """A recognisable-but-incomplete instruction should say what's missing,
+    not just "je n'ai pas compris"."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="ask",
+        skill_id=None,
+        n_repetitions=1,
+        question="Vers quel dossier ?",
+    )
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "déplace facture",
+    )
+    spoken: list[str] = []
+    peer._speak = spoken.append
+
+    peer.on_wake_word()
+
+    assert spoken == ["Vers quel dossier ?"]
+
+
+def test_ask_opens_a_followup_window_so_the_answer_needs_no_wake_word(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="ask", skill_id=None, n_repetitions=1, question="Vers quel dossier ?"
+    )
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "déplace facture",
+    )
+    peer._wake_listener = MagicMock()
+
+    peer.on_wake_word()
+
+    peer._wake_listener.arm_followup.assert_called_once()
+
+
+def test_successful_action_opens_a_followup_window(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+    peer._wake_listener = MagicMock()
+
+    peer.on_wake_word()
+
+    peer._wake_listener.arm_followup.assert_called_once()
+
+
+def test_followup_turn_does_not_require_a_wake_word_in_the_transcript(tmp_path: Path) -> None:
+    """A follow-up has no wake word in it by design; checking for one would
+    reject every single one."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+    )
+    peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
+
+    with patch("heypeer.wakeword.stt.transcribe", return_value="déplace facture vers Archives"):
+        peer.on_wake_word(np.zeros(16000, dtype=np.int16), followup=True)
+
+    assert (watched_dir / "Archives" / "facture.pdf").exists()
+
+
+def test_non_followup_turn_still_requires_the_wake_word(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+
+    with patch("heypeer.wakeword.stt.transcribe", return_value="déplace facture vers Archives"):
+        peer.on_wake_word(np.zeros(16000, dtype=np.int16), followup=False)
+
+    nemotron.interpret_text.assert_not_called()
