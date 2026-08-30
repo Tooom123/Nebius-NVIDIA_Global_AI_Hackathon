@@ -154,12 +154,14 @@ activation just won't come up regardless of the toggle; use the tray's **"Demand
 Set `HEYPEER_WAKEWORD_DEBUG=1` for a live mic dB meter and per-chunk detection
 score in the console, useful when diagnosing a microphone problem.
 
-The detection threshold defaults to `0.55` and is **deliberately permissive**
-(it was 0.9 when it was the only safeguard). Detection is a two-stage cascade
-now — see below — so a loose first stage costs nothing: extra false positives
-are discarded by the verifier before anything is chimed, shown or executed,
-while genuine activations that score in the 0.6-0.85 range get through instead
-of being dropped. Override with `HEYPEER_WAKEWORD_THRESHOLD`.
+The detection threshold defaults to `0.9`. It was briefly 0.55, as a workaround
+for a model trained on synthetic speech whose false positives outscored many
+true ones — with that model a permissive first stage plus a strict verifier was
+the only workable arrangement. A model personalised on your own voice separates
+the classes properly, so the threshold does real work again. Detection remains a
+two-stage cascade (see below), which is why 0.9 rather than 0.95: a missed
+activation costs you a repeat, while a false one is caught by the verifier
+moments later. Override with `HEYPEER_WAKEWORD_THRESHOLD`.
 
 For debugging with the console visible (or on a headless box without a tray
 host), use the foreground console loop instead:
@@ -282,7 +284,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 212 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 215 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
