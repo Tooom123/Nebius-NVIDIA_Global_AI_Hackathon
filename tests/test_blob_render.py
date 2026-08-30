@@ -12,8 +12,8 @@ import pytest
 from heypeer.tray.blob_render import OUTLINE_ANGLES, render
 from heypeer.tray.blob_shape import radius_profile
 
-SIZE = 160
-BASE = SIZE * 0.30
+SIZE = 240
+BASE = SIZE * 0.26
 
 
 def _frame(phase: float = 0.0, amplitude: float = 0.08, glow: float = 1.0):
@@ -117,3 +117,53 @@ def test_palette_is_the_cyan_blue_violet_of_the_design() -> None:
     assert PALETTE_CYAN == (125, 211, 252)  # #7DD3FC
     assert PALETTE_BLUE == (37, 99, 235)  # #2563EB
     assert PALETTE_VIOLET == (124, 58, 237)  # #7C3AED
+
+
+def _solid_area(amplitude: float, radius: float) -> int:
+    frame = render(SIZE, radius_profile(OUTLINE_ANGLES, 1.0, amplitude), radius)
+    return int((_alpha(frame) > 245).sum())
+
+
+def test_the_voice_visibly_changes_the_shape() -> None:
+    """Regression test: the level was reaching the renderer but the gains
+    were so timid (the radius term moved it 1.5% at speaking volume) that
+    nothing appeared to happen when the user spoke."""
+    from heypeer.tray.debug_window import (
+        BASE_RADIUS,
+        LEVEL_AMPLITUDE_GAIN,
+        LEVEL_RADIUS_GAIN,
+        STATE_ENERGY,
+    )
+
+    recording = STATE_ENERGY["recording"]
+    silent = _solid_area(recording["amplitude"], BASE_RADIUS)
+    loud = _solid_area(
+        recording["amplitude"] + LEVEL_AMPLITUDE_GAIN,
+        BASE_RADIUS * (1 + LEVEL_RADIUS_GAIN),
+    )
+
+    assert loud > silent * 1.15  # plainly visible, not a 1% nudge
+
+
+def test_no_state_or_level_clips_against_the_frame() -> None:
+    """The frame has to hold the largest shape any state can reach, glow
+    included - a halo cut off by the bitmap edge shows as a straight line."""
+    from heypeer.tray.debug_window import (
+        BASE_RADIUS,
+        LEVEL_AMPLITUDE_GAIN,
+        LEVEL_RADIUS_GAIN,
+        STATE_ENERGY,
+    )
+
+    for energy in STATE_ENERGY.values():
+        gain = energy["level_gain"]
+        frame = render(
+            SIZE,
+            radius_profile(OUTLINE_ANGLES, 1.0, energy["amplitude"] + LEVEL_AMPLITUDE_GAIN * gain),
+            BASE_RADIUS * (1 + LEVEL_RADIUS_GAIN * gain),
+            glow=1.0,
+        )
+        alpha = _alpha(frame)
+        assert max(
+            alpha[0, :].max(), alpha[-1, :].max(), alpha[:, 0].max(), alpha[:, -1].max()
+        ) == 0

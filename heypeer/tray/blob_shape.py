@@ -36,8 +36,6 @@ _HARMONICS = (
     (9, 0.08, -0.13),
 )
 
-_TOTAL_WEIGHT = sum(weight for _k, weight, _s in _HARMONICS)
-
 # Largest amplitude the renderer sizes its frame for; beyond this the glow
 # would be clipped by the edge of the bitmap.
 MAX_AMPLITUDE = 0.30
@@ -54,4 +52,13 @@ def radius_profile(n_angles: int, phase: float, amplitude: float) -> np.ndarray:
         weight * np.sin(harmonic * angles + speed * phase)
         for harmonic, weight, speed in _HARMONICS
     )
-    return 1.0 + amplitude * (noise / _TOTAL_WEIGHT)
+    # Normalised by its own peak, not by the sum of the weights. Sinusoids
+    # at unrelated phases almost never align, so the sum only ever reached
+    # about three quarters of that sum - `amplitude` promised a deformation
+    # and quietly delivered 78% of it, which is part of why the motion read
+    # as barely there. Dividing by the actual peak makes the number mean
+    # exactly what it says.
+    peak = float(np.abs(noise).max())
+    if peak > 0:
+        noise = noise / peak
+    return 1.0 + amplitude * noise

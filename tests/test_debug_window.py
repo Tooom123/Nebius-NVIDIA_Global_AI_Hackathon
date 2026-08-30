@@ -72,12 +72,14 @@ def test_close_sends_quit(fake_process: MagicMock) -> None:
     assert window._queue.put.call_args.args[0] == ("quit", None)
 
 
-def test_visible_states_cover_an_active_turn_only() -> None:
-    """The indicator appears when Hey Peer has actually heard something, and
-    is hidden while merely listening."""
+def test_visible_states_cover_an_open_exchange() -> None:
+    """The indicator appears when Hey Peer has heard something and stays for
+    as long as the exchange is open - including while a question it asked is
+    still waiting for an answer, which used to slide it off screen mid-
+    conversation. It is hidden while merely listening for a wake word."""
     from heypeer.tray.debug_window import _VISIBLE_STATES
 
-    assert {"recording", "thinking", "speaking"} == _VISIBLE_STATES
+    assert {"recording", "thinking", "speaking", "awaiting"} == _VISIBLE_STATES
     assert "listening" not in _VISIBLE_STATES
     assert "idle" not in _VISIBLE_STATES
 
