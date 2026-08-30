@@ -20,3 +20,6 @@ data/wakeword/*.onnx
 data/wakeword/samples/
 data/wakeword/piper_voices/
 .DS_Store
+
+# Voice audition renders (python -m heypeer.tray.tts --demo)
+data/tts_demo/

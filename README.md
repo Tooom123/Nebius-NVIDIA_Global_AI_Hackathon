@@ -294,7 +294,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 269 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 292 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.
@@ -307,6 +307,20 @@ word needed and the turns so far are replayed on the next one. Verified against 
 live endpoint: `"deplace la facture"` -> *"Vers quel dossier ?"* -> `"dans Archives"`
 resolves to a real move of `facture_mars.pdf`, and `"non merci"` afterwards closes
 the exchange instead of repeating the last action.
+
+Beyond files, Hey Peer **starts applications and plays music**. "Lance Spotify"
+opens it *and* presses play — opening the app alone leaves you in silence looking
+at a player that hasn't begun. "Lance Alright par Kendrick Lamar" resolves the
+track through Spotify's search and opens `spotify:track:<id>`, which the desktop
+app plays directly. That search needs only *application* credentials
+(`SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET`, free, no user login, no Premium);
+without them it opens the search results and says so rather than claiming to have
+started the music.
+
+Apps are launched from a **registry**, not from whatever the model returned —
+`resolve_app` refuses a name it doesn't know. Everything on that path began as a
+speech transcript and then passed through a language model, so "run whatever it
+said" is not an option. "Ouvre Machin" costs one turn to decline.
 
 Two behaviours were found live and fixed in the prompt, both of which the model got
 wrong by default: replaying an action already carried out earlier in the exchange

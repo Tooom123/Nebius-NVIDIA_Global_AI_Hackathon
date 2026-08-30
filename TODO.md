@@ -1885,6 +1885,68 @@ Found while writing it: `_get_voice` cached a single global voice regardless
 of the name asked for. Harmless while there was only ever one, wrong the
 moment `--demo` renders several.
 
+### Round 29: the first thing that is not a file (2026-08-31)
+
+"nous allons implementer l'ouverture d'appli etc. Commencons par spotify. Je
+souhaite pouvoir dire hey peer lance spotify et ca ouvre spotify et lance play.
+ou alors lance X par Y sur spotify et ca joue ce son"
+
+Two requests that look alike and are not. Starting an app is one mechanism;
+playing a named track is another, and neither is the other's special case.
+
+**Apps come from a registry, not from the model.** `executor/apps.py` resolves
+a spoken name against a table (exact, then alias, then fuzzy, all accent- and
+case-insensitive) and refuses anything it does not recognise. This is the
+whole design decision: every name on this path started as a speech transcript
+and then passed through a language model, so "run whatever it said" is handing
+a model's output to the shell. "Ouvre Machin" costs one turn to decline.
+Launching prefers a URI scheme (`spotify:`) over an executable, because the OS
+resolves a URI to whatever build the user actually installed - Store app or
+desktop - where an executable name only finds one of them.
+
+**"Lance Spotify" means start it and play.** Opening the app does not start
+music; the user is left in silence looking at a player that has not begun. So
+Spotify's branch opens the app, waits for it to come up, and sends the system
+media play/pause key - a key the OS routes to whatever is playing, which needs
+no permission from Spotify at all. The wait is the load-bearing part: pressing
+play before there is a player to press it on does nothing.
+
+**"Lance X par Y" resolves the track first.** Spotify's search takes an
+*application* token - the client-credentials flow - so there is no login
+prompt, no OAuth redirect, no Premium requirement and no access to anything of
+the user's. It returns a track id, and `spotify:track:<id>` handed to the
+desktop app plays it. Playback deliberately does not go through the Web API's
+`/me/player/play`, which would need user OAuth *and* Premium.
+
+Without credentials it falls back to `spotify:search:<query>`, which opens the
+results and plays nothing. That difference is reported out loud rather than
+smoothed over: announcing music that is not playing is a lie the user hears
+immediately, as silence. `find_track` returns None for every way this can
+fail - no credentials, no match, network error - because they all lead to the
+same fallback.
+
+One search serves both the URI and the sentence. An earlier draft had
+`search_track` and `describe_track` as separate functions, i.e. two round
+trips in front of someone waiting for music.
+
+Verified against the live model - the "lance" disambiguation is the part that
+could have gone wrong, since it is the same French word for all three:
+
+    "lance spotify"                  -> open_app   Spotify
+    "lance Alright par Kendrick
+       Lamar sur spotify"            -> play_music "Alright Kendrick Lamar"
+    "lance le fichier 4 dans
+       Archives"                     -> move_file  4.txt -> Archives
+    "ouvre Machin"                   -> open_app   Machin  (refused locally)
+
+The two rounds meet, incidentally: "Je lance Spotify" is spoken as
+"spo-ti-fai" thanks to round 28, instead of with English phonemes the French
+voice has never heard.
+
+Known gap: a track or artist name is unbounded English vocabulary and cannot
+be respelled the way a fixed list of app names can, so "Alright, de Kendrick
+Lamar" is still read with whatever espeak decides.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

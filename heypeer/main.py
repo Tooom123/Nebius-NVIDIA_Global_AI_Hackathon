@@ -680,6 +680,10 @@ class HeyPeer:
         self._remember(instruction_text, intent.speech or "")
         if intent.action == "undo":
             self._run_undo()
+        elif intent.action == "open_app" and intent.target_name:
+            self._run_open_app(intent.target_name, intent.speech)
+        elif intent.action == "play_music" and intent.query:
+            self._run_play_music(intent.query, intent.speech)
         elif intent.action == "ask":
             # Nemotron recognised the intent but is missing a piece. Saying
             # exactly what's missing is far more useful than "je n'ai pas
@@ -728,6 +732,64 @@ class HeyPeer:
         else:
             self._log("Hey Peer didn't recognize a known skill or file action in that instruction.")
             self._speak("Je n'ai pas compris cette instruction.")
+
+    def _run_open_app(self, spoken_name: str, narration: "str | None") -> None:
+        """Starts an application the user named.
+
+        Refuses names it does not recognise rather than handing them to the
+        OS - see `executor/apps.py`. "Lance Machin" costs one turn to say no
+        to; the alternative is a language model choosing what to execute.
+
+        Spotify is special-cased because "lance Spotify" means start it *and*
+        start the music: opening the app alone leaves the user in silence
+        looking at a player that has not begun."""
+        from heypeer.executor.apps import LaunchFailed, launch, resolve_app
+
+        app = resolve_app(spoken_name)
+        if app is None:
+            self._log(f"Unknown application: {spoken_name!r}")
+            self._speak(f"Je ne connais pas l'application {spoken_name}.")
+            self._arm_followup(CONVERSATION_WINDOW_SECONDS)
+            return
+
+        self._speak_async(narration or f"J'ouvre {app.name}.")
+        try:
+            if app.name == "Spotify":
+                from heypeer.executor.spotify import launch_and_play
+
+                launch_and_play()
+            else:
+                launch(app)
+            self._log(f"Launched {app.name}.")
+            self._arm_followup()
+        except LaunchFailed as exc:
+            self._log(f"Launch failed: {exc}")
+            self._speak(f"Je n'ai pas reussi a ouvrir {app.name}.")
+
+    def _run_play_music(self, query: str, narration: "str | None") -> None:
+        """Plays what the user asked for on Spotify.
+
+        Resolving the track first means Hey Peer can say what it actually
+        found, which is how the user discovers the search matched something
+        other than what they said. Without credentials it can only open the
+        search results - a real difference, so it says that instead of
+        claiming to have started the music."""
+        from heypeer.executor.spotify import find_track, play_uri, search_uri
+
+        settings = load_settings()
+        found = find_track(query, settings.spotify_client_id, settings.spotify_client_secret)
+        if found is None:
+            self._log(f"No track resolved for {query!r} - opening the search instead.")
+            self._speak_async(f"Je n'ai pas trouve, j'ouvre la recherche pour {query}.")
+            play_uri(search_uri(query))
+            self._arm_followup(CONVERSATION_WINDOW_SECONDS)
+            return
+
+        uri, label = found
+        self._speak_async(narration or f"Je lance {label}.")
+        play_uri(uri)
+        self._log(f"Playing {label} ({uri}).")
+        self._arm_followup()
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":
         """Where a spoken filename actually points, resolved *before* the

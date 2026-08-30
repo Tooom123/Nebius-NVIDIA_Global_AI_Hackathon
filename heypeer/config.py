@@ -38,6 +38,14 @@ class Settings:
     # verifier moments later. Raise it if false triggers persist.
     # Override with HEYPEER_WAKEWORD_THRESHOLD.
     wakeword_threshold: float = 0.9
+    # Spotify *application* credentials, from a free app registered at
+    # developer.spotify.com. They authorise search and nothing else - the
+    # client-credentials flow has no user, so there is no login, no Premium
+    # requirement and no access to anything of the user's. Empty is a
+    # supported state: Hey Peer then opens the search in the app rather than
+    # playing a specific track, and says so. See executor/spotify.py.
+    spotify_client_id: str = ""
+    spotify_client_secret: str = ""
 
 
 def load_settings() -> Settings:
@@ -52,4 +60,6 @@ def load_settings() -> Settings:
         watched_dir=Path(os.environ.get("HEYPEER_WATCHED_DIR") or str(Path.home() / "Downloads")),
         wakeword_debug=(os.environ.get("HEYPEER_WAKEWORD_DEBUG") or "0") != "0",
         wakeword_threshold=float(os.environ.get("HEYPEER_WAKEWORD_THRESHOLD") or 0.9),
+        spotify_client_id=os.environ.get("SPOTIFY_CLIENT_ID", ""),
+        spotify_client_secret=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
     )
