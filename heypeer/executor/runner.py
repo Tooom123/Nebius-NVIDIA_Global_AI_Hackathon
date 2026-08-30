@@ -1,113 +1,28 @@
-"""Replays a Skill's actions via pyautogui, with an optional visual check
-between steps to catch UI drift before it causes a wrong action.
+"""The file operations Hey Peer can carry out on a single named file.
 
-FILE_MOVE skills are replayed differently: rather than pyautogui clicks, the
-executor moves the next matching files (same directory + extension the
-pattern was first observed on) directly via shutil — no window position or
-screen state dependency at all.
+Move, rename, create and delete. Nemotron resolves which one and which
+name(s) from the spoken instruction (see `heypeer/nemotron/client.py`) and
+`main.py` calls straight in — there is no confirmation step.
 
-`move_single_file`/`rename_file`/`create_file`/`create_folder`/`delete_file`
-are the direct, one-off file operations Hey Peer can perform on a single
-named file with no learned skill involved — Nemotron resolves which one and
-which file/name(s) from the user's instruction (see
-`heypeer/nemotron/client.py`), and `main.py` calls straight into these with
-no confirmation step in between any more. `_ensure_within` is the safety
-perimeter that replaces it for path *containment* (every target stays inside
-the watched directory, no `../` escape) — `delete_file` additionally sends
-to the recycle bin/trash rather than unlinking permanently, so at least
-deletes stay reversible.
+`_ensure_within` is the safety perimeter that replaces it, for path
+*containment*: every target resolves inside the watched directory, so a
+misheard or hallucinated name cannot escape it via `../` or an absolute
+path. `delete_file` additionally goes to the recycle bin rather than
+unlinking, so at least deletes stay reversible (see `undo.py`).
+
+This module once also replayed learned "skills" through pyautogui. That
+whole idea is gone: in practice the skills learned from watching mouse and
+keyboard activity never matched a spoken instruction, while the global input
+hooks feeding them cost real performance on the user's machine.
 """
 
 import difflib
 import shutil
-import time
-from collections.abc import Callable
 from pathlib import Path
-
-from heypeer.capture.events import ActionEvent, ActionType
-from heypeer.patterns.skill import Skill
-
-# Injected by the caller (e.g. a Nemotron screenshot check). Receives the PNG
-# bytes of a fresh screenshot taken right before the next action and returns
-# whether it's safe to proceed.
-VerifyStep = Callable[[bytes], bool]
 
 
 class ExecutionAborted(RuntimeError):
-    """Raised when a step-verification check fails mid-replay."""
-
-
-class SkillRunner:
-    def __init__(self, verify_step: VerifyStep | None = None, step_delay: float = 0.3) -> None:
-        self.verify_step = verify_step
-        self.step_delay = step_delay
-
-    def _screenshot_png_bytes(self) -> bytes:
-        import io
-
-        import pyautogui
-
-        buffer = io.BytesIO()
-        pyautogui.screenshot().save(buffer, format="PNG")
-        return buffer.getvalue()
-
-    def _replay_action(self, action: ActionEvent) -> None:
-        import pyautogui
-
-        if action.type == ActionType.CLICK:
-            if action.x is None or action.y is None:
-                raise ExecutionAborted(f"Click action missing coordinates: {action}")
-            pyautogui.click(action.x, action.y)
-        elif action.type == ActionType.KEY_PRESS:
-            if not action.key_name or action.key_name == "char":
-                raise ExecutionAborted(
-                    "Cannot replay a plain character key press — Hey Peer never "
-                    "records typed content, only special keys (Enter, Tab, ...)."
-                )
-            pyautogui.press(action.key_name)
-        elif action.type == ActionType.SCROLL:
-            pyautogui.scroll(action.scroll_dy or 0)
-        elif action.type in (ActionType.APP_FOCUS, ActionType.WINDOW_TITLE_CHANGE):
-            pass  # Informational only — nothing to replay.
-
-    def _run_file_move_skill(self, skill: Skill, n_repetitions: int) -> None:
-        first = skill.actions[0]
-        if not first.src_path or not first.dest_path:
-            raise ExecutionAborted(f"File-move skill missing paths: {first}")
-
-        source_dir = Path(first.src_path).parent
-        dest_dir = Path(first.dest_path).parent
-        extension = Path(first.src_path).suffix.lower()
-
-        candidates = sorted(
-            p
-            for p in source_dir.iterdir()
-            if p.is_file() and (not extension or p.suffix.lower() == extension)
-        )
-        if len(candidates) < n_repetitions:
-            raise ExecutionAborted(
-                f"Only {len(candidates)} matching file(s) left in {source_dir}, "
-                f"need {n_repetitions}"
-            )
-
-        for path in candidates[:n_repetitions]:
-            shutil.move(str(path), str(dest_dir / path.name))
-
-    def run(self, skill: Skill, n_repetitions: int) -> None:
-        if skill.actions and all(a.type == ActionType.FILE_MOVE for a in skill.actions):
-            self._run_file_move_skill(skill, n_repetitions)
-            return
-
-        for _ in range(n_repetitions):
-            for action in skill.actions:
-                if self.verify_step is not None:
-                    screenshot = self._screenshot_png_bytes()
-                    if not self.verify_step(screenshot):
-                        raise ExecutionAborted(
-                            f"Visual verification failed before replaying {action}"
-                        )
-                self._replay_action(action)
-                time.sleep(self.step_delay)
+    """Raised when an action cannot be carried out safely."""
 
 
 # Minimum similarity for a fuzzy filename match. High enough that unrelated

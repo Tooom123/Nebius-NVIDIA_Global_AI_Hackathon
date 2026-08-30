@@ -88,12 +88,6 @@ def estimate_noise_floor(chunks: "list[np.ndarray]") -> float:
 PREBUFFER_SECONDS = 2.0
 PREBUFFER_CHUNKS = int(PREBUFFER_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
 
-# Upper bound on waiting for `on_verify` once recording has finished. It
-# normally completes long before this (it starts at the same moment and only
-# has ~2s of audio to transcribe); the cap just guarantees the listener can
-# never wedge on a stuck verifier.
-VERIFY_TIMEOUT_SECONDS = 6.0
-
 # After Hey Peer finishes acting, it stays open this long for a follow-up
 # command that needs no wake word at all — the natural way a conversation
 # continues. Kept short on purpose: during this window ordinary speech in
@@ -305,7 +299,6 @@ class WakeWordListener:
         self,
         stream,
         on_level: "Callable[[float, bool], None] | None" = None,
-        should_abort: "Callable[[], bool] | None" = None,
         noise_floor_dbfs: "float | None" = None,
     ) -> np.ndarray:
         """Records audio right after a wake-word trigger, on the same open
@@ -333,11 +326,6 @@ class WakeWordListener:
         max_chunks = int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
         min_chunks = int(INSTRUCTION_MIN_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
         for i in range(max_chunks):
-            if should_abort is not None and should_abort():
-                # Verification (running concurrently on the prebuffer) has
-                # ruled this out as a false trigger - stop recording rather
-                # than hold the mic for several more seconds for nothing.
-                return np.zeros(0, dtype=np.int16)
             raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
             chunk = np.frombuffer(raw, dtype=np.int16)
             frames.append(chunk)
@@ -370,6 +358,7 @@ class WakeWordListener:
         on_detected: "Callable[[np.ndarray, bool], None]",
         on_level: "Callable[[float, bool], None] | None" = None,
         on_verify: "Callable[[np.ndarray], bool] | None" = None,
+        ready_delay: float = 0.0,
     ) -> None:
         """`on_level(level, recording)` — level normalized 0-1 (see
         `dbfs_to_level`), `recording` True while capturing the instruction
@@ -387,8 +376,12 @@ class WakeWordListener:
         any user-visible reaction to a detection belongs (chime, indicator)
         — the raw detector fires on plenty of ordinary speech, so reacting
         before this confirms would surface every false positive. Returning
-        False aborts the in-progress recording and suppresses `on_detected`.
-        Optional; without it every trigger is treated as genuine."""
+        Returning False suppresses the turn entirely. Optional; without it
+        every trigger is treated as genuine.
+
+        `ready_delay` is how long to wait after `on_verify` succeeds before
+        listening - time for whatever it put on screen to finish appearing,
+        so the cue genuinely means "speak now"."""
         import pyaudio
 
         self._running = True
@@ -487,37 +480,36 @@ class WakeWordListener:
                     )
                     self._prebuffer.clear()
 
-                    # Verification runs *concurrently* with recording rather
-                    # than before it. Doing it first would be simpler, but it
-                    # takes a few hundred ms, and that would be a hole in the
-                    # captured audio for anyone who runs the wake word
-                    # straight into the instruction — which is how people
-                    # actually talk ("Hey Peer, déplace le fichier...").
-                    verdict: dict = {"ok": None}
-
-                    def _verify() -> None:
-                        try:
-                            verdict["ok"] = (
-                                on_verify(pre_audio) if on_verify is not None else True
-                            )
-                        except Exception:
-                            verdict["ok"] = True  # never lose a real activation to a bug
-
-                    verifier = threading.Thread(target=_verify, daemon=True)
-                    verifier.start()
-
-                    instruction_audio = self._record_instruction(
-                        stream,
-                        on_level=on_level,
-                        should_abort=lambda: verdict["ok"] is False,
-                        noise_floor_dbfs=noise_floor,
-                    )
-                    verifier.join(timeout=VERIFY_TIMEOUT_SECONDS)
-
-                    if verdict["ok"] is False:
+                    # Verify *before* recording, not alongside it. Running
+                    # them concurrently saved a few hundred milliseconds of
+                    # audio, but it meant the chime and the indicator only
+                    # appeared once recording was already well under way -
+                    # so the user had usually finished speaking by the time
+                    # the blob arrived, and it never appeared to react to
+                    # their voice at all. Cue first, then listen, is both
+                    # what the user asked for and how every assistant that
+                    # feels responsive behaves.
+                    try:
+                        verified = on_verify(pre_audio) if on_verify is not None else True
+                    except Exception as exc:
+                        # A broken verifier (model missing, transcription
+                        # error) must never make Hey Peer deaf - fall back to
+                        # trusting the detector.
+                        print(f"[wakeword] Verification failed, accepting: {exc}")
+                        verified = True
+                    if not verified:
                         if self.debug:
                             print("[wakeword] Rejete (pas de mot d'activation).")
                         continue
+
+                    # Let the indicator finish dropping in before listening,
+                    # so the cue genuinely means "speak now".
+                    if ready_delay > 0:
+                        time.sleep(ready_delay)
+
+                    instruction_audio = self._record_instruction(
+                        stream, on_level=on_level, noise_floor_dbfs=noise_floor
+                    )
                     print(
                         f"[wakeword] Instruction enregistree "
                         f"({len(instruction_audio) / SAMPLE_RATE:.1f}s)."

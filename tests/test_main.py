@@ -7,12 +7,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from heypeer.capture.events import ActionEvent, ActionType
 from heypeer.main import _SHUTDOWN, HeyPeer
 from heypeer.nemotron.intent import Intent
-from heypeer.patterns.detector import PatternDetector
-from heypeer.patterns.memory import SkillMemory
-from heypeer.patterns.skill import Skill
 
 
 @pytest.fixture(autouse=True)
@@ -36,64 +32,7 @@ def fake_pyautogui(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 def _peer(tmp_path: Path, nemotron: MagicMock) -> HeyPeer:
-    """Seeds a skill and enables skill learning — these tests are about the
-    skill paths specifically. Learning is off by default in the app itself
-    (Hey Peer is voice-to-action only for now); see
-    `test_skills_are_not_offered_to_nemotron_by_default`."""
-    memory = SkillMemory(tmp_path / "skills.json")
-    memory.add(Skill(id="sort_files", name="Sort downloaded files", actions=[]))
-    return HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
-        nemotron=nemotron,
-        get_instruction=lambda: "do it 4 more times",
-        learn_skills=True,
-    )
-
-
-def test_skills_are_not_offered_to_nemotron_by_default(tmp_path: Path) -> None:
-    """Regression guard: a backlog of learned skills was being sent on every
-    request, bloating the prompt with entries like "Repeated sequence in
-    unknown app" that could never match a spoken instruction."""
-    memory = SkillMemory(tmp_path / "skills.json")
-    memory.add(Skill(id="sort_files", name="Sort downloaded files", actions=[]))
-    nemotron = MagicMock()
-    nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
-    peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
-        nemotron=nemotron,
-        get_instruction=lambda: "do something",
-    )
-
-    peer.on_wake_word()
-
-    assert nemotron.interpret_text.call_args.args[1] == []
-
-
-def test_on_wake_word_runs_skill_directly_no_confirmation(
-    tmp_path: Path, fake_pyautogui: MagicMock, fake_tts: MagicMock
-) -> None:
-    """No confirmation gate any more - a resolved run_skill intent executes
-    immediately (removed per explicit user feedback that it caused more
-    problems than it solved)."""
-    nemotron = MagicMock()
-    nemotron.interpret_text.return_value = Intent(
-        action="run_skill", skill_id="sort_files", n_repetitions=2
-    )
-    nemotron.verify_screen.return_value = True
-    peer = _peer(tmp_path, nemotron)
-
-    peer.on_wake_word()
-
-    nemotron.interpret_text.assert_called_once()
-    call_args = nemotron.interpret_text.call_args.args
-    assert call_args[0] == "do it 4 more times"
-    assert {"id": "sort_files", "name": "Sort downloaded files"} in call_args[1]
-    # Narrated once, before acting. Nothing is spoken afterwards - saying
-    # what it's doing already tells the user it happened, so a trailing
-    # "C'est fait." was pure repetition.
-    assert fake_tts.call_count == 1
+    return HeyPeer(nemotron=nemotron, get_instruction=lambda: "do it 4 more times")
 
 
 def test_successful_file_action_does_not_speak_a_confirmation(tmp_path: Path) -> None:
@@ -165,52 +104,10 @@ def test_on_wake_word_handles_unknown_intent(tmp_path: Path, fake_pyautogui: Mag
     fake_pyautogui.click.assert_not_called()
 
 
-def test_input_events_and_file_events_use_separate_detectors(tmp_path: Path) -> None:
-    """Regression test: mouse/keyboard noise during a drag-and-drop must not
-    interfere with — or be confused for — the file-move pattern, and vice
-    versa. Each event source has to feed its own PatternDetector."""
-    nemotron = MagicMock()
-    peer = _peer(tmp_path, nemotron)
-
-    # Two clicks in the same app/window: on its own this is below the
-    # min_repetitions=3 default threshold for the *input* detector.
-    for _ in range(2):
-        peer._on_input_event(
-            ActionEvent(type=ActionType.CLICK, app_name="Explorer", window_title="w", x=1, y=1)
-        )
-    assert len(peer.memory.all()) == 1  # still just the seeded "sort_files" skill
-
-    # A third click interleaved with file-move events must not let a mixed
-    # (click + file-move) sequence satisfy either detector.
-    peer._on_input_event(
-        ActionEvent(type=ActionType.CLICK, app_name="Explorer", window_title="w", x=1, y=1)
-    )
-    for i in range(3):
-        peer._on_file_event(
-            ActionEvent(
-                type=ActionType.FILE_MOVE,
-                app_name="",
-                window_title="/dest",
-                src_path=f"/watched/f{i}.pdf",
-                dest_path=f"/dest/f{i}.pdf",
-            )
-        )
-
-    skills = {s.id: s for s in peer.memory.all()}
-    assert "sort_files" in skills
-    file_skills = [s for s in skills.values() if s.id != "sort_files"]
-    assert len(file_skills) == 1
-    assert all(a.type == ActionType.FILE_MOVE for a in file_skills[0].actions)
-
 
 def _peer_with_watched_dir(tmp_path: Path, nemotron: MagicMock, watched_dir: Path) -> HeyPeer:
-    memory = SkillMemory(tmp_path / "skills.json")
     return HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
-        nemotron=nemotron,
-        watched_dir=watched_dir,
-        get_instruction=lambda: "instruction",
+        nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "instruction"
     )
 
 
@@ -341,56 +238,6 @@ def test_file_action_failure_does_not_raise(tmp_path: Path) -> None:
     peer.on_wake_word()  # must not raise
 
 
-def test_auto_mode_toggle_does_not_affect_capture(tmp_path: Path) -> None:
-    """Capture (skill learning) is native/always-on and must not be started
-    or stopped by the voice-activation ("Mode auto") toggle."""
-    nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
-        nemotron=nemotron,
-        learn_skills=True,
-        capture_input=True,  # explicitly on: the toggle must still not touch it
-    )
-    peer.watcher.start = MagicMock()
-    peer.watcher.stop = MagicMock()
-
-    peer.start_capture()
-    peer.watcher.start.assert_called_once()
-
-    with patch.object(peer, "_run_wake_listener"):
-        peer._set_auto_mode(True)
-        peer._set_auto_mode(False)
-
-    peer.watcher.stop.assert_not_called()
-
-    peer.stop_capture()
-    peer.watcher.stop.assert_called_once()
-
-
-def test_input_capture_is_off_by_default(tmp_path: Path) -> None:
-    """Global mouse/keyboard hooks stay off unless explicitly enabled - they
-    were making the user's machine noticeably slow. File-move capture, which
-    is cheap and powers the demo skill, must still start."""
-    nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    watched_dir = tmp_path / "Downloads"
-    watched_dir.mkdir()
-    peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
-        nemotron=nemotron,
-        watched_dir=watched_dir,
-        learn_skills=True,  # the point here is input capture specifically
-    )
-    peer.watcher.start = MagicMock()
-    peer.file_watcher.start = MagicMock()
-
-    peer.start_capture()
-
-    peer.watcher.start.assert_not_called()
-    peer.file_watcher.start.assert_called_once()
 
 
 def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: Path) -> None:
@@ -400,10 +247,7 @@ def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: 
     actually wait for keyboard input on Windows."""
     nemotron = MagicMock()
     get_instruction = MagicMock(return_value="do it 4 more times")
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=get_instruction,
     )
@@ -417,8 +261,7 @@ def test_on_wake_detected_only_enqueues_does_not_call_get_instruction(tmp_path: 
 
 def test_on_quit_enqueues_shutdown_sentinel(tmp_path: Path) -> None:
     nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer = HeyPeer(nemotron=nemotron)
 
     peer._on_quit()
 
@@ -431,8 +274,7 @@ def test_on_wake_detected_mutes_the_listener_immediately(tmp_path: Path) -> None
     still being transcribed/interpreted - muting now starts the instant a
     detection comes in, not just around the later TTS-playback window."""
     nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer = HeyPeer(nemotron=nemotron)
     peer._wake_listener = MagicMock()
 
     peer._on_wake_detected(np.zeros(1600, dtype=np.int16))
@@ -449,10 +291,7 @@ def test_on_wake_word_unmutes_the_listener_once_the_whole_turn_is_done(
     speaking, and not right after interpreting."""
     nemotron = MagicMock()
     nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "typed instruction",
     )
@@ -466,10 +305,7 @@ def test_on_wake_word_unmutes_the_listener_once_the_whole_turn_is_done(
 def test_on_wake_word_unmutes_even_if_interpretation_fails(tmp_path: Path) -> None:
     nemotron = MagicMock()
     nemotron.interpret_text.side_effect = RuntimeError("network error")
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "typed instruction",
     )
@@ -489,14 +325,10 @@ def test_on_wake_word_with_audio_transcribes_locally_then_uses_interpret_text(
     interpret_text() - no fallback to typed input()."""
     nemotron = MagicMock()
     nemotron.interpret_text.return_value = Intent(
-        action="run_skill", skill_id="sort_files", n_repetitions=1
+        action="unknown", skill_id=None, n_repetitions=1
     )
     get_instruction = MagicMock(return_value="should not be called")
-    memory = SkillMemory(tmp_path / "skills.json")
-    memory.add(Skill(id="sort_files", name="Sort downloaded files", actions=[]))
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=get_instruction,
     )
@@ -524,8 +356,7 @@ def test_on_wake_word_ignores_audio_without_the_wake_word(
     second-stage transcript check must drop those before Nemotron is called
     or anything is executed."""
     nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer = HeyPeer(nemotron=nemotron)
 
     with patch(
         "heypeer.wakeword.stt.transcribe", return_value="déplace le fichier quatre"
@@ -539,8 +370,7 @@ def test_on_wake_word_unmutes_after_a_rejected_false_trigger(tmp_path: Path) -> 
     """A rejected trigger still has to release the listener, or Hey Peer
     would go permanently deaf after the first false positive."""
     nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer = HeyPeer(nemotron=nemotron)
     peer._wake_listener = MagicMock()
 
     with patch("heypeer.wakeword.stt.transcribe", return_value="rien a voir"):
@@ -580,10 +410,7 @@ def test_on_wake_word_with_empty_audio_falls_back_to_text(
     manual fallback path via get_instruction()."""
     nemotron = MagicMock()
     nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "typed instruction",
     )
@@ -600,8 +427,7 @@ def test_on_wake_word_interpret_failure_does_not_raise(
 ) -> None:
     nemotron = MagicMock()
     nemotron.interpret_text.side_effect = RuntimeError("network error")
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer = HeyPeer(nemotron=nemotron)
 
     with patch("heypeer.wakeword.stt.transcribe", return_value="hello"):
         peer.on_wake_word(np.zeros(16000, dtype=np.int16))  # must not raise
@@ -638,10 +464,7 @@ def test_undo_with_nothing_to_undo_says_so(tmp_path: Path) -> None:
     nemotron.interpret_text.return_value = Intent(
         action="undo", skill_id=None, n_repetitions=1
     )
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "annule",
     )
@@ -663,10 +486,7 @@ def test_ask_speaks_the_question_instead_of_failing_silently(tmp_path: Path) -> 
         n_repetitions=1,
         question="Vers quel dossier ?",
     )
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "déplace facture",
     )
@@ -683,10 +503,7 @@ def test_ask_opens_a_followup_window_so_the_answer_needs_no_wake_word(tmp_path: 
     nemotron.interpret_text.return_value = Intent(
         action="ask", skill_id=None, n_repetitions=1, question="Vers quel dossier ?"
     )
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "déplace facture",
     )
@@ -743,8 +560,7 @@ def test_followup_turn_does_not_require_a_wake_word_in_the_transcript(tmp_path: 
 
 def test_non_followup_turn_still_requires_the_wake_word(tmp_path: Path) -> None:
     nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer = HeyPeer(nemotron=nemotron)
 
     with patch("heypeer.wakeword.stt.transcribe", return_value="déplace facture vers Archives"):
         peer.on_wake_word(np.zeros(16000, dtype=np.int16), followup=False)
@@ -761,8 +577,7 @@ def test_log_survives_characters_the_console_cannot_encode(tmp_path: Path, capsy
     import io
 
     nemotron = MagicMock()
-    memory = SkillMemory(tmp_path / "skills.json")
-    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+    peer = HeyPeer(nemotron=nemotron)
 
     with patch("sys.stdout", io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")):
         peer._log("Vers quel dossier veux‑tu le deplacer ?")  # must not raise
@@ -783,10 +598,7 @@ def test_asking_a_question_keeps_the_indicator_on_screen(tmp_path: Path) -> None
     nemotron.interpret_text.return_value = Intent(
         action="ask", skill_id=None, n_repetitions=1, question="Vers quel dossier ?"
     )
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "deplace facture",
     )
@@ -806,10 +618,7 @@ def test_a_turn_with_no_followup_hides_the_indicator(tmp_path: Path) -> None:
     nemotron.interpret_text.return_value = Intent(
         action="unknown", skill_id=None, n_repetitions=1
     )
-    memory = SkillMemory(tmp_path / "skills.json")
     peer = HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "quelque chose",
     )

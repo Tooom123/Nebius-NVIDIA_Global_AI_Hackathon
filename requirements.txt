@@ -1,22 +1,28 @@
+# Wake word: always-on detection, and the pipeline that trains it on your voice
 openwakeword>=0.4.0
 onnxruntime>=1.17.0
-pyaudio>=0.2.14
-pynput>=1.7.6
-pywinctl>=0.3
-watchdog>=4.0.0
-pystray>=0.19.5
-soundfile>=0.12.1
 scikit-learn>=1.4.0
 skl2onnx>=1.16.0
-piper-tts>=1.7.0
-faster-whisper>=1.0.0
-send2trash>=1.8.0
 scipy>=1.11.0
-numpy>=1.26.0
-pyautogui>=0.9.54
-pillow>=10.0.0
-opencv-python>=4.9.0
-requests>=2.31.0
+
+# Audio in and out
+pyaudio>=0.2.14
+soundfile>=0.12.1
+
+# Local speech-to-text and text-to-speech
+faster-whisper>=1.0.0
+piper-tts>=1.7.0
+
+# Interpretation
 openai>=1.0.0
-python-dotenv>=1.0.0
 pydantic>=2.6.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Tray icon and the on-screen indicator
+pystray>=0.19.5
+pillow>=10.0.0
+numpy>=1.26.0
+
+# File actions (deletes go to the recycle bin, not a permanent unlink)
+send2trash>=1.8.0

@@ -1,42 +1,29 @@
-"""Entry point wiring the full Hey Peer pipeline together for the demo scenario.
+"""Entry point wiring Hey Peer together.
 
-Flow: activity capture feeds a pattern detector, which stores newly detected
-skills in memory. Once the wake word (or the tray's manual prompt) fires, the
-user's instruction is sent to Nemotron along with the list of known skills and
-the watched folder's current contents. Nemotron either resolves it to a known
-skill, resolves it to a direct one-off file action - move/rename/create/
-delete (no skill needed - "deplace X vers Y", "renomme X en Y", ...) - or
-reports it as unknown. There used to be a confirmation step before executing
-anything; removed per explicit user feedback that it caused more problems
-than it solved (voice replies were often misheard and defaulted to "no",
-blocking real actions). Hey Peer still narrates what it's about to do out
-loud before doing it, just doesn't wait for a reply any more.
+Flow: the wake word fires, its audio is verified, the indicator drops in,
+the spoken instruction is recorded and transcribed locally, and Nemotron
+turns it into one file action - move, rename, create, delete or undo -
+which runs immediately. There is no confirmation step; undo and the
+watched-directory containment check in `executor/runner.py` are what replace
+it.
 
-Two independent PatternDetectors are used - one for generic input events
-(clicks/keys/focus, from `ActivityWatcher`), one for file moves (from
-`FileOpWatcher`) - so that incidental mouse activity during a drag-and-drop
-can't spuriously "complete" a file-move pattern with the wrong actions, or
-have a file move interrupt a click-sequence pattern.
+Hey Peer used to also watch mouse and keyboard activity, learn repeated
+sequences as replayable "skills", and offer them to Nemotron. That is all
+gone. In practice the learned skills never matched a spoken instruction,
+they bloated every prompt, and the global input hooks feeding them cost real
+performance on the user's machine.
 
-The wake-word listener's `on_detected` callback fires from its own background
-audio thread, which must stay cheap and non-blocking to keep reading the mic
-smoothly. It only enqueues a signal onto `HeyPeer._detections` rather than
-handling the instruction inline - blocking calls like `input()` were found to
-not actually wait for keyboard input when called from that thread on Windows
-(confirmed empirically: identical code worked fine called from the main
-thread). Whichever thread drains that queue (the console loop in `run_cli`,
-today) is where the actual instruction gathering happens.
+The wake-word listener's callbacks fire from its own audio thread, which
+must stay cheap and non-blocking to keep reading the mic smoothly. It only
+enqueues onto `HeyPeer._detections` rather than handling the instruction
+inline - blocking calls like `input()` were found not to actually wait for
+keyboard input when called from that thread on Windows (confirmed
+empirically: identical code worked fine on the main thread). Whichever
+thread drains that queue is where instruction handling happens.
 
-By default this runs as a background app with a system tray icon (`TrayApp`).
-Capture (learning skills from repeated action sequences / file moves) starts
-natively as soon as the app launches - it's passive observation on its own
-(nothing runs until the wake word actually resolves to an action), so there's
-no real "off" state worth having for it. The "Mode auto" tray toggle and the
-colored-cursor indicator are about something narrower: whether Hey Peer is
-actually listening for the wake word and able to act on it. Pass `--cli` to
-instead run the foreground console loop (useful for headless dev boxes, or for
-watching the debug dB meter) - it also shows a real, detached tray icon so the
-"Quitter" menu item works as a stop button instead of Task Manager.
+By default this runs as a background app with a system tray icon. Pass
+`--cli` for the foreground console loop, which also shows a detached tray
+icon so "Quitter" works as a stop button instead of Task Manager.
 """
 
 import argparse
@@ -49,14 +36,10 @@ from pathlib import Path
 
 import numpy as np
 
-from heypeer.capture.events import ActionEvent
-from heypeer.capture.file_watcher import FileOpWatcher
-from heypeer.capture.watcher import ActivityWatcher
-from heypeer.config import SKILLS_DIR, load_settings
+from heypeer.config import load_settings
 from heypeer.executor import undo
 from heypeer.executor.runner import (
     ExecutionAborted,
-    SkillRunner,
     create_file,
     create_folder,
     delete_file,
@@ -66,13 +49,16 @@ from heypeer.executor.runner import (
 )
 from heypeer.nemotron.client import NemotronClient
 from heypeer.nemotron.intent import Intent
-from heypeer.patterns.detector import PatternDetector
-from heypeer.patterns.memory import SkillMemory
 from heypeer.tray.app import Status, TrayApp
-from heypeer.tray.cursor import CursorIndicator
 from heypeer.tray.debug_window import DebugWindow
 
 GetInstruction = Callable[[], str]
+
+# How long the indicator takes to drop in. Recording waits this out so the
+# blob is on screen before Hey Peer starts listening - otherwise the user is
+# already mid-sentence by the time the cue appears, and the shape never seems
+# to react to their voice.
+INDICATOR_SLIDE_SECONDS = 0.45
 
 _SHUTDOWN = object()  # sentinel put on HeyPeer._detections to unblock a consumer loop
 
@@ -94,7 +80,7 @@ def _has_placeholder_name(intent: Intent) -> bool:
 
 
 class HeyPeer:
-    """Wires capture -> detection -> interpretation -> execution.
+    """Wires wake word -> transcription -> interpretation -> execution.
 
     Split out as a class (rather than one long function) so each stage can be
     exercised independently in tests via constructor injection.
@@ -102,39 +88,19 @@ class HeyPeer:
 
     def __init__(
         self,
-        memory: SkillMemory,
-        detector: PatternDetector,
         nemotron: NemotronClient,
         watched_dir: Path | None = None,
         get_instruction: GetInstruction = _default_get_instruction,
-        file_detector: PatternDetector | None = None,
         wakeword_debug: bool = False,
         wakeword_threshold: float = 0.9,
         debug_window: DebugWindow | None = None,
-        capture_input: bool = False,
-        learn_skills: bool = False,
     ) -> None:
-        self.memory = memory
         self.wakeword_debug = wakeword_debug
         self.wakeword_threshold = wakeword_threshold
-        self.capture_input = capture_input
-        self.learn_skills = learn_skills
         self.debug_window = debug_window
-        self.detector = detector
-        # A separate detector for FILE_MOVE events - see module docstring for
-        # why generic input events and file moves must not share a buffer.
-        self.file_detector = file_detector if file_detector is not None else PatternDetector()
         self.nemotron = nemotron
         self.get_instruction = get_instruction
         self.watched_dir = watched_dir
-        self.watcher = ActivityWatcher(on_event=self._on_input_event)
-        self.file_watcher = (
-            FileOpWatcher(watched_dir, on_event=self._on_file_event)
-            if watched_dir is not None
-            else None
-        )
-        self.cursor = CursorIndicator()
-        self.cursor.reset()  # clear any stale override left by a previous crashed run
         self.tray = TrayApp(
             on_auto_mode_change=self._set_auto_mode,
             on_quit=self._on_quit,
@@ -179,35 +145,9 @@ class HeyPeer:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(message.encode(encoding, errors="replace").decode(encoding))
 
-    def start_capture(self) -> None:
-        """Starts passive skill-learning capture, if it's enabled at all.
-
-        Both halves are off by default now — Hey Peer is voice-to-action
-        only. See `Settings.learn_skills` and `Settings.capture_input` for
-        why; in short, input hooks cost real performance and the skills
-        learned in practice never matched a spoken instruction while
-        bloating every prompt. Nothing here ever executes anything on its
-        own regardless; only a resolved wake-word intent does."""
-        if not self.learn_skills:
-            return
-        if self.capture_input:
-            self.watcher.start()
-        if self.file_watcher is not None:
-            self.file_watcher.start()
-
-    def stop_capture(self) -> None:
-        if not self.learn_skills:
-            return
-        if self.capture_input:
-            self.watcher.stop()
-        if self.file_watcher is not None:
-            self.file_watcher.stop()
-
     def _set_auto_mode(self, enabled: bool) -> None:
         """"Mode auto": is Hey Peer listening for the wake word and able to
-        act on it. Drives the cursor indicator too - capture/learning is
-        unaffected, see `start_capture`."""
-        self.cursor.set_active(enabled)
+        act on it."""
         if enabled:
             self._start_voice()
         else:
@@ -307,6 +247,7 @@ class HeyPeer:
             on_detected=self._on_wake_detected,
             on_level=self._on_audio_level,
             on_verify=self._verify_wake_word,
+            ready_delay=INDICATOR_SLIDE_SECONDS,
         )
 
     def _verify_wake_word(self, pre_trigger_audio: np.ndarray) -> bool:
@@ -352,8 +293,6 @@ class HeyPeer:
             play_activation_chime()
         except Exception as exc:  # best-effort - never block on a beep
             print(f"[wakeword] Chime playback failed: {exc}")
-        if self.debug_window is not None:
-            self.debug_window.set_state("recording")
         return True
 
     def _arm_followup(self) -> None:
@@ -413,36 +352,12 @@ class HeyPeer:
         if self._wake_listener is not None:
             self._wake_listener.stop()
             self._wake_listener = None
-        self.cursor.reset()
         if self.debug_window is not None:
             self.debug_window.set_state("idle")
 
     def _on_quit(self) -> None:
         self._stop_voice()
-        self.stop_capture()
         self._detections.put(_SHUTDOWN)  # unblocks a consumer loop waiting on detections
-
-    def _on_input_event(self, event: ActionEvent) -> None:
-        skill = self.detector.observe(event)
-        if skill is not None:
-            self._log(f'Learned a new skill: "{skill.name}" ({skill.id})')
-            self.memory.add(skill)
-            self.memory.save()
-
-    def _on_file_event(self, event: ActionEvent) -> None:
-        skill = self.file_detector.observe(event)
-        if skill is not None:
-            self._log(f'Learned a new skill: "{skill.name}" ({skill.id})')
-            self.memory.add(skill)
-            self.memory.save()
-
-    def _skill_context(self) -> list[dict]:
-        """Learned skills offered to Nemotron — empty while skill learning is
-        off, which keeps them out of the prompt entirely rather than sending
-        a list Nemotron can't act on."""
-        if not self.learn_skills:
-            return []
-        return [{"id": s.id, "name": s.name} for s in self.memory.all()]
 
     def _watched_files(self) -> list[str] | None:
         if self.watched_dir is None or not self.watched_dir.is_dir():
@@ -484,7 +399,7 @@ class HeyPeer:
                     self._log(f"> {instruction_text}")
                     intent = self.nemotron.interpret_text(
                         instruction_text,
-                        self._skill_context(),
+                        [],
                         watched_files=self._watched_files(),
                         watched_folders=self._watched_folders(),
                     )
@@ -547,7 +462,7 @@ class HeyPeer:
         # screen — and skipping the capture and upload is faster too.
         return self.nemotron.interpret_text(
             instruction_text,
-            self._skill_context(),
+            [],
             watched_files=self._watched_files(),
             watched_folders=self._watched_folders(),
         )
@@ -563,7 +478,7 @@ class HeyPeer:
         try:
             intent = self.nemotron.interpret_text(
                 instruction_text,
-                self._skill_context(),
+                [],
                 watched_files=self._watched_files(),
                 watched_folders=self._watched_folders(),
             )
@@ -593,8 +508,6 @@ class HeyPeer:
             self._log(f"Needs clarification: {question}")
             self._speak(question)
             self._arm_followup()
-        elif intent.action == "run_skill" and intent.skill_id is not None:
-            self._run_skill_intent(intent)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
@@ -665,30 +578,6 @@ class HeyPeer:
             self._log(f"Undo failed: {exc}")
             self._speak("Je n'ai pas réussi à annuler.")
 
-    def _run_skill_intent(self, intent: Intent) -> None:
-        skill = self.memory.get(intent.skill_id)
-        if skill is None:
-            self._log(f"Nemotron referenced an unknown skill id: {intent.skill_id}")
-            return
-
-        times = f" {intent.n_repetitions} fois" if intent.n_repetitions > 1 else ""
-        self._speak_async(f"Je fais : {skill.name}{times}.")
-
-        runner = SkillRunner(
-            verify_step=lambda png: self.nemotron.verify_screen(
-                png, expected_context=f'next step of "{skill.name}"'
-            )
-        )
-        self.tray.set_status(Status.EXECUTING)
-        try:
-            runner.run(skill, intent.n_repetitions)
-            self._log(f'Done: "{skill.name}" x{intent.n_repetitions}.')
-        except ExecutionAborted as exc:
-            self._log(f"Stopped mid-replay: {exc}")
-            self._speak("Je me suis arrêté en cours de route, quelque chose semblait anormal.")
-        finally:
-            self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
-
     def _run_file_action(
         self,
         narration: str,
@@ -734,49 +623,31 @@ class HeyPeer:
 
 def _build_peer(with_debug_window: bool = False) -> HeyPeer:
     settings = load_settings()
-    # Skills stored on disk aren't even loaded while learning is off, so a
-    # backlog of previously learned ones can't leak into a prompt or slow
-    # startup. Delete data/skills/skills.json to drop them for good.
-    skills_path = SKILLS_DIR / "skills.json"
-    memory = SkillMemory(skills_path if settings.learn_skills else SKILLS_DIR / "_disabled.json")
-    if settings.learn_skills:
-        print(f"Hey Peer starting. {len(memory.all())} skill(s) in memory.")
-    else:
-        print("Hey Peer starting. Voice-to-action mode (skill learning off).")
+    print("Hey Peer starting.")
     print(f"Nemotron model: {settings.nemotron_model_id}")
     print(f"Watching folder: {settings.watched_dir}")
     return HeyPeer(
-        memory=memory,
-        detector=PatternDetector(),
         nemotron=NemotronClient(settings),
         watched_dir=settings.watched_dir,
         wakeword_debug=settings.wakeword_debug,
         wakeword_threshold=settings.wakeword_threshold,
         debug_window=DebugWindow() if with_debug_window else None,
-        capture_input=settings.capture_input,
-        learn_skills=settings.learn_skills,
     )
 
 
 def run_tray() -> None:
     """Default entry point: a background app living in the system tray.
 
-    Capture (skill learning) starts immediately - see `HeyPeer.start_capture`.
-    "Mode auto" (wake-word listening + the colored-cursor indicator) is a
-    simple ON/OFF toggle in the tray menu, and starts **ON** by default -
-    turn it off from the menu if you don't want voice activation this
-    session. `TrayApp.run()` blocks the calling thread with the tray's own
-    event loop, so it must be called last, from the main thread.
+    "Mode auto" (wake-word listening) is a simple ON/OFF toggle in the tray
+    menu and starts **ON**. `TrayApp.run()` blocks the calling thread with
+    the tray's own event loop, so it must be called last, from the main
+    thread.
 
     Note: on Windows, Ctrl+C in the console can't reliably interrupt the
-    tray's native message loop - use the tray menu's "Quitter" to exit
-    cleanly (it also resets the cursor).
+    tray's native message loop - use the tray menu's "Quitter" to exit.
     """
     peer = _build_peer(with_debug_window=True)
-    atexit.register(peer.cursor.reset)
-    peer.start_capture()
     peer.tray.set_auto_mode(True)
-    print("Apprentissage de skills actif en arriere-plan.")
     print("Icone dans la zone de notification. Mode auto (ecoute vocale) : ON.")
     print('Menu "Demander a Hey Peer..." disponible pour tester sans micro.')
 
@@ -797,12 +668,9 @@ def run_tray() -> None:
 def run_cli() -> None:
     """Foreground console loop - no separate tray host process needed, but a
     real (detached) tray icon still runs alongside it so "Quitter" works as a
-    stop button instead of Task Manager. Capture and voice/auto mode are both
-    always on; Enter simulates the wake word if no trained wake-word model is
-    available."""
+    stop button instead of Task Manager. Enter simulates the wake word if no
+    trained wake-word model is available."""
     peer = _build_peer(with_debug_window=True)
-    atexit.register(peer.cursor.reset)
-    peer.start_capture()
     peer.tray.set_auto_mode(True)
     peer.tray.icon.run_detached()  # real tray icon, own thread - see Quitter note below
 

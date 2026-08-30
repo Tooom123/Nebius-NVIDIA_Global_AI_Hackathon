@@ -10,7 +10,6 @@ load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-SKILLS_DIR = DATA_DIR / "skills"
 WAKEWORD_DIR = DATA_DIR / "wakeword"
 
 
@@ -39,24 +38,6 @@ class Settings:
     # verifier moments later. Raise it if false triggers persist.
     # Override with HEYPEER_WAKEWORD_THRESHOLD.
     wakeword_threshold: float = 0.9
-    # Global mouse/keyboard capture (learning click/keystroke habits) is OFF
-    # by default: the user reported it noticeably slowing their machine, and
-    # the skills it learned from IDE/terminal activity were mostly noise
-    # anyway. The per-keystroke `get_active_window()` call that caused most
-    # of the cost is now throttled (see capture/watcher.py), but global input
-    # hooks still have a real baseline cost, so this stays opt-in.
-    # File-move capture (watchdog, cheap, and what the demo skill actually
-    # uses) is unaffected and stays on.
-    # Set HEYPEER_CAPTURE_INPUT=1 to re-enable.
-    capture_input: bool = False
-    # Skill learning (watching for repeated action sequences and storing them
-    # as replayable "skills") is OFF by default. Hey Peer is voice-to-action
-    # only for now, per an explicit product decision: the skills learned in
-    # practice were near-useless ("Repeated sequence in unknown app"), every
-    # one of them was sent to Nemotron on every request — bloating the prompt
-    # badly once a couple of dozen had accumulated — and none of them ever
-    # matched a spoken instruction. Set HEYPEER_LEARN_SKILLS=1 to re-enable.
-    learn_skills: bool = False
 
 
 def load_settings() -> Settings:
@@ -71,6 +52,4 @@ def load_settings() -> Settings:
         watched_dir=Path(os.environ.get("HEYPEER_WATCHED_DIR") or str(Path.home() / "Downloads")),
         wakeword_debug=(os.environ.get("HEYPEER_WAKEWORD_DEBUG") or "0") != "0",
         wakeword_threshold=float(os.environ.get("HEYPEER_WAKEWORD_THRESHOLD") or 0.9),
-        capture_input=(os.environ.get("HEYPEER_CAPTURE_INPUT") or "0") != "0",
-        learn_skills=(os.environ.get("HEYPEER_LEARN_SKILLS") or "0") != "0",
     )
