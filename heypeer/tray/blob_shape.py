@@ -35,9 +35,21 @@ _HARMONICS = (
 
 # How much the blob swells at full mic level.
 LEVEL_SCALE = 0.16
+# How much *more pronounced* the wobble gets at full level, on top of the
+# swelling. Size alone reads as a balloon inflating; deepening the harmonics
+# too is what makes it look agitated by the voice rather than just bigger.
+LEVEL_WOBBLE_GAIN = 1.9
+# How much faster the outline moves at full level, so loud speech visibly
+# energizes it instead of only stretching it.
+LEVEL_SPEED_GAIN = 2.2
 # Radius headroom so the biggest possible outline still fits the window with
 # room for the glow: base radius is the inscribed radius divided by this.
-_MAX_EXTENT = 1 + sum(a for _k, a, _w, _p in _HARMONICS) + LEVEL_SCALE + 0.06
+_MAX_EXTENT = (
+    1
+    + sum(a for _k, a, _w, _p in _HARMONICS) * LEVEL_WOBBLE_GAIN
+    + LEVEL_SCALE
+    + 0.06
+)
 
 
 def blob_points(
@@ -54,12 +66,16 @@ def blob_points(
     cx, cy = width / 2, height / 2
     base_radius = min(width, height) / 2 / _MAX_EXTENT
     radius = base_radius * (1 + LEVEL_SCALE * level)
+    # Louder speech both deepens the wobble and speeds it up, so the shape
+    # looks driven by the voice rather than merely inflated by it.
+    wobble_gain = 1 + (LEVEL_WOBBLE_GAIN - 1) * level
+    time_gain = 1 + (LEVEL_SPEED_GAIN - 1) * level
 
     points = []
     for i in range(n_points):
         theta = 2 * math.pi * i / n_points
         wobble = sum(
-            amplitude * math.sin(harmonic * theta + speed * t + phase)
+            amplitude * wobble_gain * math.sin(harmonic * theta + speed * time_gain * t + phase)
             for harmonic, amplitude, speed, phase in _HARMONICS
         )
         r = radius * (1 + wobble)

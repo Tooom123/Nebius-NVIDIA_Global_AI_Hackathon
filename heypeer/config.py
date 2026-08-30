@@ -43,6 +43,14 @@ class Settings:
     # uses) is unaffected and stays on.
     # Set HEYPEER_CAPTURE_INPUT=1 to re-enable.
     capture_input: bool = False
+    # Skill learning (watching for repeated action sequences and storing them
+    # as replayable "skills") is OFF by default. Hey Peer is voice-to-action
+    # only for now, per an explicit product decision: the skills learned in
+    # practice were near-useless ("Repeated sequence in unknown app"), every
+    # one of them was sent to Nemotron on every request — bloating the prompt
+    # badly once a couple of dozen had accumulated — and none of them ever
+    # matched a spoken instruction. Set HEYPEER_LEARN_SKILLS=1 to re-enable.
+    learn_skills: bool = False
 
 
 def load_settings() -> Settings:
@@ -58,4 +66,5 @@ def load_settings() -> Settings:
         wakeword_debug=(os.environ.get("HEYPEER_WAKEWORD_DEBUG") or "0") != "0",
         wakeword_threshold=float(os.environ.get("HEYPEER_WAKEWORD_THRESHOLD") or 0.9),
         capture_input=(os.environ.get("HEYPEER_CAPTURE_INPUT") or "0") != "0",
+        learn_skills=(os.environ.get("HEYPEER_LEARN_SKILLS") or "0") != "0",
     )

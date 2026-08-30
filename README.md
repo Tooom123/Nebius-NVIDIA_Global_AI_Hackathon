@@ -10,14 +10,14 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
 
 ## What it does
 
-1. Hey Peer runs as a background app with a **system tray icon**. Skill-learning
-   capture of **repeated file moves** starts natively the moment it launches — it's
-   passive observation, and nothing it does ever executes anything on its own (see
-   step 5). Capturing mouse/keyboard habits is **off by default**: global input
-   hooks cost real performance, and the skills learned from incidental IDE/terminal
-   activity were mostly noise. Set `HEYPEER_CAPTURE_INPUT=1` to enable it.
-2. A pattern-detection module watches for repeated action sequences (e.g. filling the
-   same form, renaming/sorting the same files) and stores them as reusable "skills".
+1. Hey Peer runs as a background app with a **system tray icon**.
+2. **Skill learning is currently off**, and Hey Peer is voice-to-action only. The
+   machinery is still there — a pattern detector that spots repeated action
+   sequences and stores them as replayable "skills" — but in practice the skills
+   it learned never matched a spoken instruction while being sent to the model on
+   every request, and the global input hooks that fed it cost real performance.
+   Set `HEYPEER_LEARN_SKILLS=1` (and `HEYPEER_CAPTURE_INPUT=1` for mouse/keyboard
+   habits) to turn it back on.
 3. **"Mode auto (écoute vocale)"** is a separate tray toggle for something narrower:
    whether Hey Peer is actually listening for the wake word and able to act on it. It's
    a simple ON/OFF switch, **on by default** as soon as the app starts — turn it off
@@ -26,12 +26,11 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
    (nothing is sent to the cloud before activation — privacy by design), and the
    **mouse cursor changes color** as a visible "Hey Peer can hear you" indicator
    (Windows only for now — see Status below).
-4. Once activated, the user's spoken instruction plus a screenshot of the current
-   screen are sent to **Nemotron 3 Nano Omni**, hosted on **Nebius Token Factory**,
-   which reasons over audio + vision + text to produce a structured intent.
-   Nemotron picks one of: replay a learned skill, or a **direct one-off file
-   action** that doesn't need any learned skill at all — move, rename, create, or
-   delete a specific file/folder (e.g. "déplace le fichier facture vers Archives",
+4. Once activated, the user's transcribed instruction is sent to **Nemotron 3
+   Nano Omni**, hosted on **Nebius Token Factory**, grounded against the watched
+   folder's real file and folder listing, to produce a structured intent.
+   Nemotron resolves it to a **direct one-off file action** — move, rename,
+   create, or delete a specific file/folder (e.g. "déplace le fichier facture vers Archives",
    "renomme facture.pdf en facture_mars.pdf", "crée un dossier Factures",
    "supprime notes.txt" — all grounded against the watched folder's actual file
    listing) — or reports the instruction as unrecognized.
@@ -249,7 +248,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 162 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 163 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with

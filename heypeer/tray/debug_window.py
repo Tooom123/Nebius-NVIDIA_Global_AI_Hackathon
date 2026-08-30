@@ -70,10 +70,18 @@ _VISIBLE_STATES = {"recording", "thinking", "speaking"}
 SIZE = 240
 TOP_MARGIN = 12  # resting distance from the top edge of the screen
 
-# Pre-rendered morph loop. 48 frames at ~13 fps of morph is plenty for a
-# slow organic wobble, and keeps the one-off cost near a fifth of a second.
-LOOP_FRAMES = 48
+# Pre-rendered morph loop, per level bucket. The mic level changes the
+# outline itself now (it deepens and speeds up the wobble, not just the
+# size — see blob_shape), so a single loop can't be scaled to fake it; each
+# bucket gets its own. 40 frames x 5 buckets ~= 1s of one-off work in the
+# background process, and ~11 MB of masks.
+LOOP_FRAMES = 40
 LOOP_STEP_SECONDS = 0.28
+LEVEL_BUCKETS = 5
+
+# The raw mic level is jumpy; smoothing it keeps the blob from snapping
+# between buckets on every syllable.
+LEVEL_SMOOTHING = 0.25
 
 FRAME_INTERVAL = 1 / 30
 # While nothing is on screen — the overwhelmingly common case — idle cheaply
@@ -84,9 +92,6 @@ IDLE_POLL_INTERVAL = 0.1
 # so a state change mid-slide retargets smoothly instead of jumping.
 SLIDE_EASING = 0.24
 SLIDE_SETTLED_PX = 2
-
-# How far the mic level swells the blob on top of its own morphing.
-LEVEL_ZOOM = 0.14
 
 
 def _screen_width(default: int = 1920) -> int:
@@ -100,8 +105,6 @@ def _screen_width(default: int = 1920) -> int:
 
 def _window_process(command_queue: "multiprocessing.Queue") -> None:
     """Owns the overlay window, the pre-rendered frames, and the animation."""
-    from PIL import Image
-
     from heypeer.tray.blob_render import compose, render_alpha
     from heypeer.tray.overlay import Overlay, is_supported
 
@@ -117,7 +120,14 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
             if command_queue.get()[0] == "quit":
                 return
 
-    frames = [render_alpha(SIZE, t=i * LOOP_STEP_SECONDS) for i in range(LOOP_FRAMES)]
+    # [bucket][frame] — indexed by smoothed level and animation time.
+    frames = [
+        [
+            render_alpha(SIZE, t=i * LOOP_STEP_SECONDS, level=bucket / (LEVEL_BUCKETS - 1))
+            for i in range(LOOP_FRAMES)
+        ]
+        for bucket in range(LEVEL_BUCKETS)
+    ]
 
     x = max(0, (_screen_width() - SIZE) // 2)
     offscreen_y = -SIZE - 20
@@ -125,6 +135,7 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
     state = "idle"
     visible = False
     level = 0.0
+    smoothed_level = 0.0
     y = float(offscreen_y)
     on_screen = False
     started_at = time.time()
@@ -160,17 +171,15 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
         if abs(target_y - y) < SLIDE_SETTLED_PX:
             y = target_y
 
-        alpha = frames[int((time.time() - started_at) / LOOP_STEP_SECONDS) % LOOP_FRAMES]
-        if level > 0.01:
-            # Scale for the voice rather than re-rendering the silhouette —
-            # `render_alpha` is far too expensive to run per frame.
-            zoomed = int(SIZE * (1 + LEVEL_ZOOM * level))
-            canvas = Image.new("L", (SIZE, SIZE), 0)
-            scaled = alpha.resize((zoomed, zoomed), Image.BILINEAR)
-            canvas.paste(scaled, ((SIZE - zoomed) // 2, (SIZE - zoomed) // 2))
-            alpha = canvas
+        smoothed_level += (level - smoothed_level) * LEVEL_SMOOTHING
+        bucket = min(LEVEL_BUCKETS - 1, int(round(smoothed_level * (LEVEL_BUCKETS - 1))))
+        frame = int((time.time() - started_at) / LOOP_STEP_SECONDS) % LOOP_FRAMES
 
-        overlay.update(compose(alpha, STATE_PALETTES.get(state, STATE_PALETTES["idle"])), x, int(y))
+        overlay.update(
+            compose(frames[bucket][frame], STATE_PALETTES.get(state, STATE_PALETTES["idle"])),
+            x,
+            int(y),
+        )
 
         if not visible and y == target_y:
             overlay.set_visible(False)

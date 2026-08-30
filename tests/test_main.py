@@ -36,6 +36,10 @@ def fake_pyautogui(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 def _peer(tmp_path: Path, nemotron: MagicMock) -> HeyPeer:
+    """Seeds a skill and enables skill learning — these tests are about the
+    skill paths specifically. Learning is off by default in the app itself
+    (Hey Peer is voice-to-action only for now); see
+    `test_skills_are_not_offered_to_nemotron_by_default`."""
     memory = SkillMemory(tmp_path / "skills.json")
     memory.add(Skill(id="sort_files", name="Sort downloaded files", actions=[]))
     return HeyPeer(
@@ -43,7 +47,28 @@ def _peer(tmp_path: Path, nemotron: MagicMock) -> HeyPeer:
         detector=PatternDetector(),
         nemotron=nemotron,
         get_instruction=lambda: "do it 4 more times",
+        learn_skills=True,
     )
+
+
+def test_skills_are_not_offered_to_nemotron_by_default(tmp_path: Path) -> None:
+    """Regression guard: a backlog of learned skills was being sent on every
+    request, bloating the prompt with entries like "Repeated sequence in
+    unknown app" that could never match a spoken instruction."""
+    memory = SkillMemory(tmp_path / "skills.json")
+    memory.add(Skill(id="sort_files", name="Sort downloaded files", actions=[]))
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(action="unknown", skill_id=None, n_repetitions=1)
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "do something",
+    )
+
+    peer.on_wake_word()
+
+    assert nemotron.interpret_text.call_args.args[1] == []
 
 
 def test_on_wake_word_runs_skill_directly_no_confirmation(
@@ -325,6 +350,7 @@ def test_auto_mode_toggle_does_not_affect_capture(tmp_path: Path) -> None:
         memory=memory,
         detector=PatternDetector(),
         nemotron=nemotron,
+        learn_skills=True,
         capture_input=True,  # explicitly on: the toggle must still not touch it
     )
     peer.watcher.start = MagicMock()
@@ -356,6 +382,7 @@ def test_input_capture_is_off_by_default(tmp_path: Path) -> None:
         detector=PatternDetector(),
         nemotron=nemotron,
         watched_dir=watched_dir,
+        learn_skills=True,  # the point here is input capture specifically
     )
     peer.watcher.start = MagicMock()
     peer.file_watcher.start = MagicMock()
@@ -484,7 +511,9 @@ def test_on_wake_word_with_audio_transcribes_locally_then_uses_interpret_text(
     nemotron.interpret_text.assert_called_once()
     call_args = nemotron.interpret_text.call_args
     assert call_args.args[0] == "do it again"  # wake word stripped
-    assert call_args.kwargs["screenshot_path"] is not None
+    # No screenshot: this deployment rejects non-string message content with
+    # a 400, and the file/folder listing is the grounding that matters.
+    assert call_args.kwargs.get("screenshot_path") is None
 
 
 def test_on_wake_word_ignores_audio_without_the_wake_word(
