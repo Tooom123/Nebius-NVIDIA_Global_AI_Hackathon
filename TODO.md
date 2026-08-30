@@ -1068,6 +1068,60 @@ inherent to running them locally. Worth profiling for real before changing
 anything — a smaller Whisper model would trade back the transcription
 accuracy that fixed the garbled-filename problem.
 
+### Round 9: filename resolution, easier wake word, 3D blob, faster start, better voice (2026-08-30)
+
+- [x] **"renomme le fichier 4 en 15" was answered as unrecognized.** People
+      say filenames the way they say them — without the extension, sometimes
+      mistranscribed ("15.xt"). Expecting the model to reconstruct the exact
+      string was the wrong place to solve it. Added
+      `resolve_existing_filename`, which matches what was said against the
+      folder's real listing in order of decreasing confidence: exact →
+      case-insensitive → stem ("4" → "4.txt") → unique prefix ("facture" →
+      "facture_mars.pdf") → fuzzy ("15.xt" → "15.txt"). It **declines rather
+      than guesses** when two files would match (4.txt and 4.pdf), because a
+      wrong file is worse than asking again. Wired into move/rename/delete;
+      renames also inherit the source extension when the new name has none,
+      so "en 15" gives 15.txt rather than an extension-less file. The prompt
+      now also states that instructions are spoken and transcribed.
+- [x] **Wake word detects more easily**: threshold 0.9 → 0.55. It used to be
+      the only thing between a detection and an action, so it had to be
+      strict, at the cost of missing real activations. Now that the
+      second-stage verifier gates everything, being permissive at stage one
+      is nearly free — extra false positives die silently a moment later,
+      while genuine "Hey Peer"s scoring 0.6-0.85 get through instead of
+      being dropped. Permissive stage one, strict stage two is the point of
+      a cascade.
+- [x] **The blob is properly 3D.** The flat diagonal ramp read as a sticker.
+      It's now shaded as a lit sphere: a surface normal is reconstructed
+      from the distance to the centre (`z = sqrt(1 - x² - y²)`) and lit with
+      a Lambert term, a tight specular lobe, and a rim light so the
+      silhouette reads as curved. Measured brightness spread across the
+      blob: 82 levels (was flat). Since the shading only depends on size and
+      palette, `_gradient` is now cached — per-frame cost actually *dropped*
+      from 0.75ms to **0.16ms** despite the much heavier maths.
+- [x] **Faster startup.** Profiled rather than guessed: the two real costs
+      on the startup path were `pywinctl` (pulls pywin32 + comtypes on
+      Windows, one of the slowest imports in the app) — imported for input
+      capture, which is off by default — and building the OpenAI client.
+      `pywinctl` is now imported lazily inside `get_active_window`, and the
+      OpenAI client is constructed on first use. Confirmed `pywinctl` is no
+      longer in `sys.modules` after importing `heypeer.main`.
+- [x] **More human voice.** Checked the published voice list: Piper has **no
+      "high" quality French voice** — `medium` is the local ceiling. Within
+      that, switched the default from `fr_FR-siwis-medium` to
+      `fr_FR-upmc-medium` and moved the synthesis parameters off Piper's
+      flat defaults (slightly slower, more prosodic variation via
+      `noise_w_scale`, which is most of what "robotic" means). **This could
+      not be verified by ear here**, so rather than baking in a guess both
+      the voice and speaker are overridable — `HEYPEER_TTS_VOICE`,
+      `HEYPEER_TTS_SPEAKER` (upmc ships jessica=0, pierre=1) — with the
+      alternatives listed in the module docstring.
+- [x] **Fixed a test that was silently hitting the network**, downloading a
+      75 MB voice on every run: it stubbed `sys.modules["piper.download_voices"]`,
+      but `from piper import download_voices` takes the attribute off the
+      already-imported package and never consults `sys.modules`, so the stub
+      was ignored. Now patches the function on the module itself.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

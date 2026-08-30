@@ -5,6 +5,19 @@ import pytest
 import heypeer.tray.tts as tts
 
 
+def _patch_download(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Replaces the real downloader on the `piper.download_voices` module.
+
+    Stubbing `sys.modules["piper.download_voices"]` does *not* work here:
+    `from piper import download_voices` takes the attribute off the already
+    imported `piper` package rather than going through `sys.modules`, so the
+    stub was silently ignored and the test hit the network for a 75 MB voice.
+    """
+    download_mock = MagicMock()
+    monkeypatch.setattr("piper.download_voices.download_voice", download_mock)
+    return download_mock
+
+
 @pytest.fixture(autouse=True)
 def reset_voice_cache():
     tts._voice = None
@@ -17,9 +30,7 @@ def test_ensure_voice_downloaded_skips_download_when_present(
 ) -> None:
     monkeypatch.setattr(tts, "VOICES_DIR", tmp_path)
     (tmp_path / "en_US-lessac-medium.onnx").write_bytes(b"x")
-    download_mock = MagicMock()
-    fake_module = MagicMock(download_voice=download_mock)
-    monkeypatch.setitem(__import__("sys").modules, "piper.download_voices", fake_module)
+    download_mock = _patch_download(monkeypatch)
 
     tts._ensure_voice_downloaded("en_US-lessac-medium")
 
@@ -30,9 +41,7 @@ def test_ensure_voice_downloaded_downloads_when_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     monkeypatch.setattr(tts, "VOICES_DIR", tmp_path)
-    download_mock = MagicMock()
-    fake_module = MagicMock(download_voice=download_mock)
-    monkeypatch.setitem(__import__("sys").modules, "piper.download_voices", fake_module)
+    download_mock = _patch_download(monkeypatch)
 
     tts._ensure_voice_downloaded("en_US-lessac-medium")
 

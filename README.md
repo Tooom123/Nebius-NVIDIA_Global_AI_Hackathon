@@ -147,12 +147,15 @@ wake-word model ships at `data/wakeword/hey_peer.onnx` — if it's missing, voic
 activation just won't come up regardless of the toggle; use the tray's **"Demander
 à Hey Peer..."** item to type an instruction instead.
 
-While the wake word is being validated on real hardware, a temporary debug mode is
-on by default: a live mic dB meter and detection score print to the console, and
-the input device name prints at startup — set `HEYPEER_WAKEWORD_DEBUG=0` once it's
-reliably working to quiet this. The detection threshold defaults to `0.9` (not
-openWakeWord's usual `0.5`) — see `heypeer/wakeword/train.py`'s module docstring
-for the evaluation behind that choice — override with `HEYPEER_WAKEWORD_THRESHOLD`.
+Set `HEYPEER_WAKEWORD_DEBUG=1` for a live mic dB meter and per-chunk detection
+score in the console, useful when diagnosing a microphone problem.
+
+The detection threshold defaults to `0.55` and is **deliberately permissive**
+(it was 0.9 when it was the only safeguard). Detection is a two-stage cascade
+now — see below — so a loose first stage costs nothing: extra false positives
+are discarded by the verifier before anything is chimed, shown or executed,
+while genuine activations that score in the 0.6-0.85 range get through instead
+of being dropped. Override with `HEYPEER_WAKEWORD_THRESHOLD`.
 
 For debugging with the console visible (or on a headless box without a tray
 host), use the foreground console loop instead:
@@ -248,7 +251,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 163 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 171 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with

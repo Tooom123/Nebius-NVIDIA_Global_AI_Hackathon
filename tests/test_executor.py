@@ -28,6 +28,7 @@ from heypeer.executor.runner import (  # noqa: E402
     delete_file,
     move_single_file,
     rename_file,
+    resolve_existing_filename,
 )
 from heypeer.patterns.skill import Skill  # noqa: E402
 
@@ -253,3 +254,62 @@ def test_delete_file_missing_file_aborts(tmp_path: Path) -> None:
 def test_delete_file_rejects_name_escaping_watched_dir(tmp_path: Path) -> None:
     with pytest.raises(ExecutionAborted):
         delete_file(tmp_path, "../escaped.txt")
+
+
+def test_resolve_matches_a_spoken_name_without_its_extension(tmp_path: Path) -> None:
+    """Regression test for a real failure: "renomme le fichier 4 en 15" was
+    answered as unrecognized because people say "4", not "4.txt"."""
+    (tmp_path / "4.txt").write_text("x")
+
+    assert resolve_existing_filename(tmp_path, "4") == "4.txt"
+
+
+def test_resolve_absorbs_a_mistranscribed_character(tmp_path: Path) -> None:
+    (tmp_path / "15.txt").write_text("x")
+
+    assert resolve_existing_filename(tmp_path, "15.xt") == "15.txt"
+
+
+def test_resolve_is_case_insensitive(tmp_path: Path) -> None:
+    (tmp_path / "Facture_Mars.pdf").write_text("x")
+
+    assert resolve_existing_filename(tmp_path, "facture_mars.pdf") == "Facture_Mars.pdf"
+
+
+def test_resolve_matches_a_remembered_prefix(tmp_path: Path) -> None:
+    (tmp_path / "facture_mars.pdf").write_text("x")
+    (tmp_path / "notes.txt").write_text("x")
+
+    assert resolve_existing_filename(tmp_path, "facture") == "facture_mars.pdf"
+
+
+def test_resolve_declines_when_ambiguous(tmp_path: Path) -> None:
+    """Two files share the stem, so guessing one would be worse than
+    declining and letting the user rephrase."""
+    (tmp_path / "4.txt").write_text("x")
+    (tmp_path / "4.pdf").write_text("x")
+
+    assert resolve_existing_filename(tmp_path, "4") is None
+
+
+def test_resolve_declines_on_an_unrelated_name(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("x")
+
+    assert resolve_existing_filename(tmp_path, "quarterly_report") is None
+
+
+def test_rename_inherits_the_extension_when_the_new_name_has_none(tmp_path: Path) -> None:
+    (tmp_path / "4.txt").write_text("x")
+
+    result = rename_file(tmp_path, "4", "15")
+
+    assert result.name == "15.txt"
+    assert result.is_file()
+
+
+def test_rename_keeps_an_explicit_new_extension(tmp_path: Path) -> None:
+    (tmp_path / "4.txt").write_text("x")
+
+    result = rename_file(tmp_path, "4.txt", "notes.md")
+
+    assert result.name == "notes.md"

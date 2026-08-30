@@ -11,14 +11,35 @@ French; Whisper transcription of the user's *own* instructions still
 auto-detects English just fine (see `heypeer/wakeword/stt.py`), so English
 input still works even though Hey Peer's spoken replies are French-first.
 
-Auto-downloads a default voice if none is available yet, mirroring
+Auto-downloads the voice if it isn't present yet, mirroring
 `heypeer/wakeword/listener.py`'s `_ensure_openwakeword_models()`.
+
+Piper has no "high" quality French voice — `medium` is the local ceiling
+(checked against the published voice list). Within that, the default here is
+`fr_FR-upmc-medium` rather than `fr_FR-siwis-medium`, and the synthesis
+parameters are tuned away from the flat defaults, both aimed at sounding
+less robotic. **Neither choice could be verified by ear while writing this**,
+so both are overridable and the alternatives are listed below rather than
+baked in: `HEYPEER_TTS_VOICE` (e.g. `fr_FR-siwis-medium`, `fr_FR-tom-medium`,
+`fr_FR-mls-medium`) and `HEYPEER_TTS_SPEAKER` (upmc ships two: 0 = jessica,
+1 = pierre).
 """
 
+import os
 from pathlib import Path
 
-DEFAULT_VOICE_NAME = "fr_FR-siwis-medium"
+DEFAULT_VOICE_NAME = os.environ.get("HEYPEER_TTS_VOICE") or "fr_FR-upmc-medium"
+DEFAULT_SPEAKER_ID = int(os.environ.get("HEYPEER_TTS_SPEAKER") or 0)
 VOICES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "wakeword" / "piper_voices"
+
+# Piper's defaults are length_scale=1.0, noise_scale=0.667, noise_w=0.8, which
+# come out clipped and monotone. Speaking slightly slower and allowing more
+# variation in phoneme duration is the standard way to make Piper sound less
+# mechanical — `noise_w_scale` in particular drives prosodic variation, which
+# is most of what "robotic" means here.
+SYNTHESIS_LENGTH_SCALE = 1.06
+SYNTHESIS_NOISE_SCALE = 0.70
+SYNTHESIS_NOISE_W_SCALE = 0.90
 
 _voice = None
 
@@ -62,9 +83,15 @@ def speak(text: str) -> None:
     from piper.config import SynthesisConfig
 
     voice = _get_voice()
+    config = SynthesisConfig(
+        speaker_id=DEFAULT_SPEAKER_ID,
+        length_scale=SYNTHESIS_LENGTH_SCALE,
+        noise_scale=SYNTHESIS_NOISE_SCALE,
+        noise_w_scale=SYNTHESIS_NOISE_W_SCALE,
+    )
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
-        voice.synthesize_wav(text, wav_file, syn_config=SynthesisConfig())
+        voice.synthesize_wav(text, wav_file, syn_config=config)
     buffer.seek(0)
 
     with wave.open(buffer, "rb") as wav_file:
