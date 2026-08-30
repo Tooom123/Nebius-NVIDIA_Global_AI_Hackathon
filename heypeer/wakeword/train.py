@@ -26,6 +26,10 @@ CLIP_SECONDS = 1.5
 
 
 N_ALIGNMENT_VARIANTS = 4
+# Alignment variants for the user's own recordings. Higher than the default
+# so ~40 real takes aren't drowned out by a few hundred synthetic clips —
+# see `_embed_dirs`.
+USER_ALIGNMENT_VARIANTS = 16
 
 
 def _load_clip_variants(
@@ -67,22 +71,57 @@ def _load_clip_variants(
 
 
 def _embed_directory(
-    wav_dir: Path, features: AudioFeatures, rng: np.random.Generator
+    wav_dir: Path,
+    features: AudioFeatures,
+    rng: np.random.Generator,
+    n_variants: int = N_ALIGNMENT_VARIANTS,
 ) -> np.ndarray:
     paths = sorted(wav_dir.glob("*.wav"))
     if not paths:
         raise FileNotFoundError(f"No wav files found in {wav_dir}")
-    clips = [clip for p in paths for clip in _load_clip_variants(p, rng)]
+    clips = [clip for p in paths for clip in _load_clip_variants(p, rng, n_variants)]
     embeddings = features.embed_clips(np.stack(clips))
     # (n_clips, n_frames, emb_dim) -> average-pool frames into one vector per clip
     return embeddings.mean(axis=1)
 
 
-def train(positive_dir: Path, negative_dir: Path, seed: int = 0) -> tuple[MLPClassifier, int]:
+def _embed_dirs(
+    wav_dirs: "list[Path]",
+    features: AudioFeatures,
+    rng: np.random.Generator,
+    user_variants: int,
+) -> np.ndarray:
+    """Embeds several directories into one array.
+
+    Directories whose name contains "user" get more alignment variants. A
+    personalised model is trained on maybe 40 real recordings against a few
+    hundred synthetic ones, and at equal weighting the real voice — the whole
+    point of recording it — barely moves the decision boundary. Oversampling
+    through *more random alignments* rather than duplicated rows adds genuine
+    variation instead of just repeating identical vectors.
+    """
+    arrays = []
+    for wav_dir in wav_dirs:
+        variants = user_variants if "user" in wav_dir.name else N_ALIGNMENT_VARIANTS
+        arrays.append(_embed_directory(wav_dir, features, rng, variants))
+    return np.concatenate(arrays)
+
+
+def train(
+    positive_dirs: "Path | list[Path]",
+    negative_dirs: "Path | list[Path]",
+    seed: int = 0,
+    user_variants: int = USER_ALIGNMENT_VARIANTS,
+) -> tuple[MLPClassifier, int]:
+    if isinstance(positive_dirs, Path):
+        positive_dirs = [positive_dirs]
+    if isinstance(negative_dirs, Path):
+        negative_dirs = [negative_dirs]
+
     features = AudioFeatures()
     rng = np.random.default_rng(seed)
-    pos = _embed_directory(positive_dir, features, rng)
-    neg = _embed_directory(negative_dir, features, rng)
+    pos = _embed_dirs(positive_dirs, features, rng, user_variants)
+    neg = _embed_dirs(negative_dirs, features, rng, user_variants)
 
     x = np.concatenate([pos, neg])
     y = np.concatenate([np.ones(len(pos)), np.zeros(len(neg))])
@@ -102,8 +141,11 @@ def export_onnx(clf: MLPClassifier, input_dim: int, out_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--positive-dir", type=Path, required=True)
-    parser.add_argument("--negative-dir", type=Path, required=True)
+    parser.add_argument(
+        "--positive-dir", type=Path, required=True, action="append",
+        help="repeatable; a directory whose name contains 'user' is weighted higher",
+    )
+    parser.add_argument("--negative-dir", type=Path, required=True, action="append")
     parser.add_argument("--out", type=Path, default=Path("data/wakeword/hey_peer.onnx"))
     args = parser.parse_args()
 

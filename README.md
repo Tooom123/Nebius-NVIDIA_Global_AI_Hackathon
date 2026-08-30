@@ -232,7 +232,36 @@ spellings, since Whisper renders it "Hey Pierre" / "Hey, Peer." / "hey pir"
 depending on accent and audio quality. The same step strips the wake word out of
 the instruction, which previously leaked into what Nemotron saw.
 
-To regenerate the wake-word model (voices aren't committed — download them first):
+### Personalising the wake word to your voice
+
+The shipped model is trained on synthetic speech only, which is why it both
+over-fires and occasionally misses. Recording ~40 samples of your own voice fixes
+the cause rather than compensating for it:
+
+```bash
+python -m heypeer.wakeword.record_samples          # guided; ~5 minutes
+python -m heypeer.wakeword.train \
+    --positive-dir data/wakeword/samples/positive_user \
+    --positive-dir data/wakeword/samples/positive_augmented \
+    --negative-dir data/wakeword/samples/negative_user \
+    --negative-dir data/wakeword/samples/negative_noise
+python -m heypeer.wakeword.evaluate \
+    --positive-dir data/wakeword/samples/positive_user \
+    --negative-dir data/wakeword/samples/negative_user
+```
+
+The recorder asks for two sets, and the second matters as much as the first: the
+wake word itself, and **the same voice saying other things** — near-misses ("Hey
+Pierre"), the commands you actually give, and ordinary speech. With positives
+only, the model can separate the classes on voice identity alone and will fire on
+anything you say.
+
+`evaluate` runs each clip through the recognizer the way the live listener does
+(streaming, peak score) and prints recall against false-accept rate per
+threshold, so you can pick `HEYPEER_WAKEWORD_THRESHOLD` from measurements. Your
+recordings stay on your machine — `data/wakeword/samples/` is gitignored.
+
+To regenerate the synthetic part of the training set (voices aren't committed — download them first):
 
 ```bash
 python -c "from piper import download_voices as d; from pathlib import Path; \
@@ -255,7 +284,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 192 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 203 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
