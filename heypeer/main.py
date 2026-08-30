@@ -42,6 +42,7 @@ watching the debug dB meter) - it also shows a real, detached tray icon so the
 import argparse
 import atexit
 import queue
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -159,8 +160,20 @@ class HeyPeer:
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
-        just the visual state/level indicator (see `debug_window.py`)."""
-        print(message)
+        just the visual state/level indicator (see `debug_window.py`).
+
+        Printing is made unfailing on purpose. Some of what passes through
+        here is model-generated (a clarifying question, a filename it read
+        back), so its characters are not ours to control: Nemotron returned a
+        non-breaking hyphen once and the resulting UnicodeEncodeError from a
+        cp1252 console took down the whole app mid-turn. A mangled character
+        is a cosmetic problem; losing the session over one is not.
+        """
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+            print(message.encode(encoding, errors="replace").decode(encoding))
 
     def start_capture(self) -> None:
         """Starts passive skill-learning capture, if it's enabled at all.
@@ -786,7 +799,24 @@ def run_cli() -> None:
         peer._on_quit()
 
 
+def _configure_console() -> None:
+    """Puts stdout/stderr into UTF-8 with replacement, where possible.
+
+    Windows consoles default to a legacy code page (cp1252 here), which
+    cannot represent much of what a language model emits. `errors="replace"`
+    is the part that matters: it makes an unrepresentable character print as
+    a placeholder instead of raising, which is the difference between a
+    cosmetic blemish and the app dying mid-turn.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass  # not a real console, or an older stream object - harmless
+
+
 def main() -> None:
+    _configure_console()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--cli",

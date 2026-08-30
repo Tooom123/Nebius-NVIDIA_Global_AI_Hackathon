@@ -750,3 +750,26 @@ def test_non_followup_turn_still_requires_the_wake_word(tmp_path: Path) -> None:
         peer.on_wake_word(np.zeros(16000, dtype=np.int16), followup=False)
 
     nemotron.interpret_text.assert_not_called()
+
+
+def test_log_survives_characters_the_console_cannot_encode(tmp_path: Path, capsys) -> None:
+    """Regression test: Nemotron returned a clarifying question containing a
+    non-breaking hyphen, and the UnicodeEncodeError from a cp1252 Windows
+    console took down the whole app mid-turn. Some of what reaches `_log` is
+    model-generated, so its characters aren't ours to control - a mangled
+    character is cosmetic, losing the session over one is not."""
+    import io
+
+    nemotron = MagicMock()
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(memory=memory, detector=PatternDetector(), nemotron=nemotron)
+
+    with patch("sys.stdout", io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")):
+        peer._log("Vers quel dossier veux‑tu le deplacer ?")  # must not raise
+
+
+def test_configure_console_is_safe_when_streams_cannot_be_reconfigured() -> None:
+    """pytest replaces stdout with objects that have no reconfigure()."""
+    from heypeer.main import _configure_console
+
+    _configure_console()  # must not raise
