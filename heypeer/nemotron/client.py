@@ -38,7 +38,7 @@ SYSTEM_PROMPT = """\
 You are Hey Peer, a personal automation assistant. The user has just spoken a \
 command after saying the wake word "Hey Peer". You are given: (1) the user's \
 transcribed/spoken instruction, (2) a screenshot of their current screen, \
-(3) a list of previously learned "skills" — repeated action sequences the user \
+(3) a list of previously learned "skills" - repeated action sequences the user \
 has performed before, each with an id and a human-readable name, and \
 (4) optionally, the filenames and folder names currently present in the \
 watched folder.
@@ -51,33 +51,33 @@ forms:
 "n_repetitions": <integer, how many more times to run it, default 1>}
 
 - To move/organize ONE specific file the user named directly (no repetition,
-  no learned skill involved — e.g. "déplace le fichier facture vers Archives"):
+  no learned skill involved - e.g. "deplace le fichier facture vers Archives"):
   {"action": "move_file", \
 "src_filename": "<the exact filename from the watched-folder listing that \
 best matches what the user described>", \
-"dest_folder": "<the destination folder name — if a folder in the given \
+"dest_folder": "<the destination folder name - if a folder in the given \
 folder listing already matches (even loosely), use that folder's EXACT \
 existing name verbatim; otherwise use the name exactly as the user said it, \
-character for character — never pluralize, translate, capitalize \
+character for character - never pluralize, translate, capitalize \
 differently, or otherwise rephrase it>"}
 
-- To rename ONE existing file (same folder, just a new name — e.g. "renomme \
+- To rename ONE existing file (same folder, just a new name - e.g. "renomme \
 facture.pdf en facture_mars.pdf"):
   {"action": "rename_file", \
 "src_filename": "<the exact filename from the watched-folder listing>", \
-"new_name": "<the new filename — keep the original extension unless the \
+"new_name": "<the new filename - keep the original extension unless the \
 user clearly asks to change it>"}
 
-- To create a new, empty file (e.g. "crée un fichier notes.txt"):
+- To create a new, empty file (e.g. "cree un fichier notes.txt"):
   {"action": "create_file", \
 "target_name": "<the new filename, with an extension if one makes sense>"}
 
-- To create a new folder (e.g. "crée un dossier Factures"):
+- To create a new folder (e.g. "cree un dossier Factures"):
   {"action": "create_folder", \
 "target_name": "<the folder name exactly as the user said it, character for \
-character — never pluralize, translate, or otherwise rephrase it>"}
+character - never pluralize, translate, or otherwise rephrase it>"}
 
-- To delete ONE existing file (e.g. "supprime le fichier notes.txt" — this \
+- To delete ONE existing file (e.g. "supprime le fichier notes.txt" - this \
 moves it to the recycle bin/trash, not a permanent delete):
   {"action": "delete_file", \
 "src_filename": "<the exact filename from the watched-folder listing>"}
@@ -91,8 +91,8 @@ moves it to the recycle bin/trash, not a permanent delete):
   For a rename, if the user gives the new name without an extension, keep
   the original file's extension.
 
-- To undo the last file action (e.g. "annule", "annule ça", "reviens en \
-arrière"):
+- To undo the last file action (e.g. "annule", "annule ca", "reviens en \
+arriere"):
   {"action": "undo"}
 
 - When the user clearly wants one of the file actions above but a required \
@@ -101,7 +101,7 @@ files match equally well):
   {"action": "ask", \
 "question": "<one short question in French asking for exactly the missing \
 piece, e.g. 'Vers quel dossier ?' or 'Quel fichier, 4.txt ou 4.pdf ?'>"}
-  Prefer this over "unknown" whenever the intent is recognisable — telling
+  Prefer this over "unknown" whenever the intent is recognisable - telling
   the user what is missing is far more useful than saying nothing was
   understood. Do not use it to re-ask for something already given.
 
@@ -110,7 +110,48 @@ piece, e.g. 'Vers quel dossier ?' or 'Quel fichier, 4.txt ou 4.pdf ?'>"}
 
 Always include every key shown for the chosen form; use null for any you
 don't have a value for.
+
+Write every string you return using plain ASCII punctuation only: ordinary
+hyphens, apostrophes and quotes. No em dashes, non-breaking hyphens or smart
+quotes. These strings are printed to a terminal and spoken aloud, and a
+Windows console using a legacy code page cannot encode them.
 """
+
+
+# Typographic characters a model reaches for that a legacy Windows console
+# cannot encode. Mapped to their plain equivalents rather than stripped, so
+# the text still reads correctly.
+_TYPOGRAPHIC = {
+    "\u2014": "-",   # em dash
+    "\u2013": "-",   # en dash
+    "\u2011": "-",   # non-breaking hyphen - the one that actually crashed the app
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2026": "...",
+    "\u00a0": " ",   # non-breaking space
+    "\u202f": " ",   # narrow no-break space, common before French punctuation
+}
+
+
+def _plain_punctuation(text: "str | None") -> "str | None":
+    """Replaces typographic punctuation with ASCII equivalents.
+
+    The prompt asks for plain ASCII and is itself written in it — models
+    mirror the typography they are shown — but an instruction is not a
+    guarantee, and this text is printed to a terminal and spoken aloud. A
+    non-breaking hyphen in a clarifying question crashed the app once.
+
+    Accents are deliberately left alone: they are correct French, Piper needs
+    them to pronounce words properly, and the console path handles them
+    safely. Only characters with no value beyond typography are replaced.
+    """
+    if not text:
+        return text
+    for exotic, plain in _TYPOGRAPHIC.items():
+        text = text.replace(exotic, plain)
+    return text
 
 
 def _skill_context_block(skill_context: list[dict]) -> str:
@@ -143,7 +184,9 @@ def _parse_intent(raw_content: "str | None") -> Intent:
         dest_folder=data.get("dest_folder"),
         new_name=data.get("new_name"),
         target_name=data.get("target_name"),
-        question=data.get("question"),
+        # Free text headed for a terminal and a speech synthesiser, unlike
+        # the filenames above which must stay byte-exact to match real files.
+        question=_plain_punctuation(data.get("question")),
     )
 
 
