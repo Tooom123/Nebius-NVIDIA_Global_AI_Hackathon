@@ -59,18 +59,23 @@ def _angles(n: int) -> np.ndarray:
     return np.linspace(-math.pi, math.pi, n, endpoint=False)
 
 
-@lru_cache(maxsize=8)
-def _colours(size: int) -> np.ndarray:
+@lru_cache(maxsize=16)
+def _colours(size: int, radius_px: int) -> np.ndarray:
     """Radial gradient through cyan, blue and violet, plus a soft specular
-    lift. Cached: it depends only on the frame size, never on the animation,
-    and recomputing it every frame was most of the old per-frame cost."""
+    lift. Cached on size and radius: it never depends on the animation, and
+    recomputing it every frame would dominate the per-frame cost."""
     ys, xs = np.mgrid[0:size, 0:size]
     hx, hy = HIGHLIGHT_CENTER
     dx = xs / (size - 1) - hx
     dy = ys / (size - 1) - hy
-    # Distance from the off-centre highlight, normalised so the far edge of
-    # the frame lands at 1.0.
-    distance = np.clip(np.sqrt(dx * dx + dy * dy) / 0.72, 0, 1)
+
+    # Normalised over the *blob*, not the frame. Spanning the whole bitmap
+    # meant the gradient only ever travelled from 0.27 to 0.58 inside the
+    # shape - so violet, which sits at 1.0, was never reached at all and the
+    # blob came out uniformly blue. The span is the distance from the
+    # off-centre highlight to the far side of the blob.
+    span = math.hypot(0.5 - hx, 0.5 - hy) + radius_px / size
+    distance = np.clip(np.sqrt(dx * dx + dy * dy) / span, 0, 1)
 
     stops = np.array([0.0, 0.55, 1.0])
     ramp = [PALETTE_CYAN, PALETTE_BLUE, PALETTE_VIOLET]
@@ -80,7 +85,7 @@ def _colours(size: int) -> np.ndarray:
 
     # A tight bright core where the "light" sits, for the wet, glassy look of
     # the reference rather than a flat gradient.
-    specular = np.clip(1 - distance / 0.34, 0, 1) ** 3 * 0.55
+    specular = np.clip(1 - distance / 0.42, 0, 1) ** 3 * 0.55
     rgb = rgb + (255 - rgb) * specular[..., None]
     return np.clip(rgb, 0, 255)
 
@@ -113,5 +118,8 @@ def render(
     halo = np.clip(1 - np.clip(outside, 0, None) / (base_radius * GLOW_REACH), 0, 1) ** 2
     alpha = np.maximum(body, halo * GLOW_ALPHA * glow) * 255
 
-    rgba = np.dstack([_colours(size), np.clip(alpha, 0, 255)])
+    # Rounded so a radius drifting by a pixel doesn't thrash the cache.
+    rgba = np.dstack(
+        [_colours(size, int(round(base_radius / 2)) * 2), np.clip(alpha, 0, 255)]
+    )
     return Image.fromarray(rgba.astype(np.uint8), mode="RGBA")

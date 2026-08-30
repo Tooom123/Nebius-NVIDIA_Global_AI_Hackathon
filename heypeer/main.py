@@ -71,6 +71,7 @@ from heypeer.patterns.memory import SkillMemory
 from heypeer.tray.app import Status, TrayApp
 from heypeer.tray.cursor import CursorIndicator
 from heypeer.tray.debug_window import DebugWindow
+from heypeer.wakeword.listener import FOLLOWUP_WINDOW_SECONDS
 
 GetInstruction = Callable[[], str]
 
@@ -157,6 +158,10 @@ class HeyPeer:
         # Reversal records for completed file actions - the safety net that
         # replaced the confirmation gate. See heypeer/executor/undo.py.
         self._undo_stack = undo.UndoStack()
+        # Bumped whenever a follow-up window opens, so a window that has
+        # since been superseded can't hide the indicator out from under a
+        # turn that started after it.
+        self._followup_generation = 0
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -354,9 +359,29 @@ class HeyPeer:
 
     def _arm_followup(self) -> None:
         """Lets the next command skip the wake word for a few seconds, so a
-        conversation can continue naturally instead of restarting."""
-        if self._wake_listener is not None:
-            self._wake_listener.arm_followup()
+        conversation can continue naturally instead of restarting.
+
+        Also keeps the indicator on screen for that window. It used to slide
+        away the moment a turn ended - including right after Hey Peer had
+        asked a question - which reads as the conversation being over when it
+        is precisely still open and waiting for an answer."""
+        if self._wake_listener is None:
+            return
+        self._wake_listener.arm_followup()
+        self._followup_generation += 1
+        generation = self._followup_generation
+        if self.debug_window is not None:
+            self.debug_window.set_state("awaiting")
+
+        def stand_down() -> None:
+            # Only if no new turn started meanwhile, or this would clobber
+            # the state of whatever is happening now.
+            if self._followup_generation == generation and self.debug_window is not None:
+                self.debug_window.set_state("listening")
+
+        timer = threading.Timer(FOLLOWUP_WINDOW_SECONDS, stand_down)
+        timer.daemon = True
+        timer.start()
 
     def _on_wake_detected(self, audio: np.ndarray, followup: bool = False) -> None:
         """Called from the wake-word audio thread once a detection fires and
@@ -439,6 +464,7 @@ class HeyPeer:
         the turn ends, so Hey Peer only ever handles one turn at a time."""
         if self.debug_window is not None:
             self.debug_window.set_state("thinking")
+        opened_with = self._followup_generation
         try:
             try:
                 if audio is not None and len(audio) > 0:
@@ -460,7 +486,9 @@ class HeyPeer:
                 return
             self._dispatch_intent(intent)
         finally:
-            if self.debug_window is not None:
+            if self.debug_window is not None and self._followup_generation == opened_with:
+                # Unchanged generation means nothing armed a follow-up during
+                # this turn, so the exchange really is over.
                 self.debug_window.set_state("listening")
             if self._wake_listener is not None:
                 self._wake_listener.unmute()

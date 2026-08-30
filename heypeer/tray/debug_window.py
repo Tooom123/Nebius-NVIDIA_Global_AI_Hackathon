@@ -69,30 +69,34 @@ import time
 #   recording  driven by the voice - the level terms do the work
 #   thinking   busy but not voice-driven
 #   speaking   the most alive: broad lobes forming and dissolving
+#   awaiting   a question was asked and the answer needs no wake word, so the
+#              blob stays on screen: the exchange is still open
 STATE_ENERGY = {
     "idle":      {"amplitude": 0.030, "speed": 0.35, "glow": 0.35, "level_gain": 0.0},
     "listening": {"amplitude": 0.070, "speed": 0.60, "glow": 0.50, "level_gain": 0.0},
+    "awaiting":  {"amplitude": 0.075, "speed": 0.70, "glow": 0.55, "level_gain": 1.0},
     "recording": {"amplitude": 0.080, "speed": 0.80, "glow": 0.55, "level_gain": 1.0},
     "thinking":  {"amplitude": 0.120, "speed": 1.60, "glow": 0.60, "level_gain": 0.0},
     "speaking":  {"amplitude": 0.150, "speed": 1.10, "glow": 0.70, "level_gain": 0.6},
 }
 
-# What a full-scale mic level adds on top of the state's own values.
-LEVEL_AMPLITUDE_GAIN = 0.13
-LEVEL_SPEED_GAIN = 1.4
-LEVEL_GLOW_GAIN = 0.35
-# The voice drives energy far more than size, per the design: a loud voice
-# makes the shape churn rather than simply inflate.
-LEVEL_RADIUS_GAIN = 0.06
+# What a full-scale mic level adds on top of the state's own values. These
+# were far too timid: the radius term moved the shape by 1.5% at speaking
+# volume, which is simply not visible. The voice still drives energy more
+# than size, per the design, but all of it now by an amount the eye can see.
+LEVEL_AMPLITUDE_GAIN = 0.15
+LEVEL_SPEED_GAIN = 2.5
+LEVEL_GLOW_GAIN = 0.40
+LEVEL_RADIUS_GAIN = 0.14
 
 # Only shown while a turn is actually happening - the indicator should appear
 # when Hey Peer has heard something, not sit on screen permanently.
-_VISIBLE_STATES = {"recording", "thinking", "speaking"}
+_VISIBLE_STATES = {"recording", "thinking", "speaking", "awaiting"}
 
 SIZE = 240
 TOP_MARGIN = 12  # resting distance from the top edge of the screen
 # Leaves room for the glow, and for the outline at its most deformed.
-BASE_RADIUS = SIZE * 0.30
+BASE_RADIUS = SIZE * 0.26
 
 FRAME_INTERVAL = 1 / 30
 # While nothing is on screen - the overwhelmingly common case - idle cheaply
@@ -104,14 +108,15 @@ IDLE_POLL_INTERVAL = 0.1
 SLIDE_EASING = 0.24
 SLIDE_SETTLED_PX = 2
 
-# Every animated quantity is eased toward its target rather than set. At
-# 30fps this settles in roughly half a second, which is the design's 400-700ms
-# transition - and it means a state change can never produce a visible jump,
-# whichever quantity it moves.
+# State parameters are eased toward their target rather than set. At 30fps
+# this settles in roughly half a second - the design's 400-700ms transition -
+# and it makes a visible jump impossible whichever quantity moves.
 ENERGY_EASING = 0.14
-# The raw mic level is jumpy; smoothing it first keeps the shape from
-# twitching on every syllable.
-LEVEL_EASING = 0.30
+# The mic level is smoothed separately and much faster. Speech dynamics are
+# quick, and running the level through the slow state easing as well damped
+# the voice response into near-invisibility - the level was arriving, it just
+# never reached the shape in time to show.
+LEVEL_EASING = 0.45
 
 
 def _screen_width(default: int = 1920) -> int:
@@ -190,29 +195,31 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
 
         smooth_level += (level - smooth_level) * LEVEL_EASING
         target = STATE_ENERGY.get(state, STATE_ENERGY["idle"])
+
+        # State parameters ease slowly (that is the transition); the voice
+        # contribution is added on top *without* a second round of easing,
+        # so speech shows immediately instead of being smoothed twice.
+        for key in ("amplitude", "speed", "glow"):
+            current[key] += (target[key] - current[key]) * ENERGY_EASING
+        current["radius"] += (BASE_RADIUS - current["radius"]) * ENERGY_EASING
+
         gain = target["level_gain"] * smooth_level
-        wanted = {
-            "amplitude": target["amplitude"] + LEVEL_AMPLITUDE_GAIN * gain,
-            "speed": target["speed"] + LEVEL_SPEED_GAIN * gain,
-            "glow": target["glow"] + LEVEL_GLOW_GAIN * gain,
-            "radius": BASE_RADIUS * (1 + LEVEL_RADIUS_GAIN * gain),
-        }
-        for key, value in wanted.items():
-            current[key] += (value - current[key]) * ENERGY_EASING
+        amplitude = current["amplitude"] + LEVEL_AMPLITUDE_GAIN * gain
+        speed = current["speed"] + LEVEL_SPEED_GAIN * gain
+        glow = current["glow"] + LEVEL_GLOW_GAIN * gain
+        radius = current["radius"] * (1 + LEVEL_RADIUS_GAIN * gain)
 
         # Accumulated, not derived from wall-clock time: a change of speed
         # must bend the motion, never teleport the phase.
-        phase += current["speed"] * dt
+        phase += speed * dt
 
         target_y = float(TOP_MARGIN if visible else offscreen_y)
         y += (target_y - y) * SLIDE_EASING
         if abs(target_y - y) < SLIDE_SETTLED_PX:
             y = target_y
 
-        radii = radius_profile(OUTLINE_ANGLES, phase, current["amplitude"])
-        overlay.update(
-            render(SIZE, radii, current["radius"], glow=current["glow"]), x, int(y)
-        )
+        radii = radius_profile(OUTLINE_ANGLES, phase, amplitude)
+        overlay.update(render(SIZE, radii, radius, glow=glow), x, int(y))
 
         if not visible and y == target_y:
             overlay.set_visible(False)

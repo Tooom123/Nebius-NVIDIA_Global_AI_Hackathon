@@ -773,3 +773,49 @@ def test_configure_console_is_safe_when_streams_cannot_be_reconfigured() -> None
     from heypeer.main import _configure_console
 
     _configure_console()  # must not raise
+
+
+def test_asking_a_question_keeps_the_indicator_on_screen(tmp_path: Path) -> None:
+    """Regression test: the blob slid off screen the moment a turn ended,
+    including right after Hey Peer asked a question - which reads as the
+    conversation being over when it is precisely still open."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="ask", skill_id=None, n_repetitions=1, question="Vers quel dossier ?"
+    )
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "deplace facture",
+    )
+    peer.debug_window = MagicMock()
+    peer._wake_listener = MagicMock()
+    peer._speak = lambda _text: None
+
+    peer.on_wake_word()
+
+    states = [c.args[0] for c in peer.debug_window.set_state.call_args_list]
+    assert states[-1] == "awaiting"
+    assert "listening" not in states[states.index("awaiting"):]
+
+
+def test_a_turn_with_no_followup_hides_the_indicator(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="unknown", skill_id=None, n_repetitions=1
+    )
+    memory = SkillMemory(tmp_path / "skills.json")
+    peer = HeyPeer(
+        memory=memory,
+        detector=PatternDetector(),
+        nemotron=nemotron,
+        get_instruction=lambda: "quelque chose",
+    )
+    peer.debug_window = MagicMock()
+    peer._speak = lambda _text: None
+
+    peer.on_wake_word()
+
+    assert [c.args[0] for c in peer.debug_window.set_state.call_args_list][-1] == "listening"

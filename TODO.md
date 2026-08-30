@@ -1553,6 +1553,46 @@ deleting the audio that the too-high threshold had mislabelled.
 - [x] Deleted `blob_points`, left over from the window-region era and now
       used only by its own tests.
 
+### Round 21: four reasons the blob looked inert (2026-08-30)
+
+All four reported symptoms were real, and two were bugs my own tests were
+passing straight over.
+
+- [x] **"Trop bleu, le violet n'a pas ete pris en compte."** Correct — and
+      not a palette problem. The gradient was normalised over the whole
+      **frame** while the blob occupies only its middle: inside the shape the
+      gradient only ever travelled from 0.27 to 0.58, and violet lives at
+      1.00, so it was never reached at all. Now normalised over the blob's
+      own extent (distance from the off-centre highlight to its far side).
+      Measured after: the most violet pixel in the shape is (121, 58, 236)
+      against a target of (124, 58, 237).
+- [x] **"Les mouvements sont quasiment inexistants."** `amplitude` was
+      dividing the harmonic sum by the *sum of the weights*, but sinusoids at
+      unrelated phases almost never align, so it delivered a measured **78%**
+      of what was asked. Normalising by the sum's actual peak makes the
+      number mean what it says.
+- [x] **"Lorsque je parle aucun deplacement s'opere."** The level was
+      arriving; it just never reached the shape in a visible amount. Two
+      causes: the gains were far too timid (the radius term moved the outline
+      by **1.5%** at speaking volume), and the level was smoothed once on its
+      own and then a *second* time through the slow state easing, damping
+      speech dynamics into nothing. Gains raised, and the voice contribution
+      is now added on top of the eased state parameters rather than being
+      eased again. Measured: +31% solid area and 4x churn speed from silence
+      to full level, under test so it cannot quietly regress.
+- [x] **"Le blob sort de l'ecran quand Hey Peer demande une reformulation."**
+      He is right that this is wrong: the exchange is still open and waiting
+      for an answer. The indicator hid because the turn had ended, ignoring
+      that a follow-up window was armed. New `awaiting` state, visible and
+      mic-reactive, held for the length of that window and then stood down by
+      a timer — guarded by a generation counter so a stale window can't hide
+      the indicator out from under a turn that has since started.
+
+Also had to shrink the base radius (0.30 -> 0.26 of the frame) so the larger
+deformations and the glow still fit; a halo clipped by the edge of the bitmap
+would show as a straight line across it. Asserted for every state at full
+level.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
