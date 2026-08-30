@@ -54,11 +54,12 @@ from heypeer.tray.debug_window import DebugWindow
 
 GetInstruction = Callable[[], str]
 
-# How long the indicator takes to drop in. Recording waits this out so the
+# Matches the indicator's slide (see debug_window.SLIDE_SECONDS). Recording
+# waits this out so the
 # blob is on screen before Hey Peer starts listening - otherwise the user is
 # already mid-sentence by the time the cue appears, and the shape never seems
 # to react to their voice.
-INDICATOR_SLIDE_SECONDS = 0.45
+INDICATOR_SLIDE_SECONDS = 0.30
 
 _SHUTDOWN = object()  # sentinel put on HeyPeer._detections to unblock a consumer loop
 

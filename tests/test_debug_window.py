@@ -89,3 +89,40 @@ def test_send_swallows_queue_errors(fake_process: MagicMock) -> None:
     window._queue.put.side_effect = Exception("queue closed")
 
     window.set_state("should not raise")  # must not propagate
+
+
+def test_the_slide_takes_a_fixed_time_whatever_the_frame_rate() -> None:
+    """Regression test: the slide used to ease by a fixed fraction per
+    frame, so its duration was hostage to the frame rate - 0.6s at 30fps but
+    over 2s if anything slowed the loop. The user saw the blob arrive well
+    after they had started speaking, which also made it look like it never
+    reacted to their voice."""
+    from heypeer.tray.debug_window import SLIDE_SECONDS, slide_position
+
+    start, end = -260.0, 12.0
+
+    assert slide_position(start, end, 0.0) == start
+    assert slide_position(start, end, SLIDE_SECONDS) == end
+    assert slide_position(start, end, SLIDE_SECONDS * 10) == end  # never overshoots
+
+    # Simulated at wildly different frame rates, it lands at the same time.
+    for fps in (8, 15, 30, 60):
+        steps = int(SLIDE_SECONDS * fps)
+        final = slide_position(start, end, steps / fps)
+        assert abs(final - end) < 1.0
+
+
+def test_the_slide_starts_quickly_and_lands_gently() -> None:
+    """Ease-out: most of the distance is covered early, so the cue reads as
+    immediate rather than as a slow drift."""
+    from heypeer.tray.debug_window import SLIDE_SECONDS, slide_position
+
+    halfway = slide_position(0.0, 100.0, SLIDE_SECONDS / 2)
+
+    assert halfway > 80  # well past half the distance at half the time
+
+
+def test_the_slide_is_short_enough_to_read_as_a_cue() -> None:
+    from heypeer.tray.debug_window import SLIDE_SECONDS
+
+    assert SLIDE_SECONDS <= 0.35
