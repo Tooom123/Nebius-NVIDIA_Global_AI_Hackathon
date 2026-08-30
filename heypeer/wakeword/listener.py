@@ -47,6 +47,10 @@ INSTRUCTION_MIN_SPEECH_CHUNKS = 3
 # against a slow start (a breath, a pause for thought) truncating the whole
 # instruction to nothing.
 INSTRUCTION_MIN_SECONDS = 1.2
+# Chunks of the trailing silence kept when trimming (see `_record_instruction`).
+# Enough that a soft final consonant is never cut, while still dropping most
+# of the ~1.2s of quiet the end-pointing waits through.
+TRAILING_SILENCE_MARGIN_CHUNKS = 3
 
 # Speech is detected relative to the room's own noise floor rather than at a
 # fixed level. A fixed -40 dBFS threshold assumes one particular mic gain and
@@ -195,17 +199,9 @@ def play_activation_chime() -> None:
 
 
 def _play_chime_blocking() -> None:
-    import pyaudio
+    from heypeer.tray import audio_out
 
-    audio = _load_chime()
-    pa = pyaudio.PyAudio()
-    stream = pa.open(format=pyaudio.paInt16, channels=1, rate=SAMPLE_RATE, output=True)
-    try:
-        stream.write(audio.tobytes())
-    finally:
-        stream.stop_stream()
-        stream.close()
-        pa.terminate()
+    audio_out.play(_load_chime().tobytes(), rate=SAMPLE_RATE)
 
 
 class WakeWordListener:
@@ -356,7 +352,16 @@ class WakeWordListener:
                 and quiet_run >= INSTRUCTION_SILENCE_CHUNKS
             ):
                 break
-        return np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
+        if not frames:
+            return np.zeros(0, dtype=np.int16)
+
+        # Drop the trailing silence we deliberately waited through. Ending a
+        # recording takes ~1.2s of quiet by design, and transcribing that
+        # known-empty tail is pure delay between the user finishing and the
+        # action happening - Whisper's cost scales with audio length. A short
+        # margin is kept so a trailing consonant is never clipped.
+        keep = len(frames) - max(0, quiet_run - TRAILING_SILENCE_MARGIN_CHUNKS)
+        return np.concatenate(frames[:keep]) if keep > 0 else np.concatenate(frames)
 
     def start(
         self,

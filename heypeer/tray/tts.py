@@ -80,8 +80,23 @@ def _get_voice(voice_name: str = DEFAULT_VOICE_NAME):
 
 
 def preload() -> None:
-    """Loads the default Piper voice now instead of on first use."""
-    _get_voice()
+    """Loads the voice, warms up PortAudio, and synthesises one throwaway
+    phrase — all the one-off costs that would otherwise land on the first
+    thing Hey Peer says, which is exactly when the user is waiting."""
+    import io
+    import wave
+
+    from piper.config import SynthesisConfig
+
+    from heypeer.tray import audio_out
+
+    voice = _get_voice()
+    audio_out.warm_up()
+    try:
+        with wave.open(io.BytesIO(), "wb") as sink:
+            voice.synthesize_wav("Bonjour.", sink, syn_config=SynthesisConfig())
+    except Exception:
+        pass  # a warm-up failure must not stop the real thing from working
 
 
 def speak(text: str) -> None:
@@ -91,8 +106,9 @@ def speak(text: str) -> None:
     import io
     import wave
 
-    import pyaudio
     from piper.config import SynthesisConfig
+
+    from heypeer.tray import audio_out
 
     voice = _get_voice()
     config = SynthesisConfig(
@@ -114,20 +130,7 @@ def speak(text: str) -> None:
         rate = wav_file.getframerate()
 
     raw = _trim_silence(raw, sample_width)
-
-    pa = pyaudio.PyAudio()
-    stream = pa.open(
-        format=pa.get_format_from_width(sample_width),
-        channels=channels,
-        rate=rate,
-        output=True,
-    )
-    try:
-        stream.write(raw)
-    finally:
-        stream.stop_stream()
-        stream.close()
-        pa.terminate()
+    audio_out.play(raw, rate=rate, sample_width=sample_width, channels=channels)
 
 
 def _trim_silence(raw: bytes, sample_width: int) -> bytes:

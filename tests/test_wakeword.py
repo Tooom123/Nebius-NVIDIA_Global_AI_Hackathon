@@ -10,6 +10,7 @@ import soundfile as sf
 
 from heypeer.wakeword.listener import (
     CHUNK_SAMPLES,
+    INSTRUCTION_SILENCE_CHUNKS,
     SPEECH_THRESHOLD_MAX_DBFS,
     SPEECH_THRESHOLD_MIN_DBFS,
     CHIME_PATH,
@@ -267,23 +268,20 @@ def test_start_never_triggers_while_muted(
     on_detected.assert_not_called()
 
 
-def test_play_chime_writes_audio_to_output_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    from heypeer.wakeword.listener import _play_chime_blocking
+def test_play_chime_goes_through_the_shared_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Playback shares one PortAudio instance; constructing a new one per
+    chime and per spoken line was a few hundred ms of device enumeration
+    each time, heard as the voice arriving late."""
+    from heypeer.wakeword.listener import SAMPLE_RATE, _play_chime_blocking
 
-    fake_stream = MagicMock()
-    fake_pa = MagicMock()
-    fake_pa.open.return_value = fake_stream
-    fake_pyaudio_module = types.ModuleType("pyaudio")
-    fake_pyaudio_module.PyAudio = MagicMock(return_value=fake_pa)
-    fake_pyaudio_module.paInt16 = 8
-    monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
+    play_mock = MagicMock()
+    monkeypatch.setattr("heypeer.tray.audio_out.play", play_mock)
 
     _play_chime_blocking()
 
-    fake_pa.open.assert_called_once()
-    assert fake_pa.open.call_args.kwargs["output"] is True
-    fake_stream.write.assert_called_once()
-    fake_pa.terminate.assert_called_once()
+    play_mock.assert_called_once()
+    assert play_mock.call_args.kwargs["rate"] == SAMPLE_RATE
+    assert len(play_mock.call_args.args[0]) > 0
 
 
 def test_play_activation_chime_does_not_block_the_caller(
@@ -446,15 +444,44 @@ def test_record_instruction_survives_a_mid_sentence_pause(toy_model: Path) -> No
 
 
 def test_record_instruction_enforces_a_minimum_duration(toy_model: Path) -> None:
+    """The guarantee is about how long it *listens* - a slow start must not
+    truncate the instruction. It is not about the length returned, since
+    trailing silence is trimmed off before transcription."""
+    from heypeer.wakeword.listener import CHUNK_SAMPLES, INSTRUCTION_MIN_SECONDS, SAMPLE_RATE
+
     listener = WakeWordListener(str(toy_model))
     listener._prebuffer.extend([_quiet_chunk()] * 10)
     stream = _FakeStream([_loud_chunk()] * 4 + [_quiet_chunk()] * 60)
+    reads = {"n": 0}
+    real_read = stream.read
+
+    def counting_read(n, exception_on_overflow=False):
+        reads["n"] += 1
+        return real_read(n, exception_on_overflow)
+
+    stream.read = counting_read
+
+    listener._record_instruction(stream)
+
+    min_chunks = int(INSTRUCTION_MIN_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
+    assert reads["n"] >= min_chunks
+
+
+def test_record_instruction_trims_the_trailing_silence(toy_model: Path) -> None:
+    """Ending a recording waits through ~1.2s of quiet by design;
+    transcribing that known-empty tail is pure delay between the user
+    finishing and the action happening."""
+    listener = WakeWordListener(str(toy_model))
+    listener._prebuffer.extend([_quiet_chunk()] * 10)
+    speech_chunks = 8
+    stream = _FakeStream([_loud_chunk()] * speech_chunks + [_quiet_chunk()] * 60)
 
     audio = listener._record_instruction(stream)
 
-    from heypeer.wakeword.listener import INSTRUCTION_MIN_SECONDS, SAMPLE_RATE
-
-    assert len(audio) >= INSTRUCTION_MIN_SECONDS * SAMPLE_RATE * 0.9
+    # The speech survives, plus a small margin - but not the whole silent
+    # tail that end-pointing sat through.
+    assert len(audio) >= CHUNK_SAMPLES * speech_chunks
+    assert len(audio) < CHUNK_SAMPLES * (speech_chunks + INSTRUCTION_SILENCE_CHUNKS)
 
 
 def test_chime_asset_exists_and_is_loadable() -> None:
