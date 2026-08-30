@@ -1437,6 +1437,44 @@ unlikely, the instruction makes it rarer, normalisation catches what still
 gets through, and round 16's unfailing `_log` means even that cannot crash
 anything.
 
+### Round 18: latency — the voice arriving late (2026-08-30)
+
+Everything works; the complaint is timing, with the spoken narration the
+worst of it.
+
+- [x] **PortAudio was being initialised once per utterance.** Both
+      `tts.speak` and `play_activation_chime` constructed their own
+      `pyaudio.PyAudio()`, played, then `terminate()`d. That constructor
+      initialises PortAudio and enumerates the host API's devices — a few
+      hundred milliseconds on Windows, sometimes more — and it sat squarely
+      between deciding what to say and the first sample coming out, which is
+      exactly what "the voice arrives late" describes.
+      New `heypeer/tray/audio_out.py` holds one process-wide instance and
+      serves both callers. Streams are still opened per playback: that is far
+      cheaper than initialising PortAudio, and keeping an output stream open
+      would claim the device for no reason. Playback is serialised with a
+      lock, since the chime plays from the audio thread and speech from the
+      turn handler and PortAudio is not reliably safe across concurrent
+      stream operations — they don't overlap in practice, so this costs
+      nothing.
+      **Not measurable here** (no audio device in this sandbox, pyaudio isn't
+      even installable), so this is reasoned from the API's documented
+      behaviour rather than profiled. The user's ear is the measurement.
+- [x] **TTS warm-up on preload**: the voice was loaded ahead of time but the
+      first `synthesize_wav` and the first PortAudio init still landed on the
+      first thing Hey Peer said. `preload()` now also warms PortAudio and
+      synthesises one throwaway phrase.
+- [x] **Stop transcribing silence we chose to wait through.** End-pointing
+      holds on for ~1.2s of quiet before deciding the instruction is over,
+      and that silence was then handed to Whisper, whose cost scales with
+      audio length. `_record_instruction` now trims the trailing quiet
+      before returning, keeping a 3-chunk margin so a soft final consonant is
+      never clipped.
+      Adjusting the trailing-silence *threshold* was the other option and was
+      deliberately not taken: 0.8s is the value that cut real instructions in
+      half two rounds ago, and trimming afterwards gets the latency back
+      without reopening that.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
