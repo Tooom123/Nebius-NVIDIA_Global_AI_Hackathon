@@ -30,6 +30,13 @@ from heypeer.wakeword.listener import CHUNK_SAMPLES, CLIP_SECONDS, SAMPLE_RATE
 
 THRESHOLDS = (0.3, 0.4, 0.5, 0.55, 0.6, 0.7, 0.8, 0.9, 0.95)
 
+# Evaluating on the *user's own* clips is what matters — a model can look
+# perfect on synthetic data and still fail on the voice it will actually
+# hear. Defaults point there so no paths need typing.
+_SAMPLES = Path("data/wakeword/samples")
+DEFAULT_POSITIVE_DIRS = [_SAMPLES / "positive_user"]
+DEFAULT_NEGATIVE_DIRS = [_SAMPLES / "negative_user"]
+
 
 def peak_score(path: Path, session, features: AudioFeatures, n_frames: int) -> float:
     """Highest score the live listener would reach anywhere in this clip.
@@ -103,15 +110,27 @@ def report(positive_scores: "list[float]", negative_scores: "list[float]") -> No
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, default=Path("data/wakeword/hey_peer.onnx"))
-    parser.add_argument("--positive-dir", type=Path, required=True, action="append")
-    parser.add_argument("--negative-dir", type=Path, required=True, action="append")
+    parser.add_argument("--positive-dir", type=Path, action="append")
+    parser.add_argument("--negative-dir", type=Path, action="append")
     args = parser.parse_args()
+
+    positive_dirs = args.positive_dir or [d for d in DEFAULT_POSITIVE_DIRS if d.is_dir()]
+    negative_dirs = args.negative_dir or [d for d in DEFAULT_NEGATIVE_DIRS if d.is_dir()]
+    if not positive_dirs or not negative_dirs:
+        raise SystemExit(
+            "No recordings of your voice to evaluate against. Record them with:\n"
+            "  python -m heypeer.wakeword.record_samples"
+        )
+    if not args.model.is_file():
+        raise SystemExit(f"No model at {args.model} — train one first.")
 
     session = ort.InferenceSession(str(args.model), providers=["CPUExecutionProvider"])
     n_frames = AudioFeatures().get_embedding_shape(CLIP_SECONDS)[0]
 
-    positives = [s for d in args.positive_dir for s in score_directory(d, session, n_frames)]
-    negatives = [s for d in args.negative_dir for s in score_directory(d, session, n_frames)]
+    print(f"Scoring against {args.model} (this runs the real streaming path, so it "
+          "takes a moment)...")
+    positives = [s for d in positive_dirs for s in score_directory(d, session, n_frames)]
+    negatives = [s for d in negative_dirs for s in score_directory(d, session, n_frames)]
     report(positives, negatives)
 
 

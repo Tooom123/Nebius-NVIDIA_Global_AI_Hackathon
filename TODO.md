@@ -1272,6 +1272,16 @@ window all exist.
 The user's recordings stay local — `data/wakeword/samples/` is gitignored,
 so a personalised model never puts someone's voice in the repository.
 
+Usability fix after the first real attempt: passing four long paths by hand
+failed immediately, and in a way that was easy to misdiagnose — on Git Bash
+`data\wakeword\...` loses its backslashes (escape characters there), so the
+error read "No wav files found in datawakewordsamplespositive_user" and
+looked like missing recordings rather than a mangled path. Both `train` and
+`evaluate` now default to the conventional sample directories, using
+whichever exist, so the whole retraining flow needs no path arguments at
+all; and a missing directory is now reported as such, separately from an
+empty one, with a hint about separators.
+
 Once the user has recorded and retrained, the threshold should be re-chosen
 from `evaluate`'s table rather than kept at today's deliberately permissive
 0.55, and the cascade's second stage can likely be relaxed too.

@@ -239,16 +239,14 @@ over-fires and occasionally misses. Recording ~40 samples of your own voice fixe
 the cause rather than compensating for it:
 
 ```bash
-python -m heypeer.wakeword.record_samples          # guided; ~5 minutes
-python -m heypeer.wakeword.train \
-    --positive-dir data/wakeword/samples/positive_user \
-    --positive-dir data/wakeword/samples/positive_augmented \
-    --negative-dir data/wakeword/samples/negative_user \
-    --negative-dir data/wakeword/samples/negative_noise
-python -m heypeer.wakeword.evaluate \
-    --positive-dir data/wakeword/samples/positive_user \
-    --negative-dir data/wakeword/samples/negative_user
+python -m heypeer.wakeword.record_samples   # guided; ~5 minutes
+python -m heypeer.wakeword.train            # picks up the standard sample dirs
+python -m heypeer.wakeword.evaluate         # scores the new model on your voice
 ```
+
+No paths needed — all three default to the conventional sample directories and
+use whichever exist. (`--positive-dir`/`--negative-dir` are still there, and are
+repeatable, if you keep samples somewhere else.)
 
 The recorder asks for two sets, and the second matters as much as the first: the
 wake word itself, and **the same voice saying other things** — near-misses ("Hey
@@ -284,7 +282,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 203 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 207 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
