@@ -26,7 +26,12 @@ import onnxruntime as ort
 import soundfile as sf
 from openwakeword.utils import AudioFeatures
 
-from heypeer.wakeword.listener import CHUNK_SAMPLES, CLIP_SECONDS, SAMPLE_RATE
+from heypeer.wakeword.listener import (
+    CHUNK_SAMPLES,
+    CLIP_SECONDS,
+    SAMPLE_RATE,
+    default_model_path,
+)
 
 THRESHOLDS = (0.3, 0.4, 0.5, 0.55, 0.6, 0.7, 0.8, 0.9, 0.95)
 
@@ -177,7 +182,9 @@ def report(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, default=Path("data/wakeword/hey_peer.onnx"))
+    # Same preference as the runtime, so this scores whichever model the app
+    # would actually load.
+    parser.add_argument("--model", type=Path, default=default_model_path())
     parser.add_argument("--positive-dir", type=Path, action="append")
     parser.add_argument("--negative-dir", type=Path, action="append")
     args = parser.parse_args()

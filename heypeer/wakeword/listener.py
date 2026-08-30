@@ -520,6 +520,23 @@ class WakeWordListener:
         self._running = False
 
 
+WAKEWORD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "wakeword"
+# A model trained on this machine's own voice. Gitignored, so it stays with
+# the person who recorded it.
+USER_MODEL_PATH = WAKEWORD_DIR / "hey_peer_user.onnx"
+# The generic model shipped in the repository, trained on synthetic speech.
+# Works for anyone, well for no one — a fresh clone has something that runs.
+SHIPPED_MODEL_PATH = WAKEWORD_DIR / "hey_peer.onnx"
+
+
 def default_model_path() -> Path:
-    """Path to the trained "Hey Peer" model, once `train.py` has produced one."""
-    return Path(__file__).resolve().parent.parent.parent / "data" / "wakeword" / "hey_peer.onnx"
+    """The personalised model if this machine has one, else the shipped one.
+
+    Kept as two files rather than one: training used to overwrite the
+    committed generic model, which meant a personalised run silently changed
+    a tracked file, and pulling or checking it out would clobber someone's
+    own model. Preferring the personal one at load time gives both — a fresh
+    clone still runs, and whoever records their voice gets their own model
+    used automatically with nothing to configure.
+    """
+    return USER_MODEL_PATH if USER_MODEL_PATH.is_file() else SHIPPED_MODEL_PATH

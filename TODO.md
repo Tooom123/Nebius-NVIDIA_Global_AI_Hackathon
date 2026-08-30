@@ -1365,6 +1365,25 @@ recording), and one negative reaches 0.97 while the rest sit near 0.17.
       difference between "some negative is confusable" and "it struggles with
       'Hey Pierre', record a few more of those".
 
+### Round 15: keep the personal model out of the repository (2026-08-30)
+
+Prompted by the user asking whether to push their recordings. The answer was
+no — `data/wakeword/samples/` was already gitignored — but the question
+surfaced a real problem behind it: `train` wrote to
+`data/wakeword/hey_peer.onnx`, which **is** tracked. So a personalised run
+silently modified a committed file, and a later pull or checkout would
+clobber the model someone had just trained on their own voice. (I hit this
+myself while testing and had to restore it.)
+
+- [x] Training now writes `data/wakeword/hey_peer_user.onnx`, already covered
+      by the existing `data/wakeword/*.onnx` ignore rule.
+- [x] `default_model_path()` prefers the personal model when present and
+      falls back to the shipped generic one. Two files rather than one gives
+      both properties: a fresh clone runs, and whoever records their voice
+      gets their own model used automatically with nothing to configure.
+- [x] `evaluate` defaults to the same resolution, so it scores whichever
+      model the app would actually load rather than a fixed path.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

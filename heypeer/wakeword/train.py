@@ -261,7 +261,11 @@ def main() -> None:
              "higher. Defaults to the standard sample directories that exist.",
     )
     parser.add_argument("--negative-dir", type=Path, action="append")
-    parser.add_argument("--out", type=Path, default=Path("data/wakeword/hey_peer.onnx"))
+    parser.add_argument(
+        "--out", type=Path, default=Path("data/wakeword/hey_peer_user.onnx"),
+        help="defaults to the personal model path, which is gitignored and "
+             "takes precedence at runtime over the shipped generic model",
+    )
     args = parser.parse_args()
 
     positive_dirs = args.positive_dir or _default_dirs(DEFAULT_POSITIVE_DIRS)
@@ -280,6 +284,8 @@ def main() -> None:
     clf, input_dim = train(positive_dirs, negative_dirs)
     export_onnx(clf, input_dim, args.out)
     print(f"\nTrained classifier on {input_dim}-dim embeddings, exported to {args.out}")
+    print("This is your personal model. It is gitignored and is picked up")
+    print("automatically in preference to the generic one in the repository.")
     print("\nCheck it on your own voice with:")
     print("  python -m heypeer.wakeword.evaluate")
 

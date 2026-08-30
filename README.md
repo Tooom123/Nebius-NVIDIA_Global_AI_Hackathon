@@ -258,8 +258,18 @@ anything you say.
 
 `evaluate` runs each clip through the recognizer the way the live listener does
 (streaming, peak score) and prints recall against false-accept rate per
-threshold, so you can pick `HEYPEER_WAKEWORD_THRESHOLD` from measurements. Your
-recordings stay on your machine — `data/wakeword/samples/` is gitignored.
+threshold, so you can pick `HEYPEER_WAKEWORD_THRESHOLD` from measurements. It
+also names the clips holding the model back — the lowest-scoring positives
+(usually a bad take worth deleting) and the highest-scoring negatives, with the
+phrase each one was.
+
+**Nothing personal is committed.** Your recordings
+(`data/wakeword/samples/`) and your trained model
+(`data/wakeword/hey_peer_user.onnx`) are both gitignored. Training writes to
+that personal path, and the runtime prefers it over the generic
+`hey_peer.onnx` that ships with the repository — so your model is picked up
+automatically, a fresh clone still works without one, and neither can
+overwrite the other.
 
 To regenerate the synthetic part of the training set (voices aren't committed — download them first):
 
@@ -284,7 +294,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 215 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 218 tests): wake-word
 training/inference, activity capture, file-move capture/detection/replay for the
 demo scenario, pattern detection, the Nemotron client (**verified against the live
 Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
