@@ -1593,6 +1593,34 @@ deformations and the glow still fit; a halo clipped by the edge of the bitmap
 would show as a straight line across it. Asserted for every state at full
 level.
 
+### Round 22: a one-line import that segfaulted the app (2026-08-30)
+
+`python -m heypeer.main --cli` died with `Segmentation fault` — a native
+crash, not a Python exception. Cause: in the previous round I added
+
+    from heypeer.wakeword.listener import FOLLOWUP_WINDOW_SECONDS
+
+at module level, to reuse one constant. `listener` pulls **onnxruntime and
+openwakeword**, and `heypeer.main` is re-imported inside the overlay's child
+process by multiprocessing's spawn — so those native runtimes were being
+loaded twice, in two processes, alongside PortAudio and GDI. It also undid
+round 9's lazy-import work: startup went from 0.44s to **1.03s**.
+
+- [x] Import moved inside `_arm_followup`, where it is used. Startup back to
+      0.48s, and neither runtime is loaded until voice actually starts.
+- [x] **`tests/test_startup_imports.py`** asserts that importing
+      `heypeer.main` — and separately the overlay module, which the child
+      re-imports — pulls in none of onnxruntime, openwakeword, faster_whisper
+      or piper. Verified the guard by reintroducing the bad import: it fails
+      with the offending names.
+
+Worth recording why this slipped through: an import line is invisible in
+review, costs nothing locally where the libraries are already warm, and
+fails on someone else's machine as a crash with no traceback. The project
+had already decided these imports must be lazy (round 9, for startup time);
+what it lacked was anything that would *notice* when that decision was
+quietly reversed. That is now a test rather than a habit.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

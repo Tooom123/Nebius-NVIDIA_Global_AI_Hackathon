@@ -71,7 +71,6 @@ from heypeer.patterns.memory import SkillMemory
 from heypeer.tray.app import Status, TrayApp
 from heypeer.tray.cursor import CursorIndicator
 from heypeer.tray.debug_window import DebugWindow
-from heypeer.wakeword.listener import FOLLOWUP_WINDOW_SECONDS
 
 GetInstruction = Callable[[], str]
 
@@ -367,6 +366,14 @@ class HeyPeer:
         is precisely still open and waiting for an answer."""
         if self._wake_listener is None:
             return
+        # Imported here, not at module level. `listener` pulls onnxruntime and
+        # openwakeword, and this module is re-imported in the overlay's child
+        # process by multiprocessing's spawn - so a top-level import loaded
+        # those native runtimes twice, in two processes, alongside PortAudio
+        # and GDI. That segfaulted the app on Windows, and cost 0.6s of
+        # startup besides.
+        from heypeer.wakeword.listener import FOLLOWUP_WINDOW_SECONDS
+
         self._wake_listener.arm_followup()
         self._followup_generation += 1
         generation = self._followup_generation
