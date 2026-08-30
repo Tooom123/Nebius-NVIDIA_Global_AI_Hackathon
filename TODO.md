@@ -1621,6 +1621,41 @@ had already decided these imports must be lazy (round 9, for startup time);
 what it lacked was anything that would *notice* when that decision was
 quietly reversed. That is now a test rather than a habit.
 
+### Round 23: cut the app back to voice-to-action (2026-08-30)
+
+Reported: the cursor colouring is unwanted, the program feels slower, the
+blob still doesn't move while speaking, recording should not begin until the
+blob has arrived, and all the skills/monitoring machinery should go.
+
+- [x] **Deleted skill learning and activity monitoring outright** — not
+      disabled behind a flag this time. Gone: `heypeer/patterns/` (detector,
+      memory, skill), `heypeer/capture/` (input hooks, active-window polling,
+      file watching), `SkillRunner` and its pyautogui replay, the `run_skill`
+      intent branch, and the `learn_skills`/`capture_input` settings. Five
+      test modules went with them.
+      Also dropped five dependencies that nothing imports any more: pynput,
+      pywinctl, watchdog, pyautogui, opencv-python.
+- [x] **Removed the coloured mouse cursor** (`heypeer/tray/cursor.py`), which
+      was several hundred lines of win32 bitmap surgery serving one visual
+      hint the user did not want.
+- [x] **Recording now starts only once the indicator is on screen.** This was
+      also the answer to "it doesn't move when I speak": verification used to
+      run *concurrently* with recording, so the chime and the blob only
+      appeared once recording was already well under way — by which point the
+      user had usually finished the sentence. The blob genuinely never had
+      any voice left to react to.
+      Now sequential: verify -> chime and blob together -> wait out the
+      slide -> record. The cue means "speak now", which is both what was
+      asked for and how a responsive assistant behaves. Under test.
+      The concurrent design existed to avoid losing a few hundred
+      milliseconds of speech for users who run the wake word straight into
+      the instruction. That trade was wrong: it bought audio nobody could use
+      and cost the entire visual feedback loop.
+
+Startup is 0.49s with none of onnxruntime, openwakeword, pynput, pywinctl,
+watchdog or pyautogui loaded. Verified a full turn end to end afterwards,
+including "bouge 4 vers test" (the synonym from last round) and undo.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

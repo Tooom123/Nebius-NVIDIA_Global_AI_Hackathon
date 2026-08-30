@@ -364,7 +364,7 @@ def test_start_suppresses_detection_when_verification_rejects(
     on_detected.assert_not_called()
 
 
-def test_start_treats_a_failing_verifier_as_accepted(
+def test_start_treats_a_failing_verifier_as_accepted(  # noqa: D401
     monkeypatch: pytest.MonkeyPatch, toy_model: Path
 ) -> None:
     """A broken verifier (missing model, transcription error) must not make
@@ -381,15 +381,6 @@ def test_start_treats_a_failing_verifier_as_accepted(
 
     on_detected.assert_called_once()
 
-
-def test_record_instruction_aborts_when_asked(toy_model: Path) -> None:
-    listener = WakeWordListener(str(toy_model))
-    listener._prebuffer.extend([_quiet_chunk()] * 10)
-    stream = _FakeStream([_loud_chunk()] * 200)
-
-    audio = listener._record_instruction(stream, should_abort=lambda: True)
-
-    assert len(audio) == 0
 
 
 def test_speech_threshold_tracks_the_noise_floor() -> None:
@@ -567,3 +558,45 @@ def test_muted_loop_keeps_the_feature_buffer_moving(toy_model: Path) -> None:
         listener.process_chunk(np.zeros(CHUNK_SAMPLES, dtype=np.int16))
 
     assert listener._score() < scored_hot
+
+
+def test_recording_starts_only_after_the_indicator_has_appeared(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """Regression test: verification used to run *alongside* recording, so the
+    chime and the blob only appeared once recording was well under way - the
+    user had usually finished speaking by the time the blob arrived, and it
+    never seemed to react to their voice. Cue first, then listen."""
+    listener = WakeWordListener(str(toy_model), threshold=0.0)
+    listener._prebuffer.extend([_loud_chunk()] * 5)
+    order = []
+
+    def verify(_pre):
+        order.append("cue")
+        return True
+
+    original_record = listener._record_instruction
+
+    def record(*args, **kwargs):
+        order.append("record")
+        return original_record(*args, **kwargs)
+
+    listener._record_instruction = record
+    _fake_mic(monkeypatch, listener, [_quiet_chunk()], stop_after=2)
+
+    listener.start(on_detected=MagicMock(), on_verify=verify, ready_delay=0.0)
+
+    assert order == ["cue", "record"]
+
+
+def test_a_rejected_trigger_never_records(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    listener = WakeWordListener(str(toy_model), threshold=0.0)
+    listener._prebuffer.extend([_loud_chunk()] * 5)
+    listener._record_instruction = MagicMock()
+    _fake_mic(monkeypatch, listener, [_quiet_chunk()], stop_after=2)
+
+    listener.start(on_detected=MagicMock(), on_verify=lambda _pre: False)
+
+    listener._record_instruction.assert_not_called()
