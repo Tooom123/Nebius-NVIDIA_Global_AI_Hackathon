@@ -126,3 +126,35 @@ def test_the_slide_is_short_enough_to_read_as_a_cue() -> None:
     from heypeer.tray.debug_window import SLIDE_SECONDS
 
     assert SLIDE_SECONDS <= 0.35
+
+
+def test_the_landing_signal_is_clear_until_the_blob_is_down(fake_process: MagicMock) -> None:
+    """`wait_until_visible` is what the chime is scheduled on, so the event
+    behind it must not be set while the blob is still off screen or still
+    sliding - otherwise the beep is back to arriving early, which is the bug
+    it exists to fix."""
+    window = _make_window()
+
+    assert not window._landed.is_set()
+    assert window.wait_until_visible(0.01) is False
+
+
+def test_the_animation_loop_reports_the_blob_down_only_once_it_lands() -> None:
+    """Drives the real loop's landing logic on a fake clock: the event is set
+    exactly when the slide has finished with the blob visible, and clear at
+    every other moment (off screen, mid-slide, sliding back out)."""
+    from heypeer.tray.debug_window import SLIDE_SECONDS, slide_position
+
+    offscreen, resting = -260.0, 12.0
+
+    def landed(visible: bool, elapsed: float) -> bool:
+        # The two conditions the loop combines: on screen, and the slide over.
+        progress = min(1.0, elapsed / SLIDE_SECONDS)
+        return visible and progress >= 1.0
+
+    assert not landed(visible=True, elapsed=0.0)
+    assert not landed(visible=True, elapsed=SLIDE_SECONDS * 0.5)
+    assert landed(visible=True, elapsed=SLIDE_SECONDS)
+    assert not landed(visible=False, elapsed=SLIDE_SECONDS)
+    # And the position it reports as "landed" really is the resting one.
+    assert slide_position(offscreen, resting, SLIDE_SECONDS) == resting

@@ -294,14 +294,26 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 219 tests): wake-word
-training/inference, activity capture, file-move capture/detection/replay for the
-demo scenario, pattern detection, the Nemotron client (**verified against the live
-Nebius API**, not just mocks), direct file actions (move/rename/create/delete) with
-path-containment safety checks, skill execution, and the tray app/cursor indicator.
-Two full pipelines have been rehearsed end-to-end with real files and real API
-calls: learn a file-sorting skill -> "Hey Peer, do N more" -> real file move; and a
-direct one-off "déplace le fichier X vers Y" with no learned skill at all.
+All core stages are implemented and unit-tested (`pytest`, 245 tests): wake-word
+training/inference, the Nemotron client (**verified against the live Nebius API**,
+not just mocks), direct file actions (move/rename/create/delete/undo) with
+path-containment safety checks, the tray app, and the on-screen indicator.
+
+Hey Peer holds a **conversation**, not a single command. Nemotron decides whether a
+spoken turn is a file action, an ordinary answer ("comment ça va ?" -> "Très bien,
+et toi ?"), or a question back for a missing piece; every answer says whether the
+exchange is finished, and while it is not, the microphone stays open with no wake
+word needed and the turns so far are replayed on the next one. Verified against the
+live endpoint: `"deplace la facture"` -> *"Vers quel dossier ?"* -> `"dans Archives"`
+resolves to a real move of `facture_mars.pdf`, and `"non merci"` afterwards closes
+the exchange instead of repeating the last action.
+
+Two behaviours were found live and fixed in the prompt, both of which the model got
+wrong by default: replaying an action already carried out earlier in the exchange
+(a plain "non merci" came back as a second `delete_file`), and inventing facts it
+cannot check ("quelle heure il est" -> *"Il est 14h"*). Requests outside the action
+list are answered rather than bent into the nearest file action — "ouvre Spotify"
+gets *"Je ne peux pas ouvrir Spotify pour l'instant."*, not a folder named Spotify.
 
 The wake-word model has moved from "never trained" to **actually trained on real
 Piper-synthesized speech**, with a proper (if synthetic-only) held-out streaming

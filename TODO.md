@@ -1741,6 +1741,97 @@ between components needs a test that instantiates it, because a name that
 only resolves at call time, on a background thread, will otherwise be found
 by the user rather than by me.
 
+### Round 27: a conversation, a sphere, and the first "Hey Peer" (2026-08-30)
+
+Three reports: the first activation after launch is usually missed, the beep
+still arrives before the blob, and the blob is well animated but flat - "je ne
+percois pas vraiment de profondeur spherique". Plus a direction for the
+system prompt: Hey Peer will grow to dozens of use cases, including questions
+that have nothing to do with the computer, so a turn has to be *interpreted*
+into "act" or "answer", and an exchange should end when the discussion is
+over or the task is done - the way Siri and Alexa handle it.
+
+**The first "Hey Peer" was not missed. It was answered several seconds late.**
+Verification runs on the microphone thread, and Whisper's verification model
+is still loading in the background for the first several seconds after
+launch. Asking a cold model to transcribe there did not merely add latency:
+it stopped the mic being read for the whole load, so Hey Peer was deaf
+exactly while the user was speaking to it, then finally responded long after
+they had repeated themselves.
+
+- [x] `stt.is_loaded()`, and `_verify_wake_word` skips verification rather
+      than waiting when the model is cold. The detector's own judgement
+      stands for that one activation; the full-transcript check in
+      `_interpret_audio` still rejects it if the wake word was not there.
+- [x] A lock around model construction - `preload` and the wake thread could
+      previously build the same WhisperModel simultaneously, on the machine
+      that was trying to answer a wake word.
+- [x] "Hey Peer est pret" printed when the models finish warming, so that
+      window is visible rather than inferred from odd behaviour.
+
+**The beep was scheduled off a duration that could not know the answer.** The
+slide is 0.28s, so the chime was fired 0.30s after asking for the blob. But
+the slide only *starts* once the overlay process has woken from its queue and
+drawn a frame - the real time to "on screen" is that wake-up plus the slide,
+which is routinely more than 0.30s.
+
+- [x] The overlay child now sets a `multiprocessing.Event` while the blob is
+      fully down, and `DebugWindow.wait_until_visible` waits on it.
+      `_on_ready_to_listen` waits for the real landing, then chimes. The
+      listener's `ready_delay` argument is gone: a fixed duration was the
+      wrong shape of answer.
+- [x] A stalled overlay costs a visual, not a turn - it chimes anyway after
+      0.8s.
+
+**Flat because the shading was painted in frame space.** The colour was a
+radial gradient measured from a fixed point on the *bitmap*, cached because
+it depended on nothing that moved. A disc with a gradient on it.
+
+- [x] Rewrote it around a **surface normal**. The blob is treated as a sphere
+      whose silhouette is the animated outline; the normal gives diffuse
+      shading (the hue itself follows the light, so the ramp wraps round the
+      form), a tight Blinn-Phong specular, a Fresnel rim, and ambient
+      occlusion for the dark shoulder between the lit face and the glowing
+      edge. 3.8ms/frame, 11% of the 30fps budget.
+- [x] The rim is a hue-preserving lift, not a blend toward cyan. Blending
+      repainted the shadowed silhouette the colour of the lit one, which was
+      most of why the blob still read as uniformly blue: violet went from a
+      thin crescent to 27% of the body.
+- [x] Five tests for the depth, including that the highlight sits at the same
+      place *on the sphere* at any radius - which the old frame-space
+      gradient fails by construction.
+
+**From command line to conversation.** New `reply` action and an `end_turn`
+flag on every answer; `HeyPeer` keeps the exchange's turns and replays them,
+clearing them when it closes. `ask` holds the exchange open regardless of
+what the model says, since a question that ends the turn is self-contradictory.
+The prompt is reorganised around deciding *what kind of turn this is* before
+choosing a form, and states plainly that the action list will grow and that
+anything unsupported must be answered, never bent into the nearest file
+action.
+
+Two failures found against the **live endpoint**, not by reading the prompt:
+
+- With "supprime le 15" in the history, a plain "non merci" came back as
+  `delete_file 15.txt` **again** - the sign-off read as a repeat of the last
+  command. The conversation memory had introduced a way to perform an action
+  twice that nobody asked for once. Fixed by stating that the history is
+  context and not a queue of work, and that only the newest turn can request
+  an action.
+- "quelle heure il est" -> *"Il est 14h"*, invented. It has no clock. Fixed by
+  naming what it cannot see and saying that making one up is worse than
+  admitting it.
+
+Both now behave, verified live, along with "ouvre Spotify" -> *"Je ne peux pas
+ouvrir Spotify pour l'instant."* and the three-turn continuation
+`"deplace la facture"` / *"Vers quel dossier ?"* / `"dans Archives"` ->
+a real move of `facture_mars.pdf`.
+
+The lesson worth keeping: the two real bugs this round were both in the
+*model's* behaviour, and neither was visible from the prompt text or from any
+mock. Exercising the live endpoint across a handful of adversarial turns took
+two minutes and found both.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

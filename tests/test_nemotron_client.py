@@ -361,3 +361,103 @@ def test_prompt_states_that_verbs_are_examples_not_a_vocabulary() -> None:
     assert "examples, not a vocabulary" in SYSTEM_PROMPT
     for synonym in ("bouge", "mets", "range", "vire", "efface", "rebaptise"):
         assert synonym in SYSTEM_PROMPT
+
+
+def test_a_conversational_reply_is_parsed(monkeypatch) -> None:
+    from heypeer.nemotron.client import _parse_intent
+
+    intent = _parse_intent(
+        '{"action": "reply", "speech": "Tres bien, et toi ?", "end_turn": false}'
+    )
+
+    assert intent.action == "reply"
+    assert intent.speech == "Tres bien, et toi ?"
+    assert intent.end_turn is False
+
+
+def test_a_missing_end_turn_closes_the_exchange() -> None:
+    """An open exchange keeps the microphone live with no wake word gating
+    it, so that is the state a malformed or older answer must never fall
+    into by omission."""
+    from heypeer.nemotron.client import _parse_intent
+
+    assert _parse_intent('{"action": "reply", "speech": "ok"}').end_turn is True
+    assert _parse_intent('{"action": "reply", "end_turn": "yes"}').end_turn is True
+    assert _parse_intent("not json at all").end_turn is True
+    assert _parse_intent(None).end_turn is True
+
+
+def test_spoken_text_gets_the_same_punctuation_treatment_as_a_question() -> None:
+    """`speech` is read aloud and printed to the same console a non-breaking
+    hyphen once crashed."""
+    from heypeer.nemotron.client import _parse_intent
+
+    intent = _parse_intent('{"action": "reply", "speech": "C\\u2019est fait \\u2014 voila"}')
+
+    assert intent.speech == "C'est fait - voila"
+
+
+def test_the_exchange_so_far_is_sent_between_the_system_prompt_and_the_turn() -> None:
+    """Order matters: the model has to read the rules, then the conversation,
+    then what was just said."""
+    from unittest.mock import MagicMock
+
+    from heypeer.config import Settings
+    from heypeer.nemotron.client import SYSTEM_PROMPT, NemotronClient
+
+    client = NemotronClient(
+        Settings(nebius_api_key="k", nebius_base_url="u", nemotron_model_id="m")
+    )
+    client._openai_client = MagicMock()
+    client._openai_client.chat.completions.create.return_value.choices = [
+        MagicMock(message=MagicMock(content='{"action": "unknown"}'))
+    ]
+
+    client.interpret_text(
+        "et dans Archives du coup ?",
+        [],
+        history=[
+            {"role": "user", "content": "deplace facture"},
+            {"role": "assistant", "content": "Vers quel dossier ?"},
+        ],
+    )
+
+    messages = client._openai_client.chat.completions.create.call_args.kwargs["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert messages[0]["content"] == SYSTEM_PROMPT
+    assert "et dans Archives du coup ?" in messages[-1]["content"]
+
+
+def test_the_prompt_tells_the_model_to_answer_rather_than_guess_an_action() -> None:
+    """The single most dangerous failure mode as the action list grows: an
+    unsupported request ("ouvre Spotify") bent into the nearest file action,
+    which touches the user's files. The instruction against it has to be in
+    the prompt, not just in the reviewer's head."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    assert '"reply"' in SYSTEM_PROMPT
+    assert "do NOT invent an action name" in SYSTEM_PROMPT
+    assert "end_turn" in SYSTEM_PROMPT
+
+
+def test_the_prompt_forbids_replaying_an_action_from_earlier_in_the_exchange() -> None:
+    """Found against the live endpoint, and it is the worst thing the new
+    conversation memory can do: with "supprime le 15" in the history, a plain
+    "non merci" came back as delete_file 15.txt again - the sign-off read as
+    a repeat of the last command. Confirmed fixed by the instruction this
+    asserts is present."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    assert "never repeat an action that\nappears there" in SYSTEM_PROMPT
+    assert "Only the newest turn can request an action" in SYSTEM_PROMPT
+
+
+def test_the_prompt_forbids_inventing_facts_it_cannot_check() -> None:
+    """Also found live: "quelle heure il est" came back as "Il est 14h",
+    invented - the model has no clock, and a made-up answer is
+    indistinguishable to the user from a real one. Now it says it cannot
+    check."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    assert "You cannot see the" in SYSTEM_PROMPT
+    assert "Making one up is worse than saying so" in SYSTEM_PROMPT

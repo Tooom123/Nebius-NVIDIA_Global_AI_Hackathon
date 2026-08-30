@@ -1,11 +1,34 @@
 """Entry point wiring Hey Peer together.
 
-Flow: the wake word fires, its audio is verified, the indicator drops in,
-the spoken instruction is recorded and transcribed locally, and Nemotron
-turns it into one file action - move, rename, create, delete or undo -
-which runs immediately. There is no confirmation step; undo and the
-watched-directory containment check in `executor/runner.py` are what replace
-it.
+Flow, in the order the user experiences it: the wake word fires, its audio is
+verified, the indicator drops in, a chime confirms it is listening, the spoken
+turn is recorded and transcribed locally, and Nemotron interprets it. Each
+step waits for the one before - in particular the chime waits for the blob to
+actually be on screen (`_on_ready_to_listen`), because the two together are
+the "speak now" signal and a beep that arrives first is worse than no beep.
+
+## A conversation, not a command line
+
+Nemotron decides what kind of turn it was. Most are one file action - move,
+rename, create, delete or undo - which runs immediately: there is no
+confirmation step, and undo plus the watched-directory containment check in
+`executor/runner.py` are what replace it. But a turn can equally be ordinary
+conversation ("comment ca va ?"), or a question back when something is
+missing ("vers quel dossier ?").
+
+What ties those together is that an exchange has a *length*. Every answer
+says whether it is finished; while it is not, the microphone stays open with
+no wake word needed and what has been said so far is replayed to Nemotron on
+the next turn. So "deplace facture" / "vers quel dossier ?" / "Archives"
+works, and so does small talk that runs a few turns. The exchange ends when
+the model says it has, when the task is done, or when the window closes with
+nobody saying anything - and its history is dropped with it, so the next
+"Hey Peer" starts clean.
+
+The action list is deliberately open-ended: it will grow well past file
+operations. The prompt's standing instruction is that anything it cannot do
+is *answered*, never bent into the nearest action it does have - guessing at
+an action nobody asked for is the one failure here that touches real files.
 
 Hey Peer used to also watch mouse and keyboard activity, learn repeated
 sequences as replayable "skills", and offer them to Nemotron. That is all
@@ -48,18 +71,31 @@ from heypeer.executor.runner import (
     resolve_existing_filename,
 )
 from heypeer.nemotron.client import NemotronClient
-from heypeer.nemotron.intent import Intent
+from heypeer.nemotron.intent import SPOKEN_ACTIONS, Intent
 from heypeer.tray.app import Status, TrayApp
 from heypeer.tray.debug_window import DebugWindow
 
 GetInstruction = Callable[[], str]
 
-# Matches the indicator's slide (see debug_window.SLIDE_SECONDS). Recording
-# waits this out so the
-# blob is on screen before Hey Peer starts listening - otherwise the user is
-# already mid-sentence by the time the cue appears, and the shape never seems
-# to react to their voice.
-INDICATOR_SLIDE_SECONDS = 0.30
+# Longest Hey Peer will wait for the indicator to finish dropping in before
+# chiming anyway. The wait itself is not timed - the overlay process says
+# when the blob has actually landed (see `DebugWindow.wait_until_visible`) -
+# so this is only the cap that stops a stalled or unsupported overlay from
+# holding up a turn. Comfortably above the slide's own 0.28s.
+INDICATOR_LANDING_TIMEOUT = 0.8
+
+# How many exchange turns (user + assistant pairs) are replayed to Nemotron.
+# Far beyond any real spoken conversation, which is over in a handful, while
+# still bounding the prompt if one runs long.
+HISTORY_TURNS = 8
+
+# How long the microphone stays open, with no wake word, after Hey Peer has
+# said something that expects an answer. Longer than the window after a
+# completed action (`listener.FOLLOWUP_WINDOW_SECONDS`): being asked a
+# question and having to think for a moment is normal, and having the
+# assistant stop listening while you do is the thing that makes an assistant
+# feel like a command line rather than a conversation.
+CONVERSATION_WINDOW_SECONDS = 12.0
 
 _SHUTDOWN = object()  # sentinel put on HeyPeer._detections to unblock a consumer loop
 
@@ -128,6 +164,12 @@ class HeyPeer:
         # since been superseded can't hide the indicator out from under a
         # turn that started after it.
         self._followup_generation = 0
+        # What has been said so far in the exchange currently underway, as
+        # chat messages. Sent with every interpretation so a turn can refer
+        # to the last one ("et dans Archives du coup ?"), and cleared the
+        # moment the exchange closes - see `_close_exchange`. Bounded, so a
+        # long conversation cannot grow the prompt without limit.
+        self._history: list[dict] = []
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -165,10 +207,20 @@ class HeyPeer:
         threading.Thread(target=self._preload_tts, daemon=True).start()
 
     def _preload_stt(self) -> None:
+        """Warms both Whisper models in the background, and says so when it is
+        done.
+
+        The announcement is not cosmetic. Until this finishes, a "Hey Peer"
+        skips verification (see `_verify_wake_word`) and the instruction after
+        it waits on a cold model - so the first activation after launch really
+        is less reliable than the ones after it, and the user should be able
+        to see when that window has closed rather than infer it from Hey Peer
+        behaving oddly."""
         try:
             from heypeer.wakeword.stt import preload
 
             preload()
+            self._log("Hey Peer est pret (modeles de reconnaissance charges).")
         except Exception as exc:
             print(f"[stt] Whisper preload failed (will retry on first use): {exc}")
 
@@ -249,7 +301,6 @@ class HeyPeer:
             on_level=self._on_audio_level,
             on_verify=self._verify_wake_word,
             on_ready=self._on_ready_to_listen,
-            ready_delay=INDICATOR_SLIDE_SECONDS,
         )
 
     def _verify_wake_word(self, pre_trigger_audio: np.ndarray) -> bool:
@@ -265,6 +316,26 @@ class HeyPeer:
         try:
             from heypeer.wakeword.stt import VERIFY_MODEL, transcribe
             from heypeer.wakeword.verify import contains_wake_word
+
+            from heypeer.wakeword.stt import is_loaded
+
+            if not is_loaded(VERIFY_MODEL):
+                # The model is still being warmed up in the background (see
+                # `_preload_stt`). Loading it here would block *this* thread -
+                # which is the one reading the microphone - for several
+                # seconds, during which Hey Peer hears nothing at all. That is
+                # what made the first "Hey Peer" after startup so often seem
+                # to be ignored: it was not missed, it was answered long after
+                # the user had given up and repeated themselves.
+                #
+                # So skip verification rather than wait for it. The detector's
+                # own judgement stands for this one activation, and the full
+                # transcript check in `_interpret_audio` still rejects the
+                # turn if the wake word was not really there.
+                self._log("[wakeword] Verification model still warming up - trusting the detector.")
+                if self.debug_window is not None:
+                    self.debug_window.set_state("recording")
+                return True
 
             # No VAD filter: this clip is ~2s and the filter frequently
             # discards all of it, which read as "Hey Peer ignores me and I
@@ -289,30 +360,68 @@ class HeyPeer:
             print(f"[wakeword] Verification failed, accepting the trigger: {exc}")
             return True
 
-        # Only the indicator here. The chime follows once it has landed, in
-        # `_on_ready_to_listen` - a single unambiguous cue rather than a
-        # sound and then, a moment later, something appearing on screen.
+        # Only the indicator here. The chime follows once it has actually
+        # landed, in `_on_ready_to_listen` - a single unambiguous cue rather
+        # than a sound and then, a moment later, something appearing on
+        # screen.
         if self.debug_window is not None:
             self.debug_window.set_state("recording")
         return True
 
     def _on_ready_to_listen(self) -> None:
-        """The indicator has arrived; sound the cue, then let recording start.
+        """Waits for the blob to be on screen, sounds the cue, then lets
+        recording start. This is the whole order the user asked for, in one
+        place: "Hey Peer" -> the blob comes down -> the beep says it is
+        listening -> the instruction.
 
-        Played synchronously: the beep *is* the "speak now" signal, so the mic
-        must open after it rather than during it - otherwise the recording
-        opens with the beep, which also reads as speech to the energy-based
-        end-pointing. The asset is trimmed to ~0.3s so the wait is barely
-        perceptible."""
+        The wait is on the overlay process actually reporting the blob down,
+        not on a sleep of the slide's nominal length. The slide only *starts*
+        once that process has woken from its queue and drawn a frame, so a
+        fixed sleep was systematically too short and the beep kept arriving
+        while the blob was still on its way.
+
+        The chime is then played synchronously: the beep *is* the "speak now"
+        signal, so the mic must open after it rather than during it -
+        otherwise the recording opens with the beep, which also reads as
+        speech to the energy-based end-pointing. The asset is trimmed to
+        ~0.3s so the wait is barely perceptible."""
         from heypeer.wakeword.listener import play_activation_chime
 
+        if self.debug_window is not None:
+            if not self.debug_window.wait_until_visible(INDICATOR_LANDING_TIMEOUT):
+                # A stalled overlay must not cost the user their turn: chime
+                # anyway and start listening.
+                self._log("[ui] Indicator did not report landing in time - chiming anyway.")
         try:
             play_activation_chime(blocking=True)
         except Exception as exc:  # best-effort - never hold a turn up for a beep
             print(f"[wakeword] Chime playback failed: {exc}")
 
-    def _arm_followup(self) -> None:
-        """Lets the next command skip the wake word for a few seconds, so a
+    def _remember(self, user_text: str, assistant_text: str) -> None:
+        """Records one exchange turn for the next interpretation to see."""
+        if user_text:
+            self._history.append({"role": "user", "content": user_text})
+        if assistant_text:
+            self._history.append({"role": "assistant", "content": assistant_text})
+        # Keeping only the recent turns bounds the prompt. Well beyond any
+        # real spoken exchange, which is over in a handful of turns.
+        del self._history[:-HISTORY_TURNS * 2]
+
+    def _close_exchange(self) -> None:
+        """Ends the conversation: forget what was said and stop listening for
+        a reply that needs no wake word.
+
+        Called when the model says the exchange is over, and whenever a turn
+        ends without anything having opened a follow-up window. Forgetting
+        matters as much as the microphone does: carrying an old exchange into
+        the next "Hey Peer" would have the assistant answering a question
+        nobody just asked."""
+        self._history.clear()
+        if self._wake_listener is not None:
+            self._wake_listener.cancel_followup()
+
+    def _arm_followup(self, seconds: "float | None" = None) -> None:
+        """Lets the next turn skip the wake word for a few seconds, so a
         conversation can continue naturally instead of restarting.
 
         Also keeps the indicator on screen for that window. It used to slide
@@ -329,19 +438,24 @@ class HeyPeer:
         # startup besides.
         from heypeer.wakeword.listener import FOLLOWUP_WINDOW_SECONDS
 
-        self._wake_listener.arm_followup()
+        if seconds is None:
+            seconds = FOLLOWUP_WINDOW_SECONDS
+        self._wake_listener.arm_followup(seconds)
         self._followup_generation += 1
         generation = self._followup_generation
         if self.debug_window is not None:
             self.debug_window.set_state("awaiting")
 
         def stand_down() -> None:
-            # Only if no new turn started meanwhile, or this would clobber
-            # the state of whatever is happening now.
-            if self._followup_generation == generation and self.debug_window is not None:
+            # The window closed with nothing said, so the conversation is
+            # over whatever the model hoped - drop the history with it.
+            if self._followup_generation != generation:
+                return  # a new turn started meanwhile; leave it alone
+            self._history.clear()
+            if self.debug_window is not None:
                 self.debug_window.set_state("listening")
 
-        timer = threading.Timer(FOLLOWUP_WINDOW_SECONDS, stand_down)
+        timer = threading.Timer(seconds, stand_down)
         timer.daemon = True
         timer.start()
 
@@ -406,9 +520,10 @@ class HeyPeer:
         try:
             try:
                 if audio is not None and len(audio) > 0:
-                    intent = self._interpret_audio(audio, followup=followup)
-                    if intent is None:
+                    interpreted = self._interpret_audio(audio, followup=followup)
+                    if interpreted is None:
                         return  # false trigger, already logged - see _interpret_audio
+                    intent, instruction_text = interpreted
                 else:
                     self._log("Hey Peer detected.")
                     instruction_text = self.get_instruction()
@@ -418,20 +533,26 @@ class HeyPeer:
                         [],
                         watched_files=self._watched_files(),
                         watched_folders=self._watched_folders(),
+                        history=list(self._history),
                     )
             except Exception as exc:
                 self._log(f"Failed to interpret the instruction: {exc}")
                 return
-            self._dispatch_intent(intent)
+            self._dispatch_intent(intent, instruction_text)
         finally:
-            if self.debug_window is not None and self._followup_generation == opened_with:
+            if self._followup_generation == opened_with:
                 # Unchanged generation means nothing armed a follow-up during
-                # this turn, so the exchange really is over.
-                self.debug_window.set_state("listening")
+                # this turn, so the exchange really is over: stop listening
+                # for a reply, and forget what was said.
+                self._close_exchange()
+                if self.debug_window is not None:
+                    self.debug_window.set_state("listening")
             if self._wake_listener is not None:
                 self._wake_listener.unmute()
 
-    def _interpret_audio(self, audio: np.ndarray, followup: bool = False) -> "Intent | None":
+    def _interpret_audio(
+        self, audio: np.ndarray, followup: bool = False
+    ) -> "tuple[Intent, str] | None":
         """Transcribes the captured audio locally (Nemotron via this Nebius
         endpoint doesn't accept audio input - see heypeer/wakeword/stt.py and
         heypeer/nemotron/client.py's module docstrings for why) and sends the
@@ -443,7 +564,10 @@ class HeyPeer:
         false trigger (returns None if so - the small always-on detector fires
         on plenty of ordinary speech, see heypeer/wakeword/verify.py), and
         stripping the wake word out so it doesn't leak into the instruction
-        Nemotron sees."""
+        Nemotron sees.
+
+        Returns the intent together with the words it was derived from, which
+        the caller records into the exchange history."""
         from heypeer.wakeword.stt import transcribe
         from heypeer.wakeword.verify import contains_wake_word, strip_wake_word
 
@@ -468,7 +592,7 @@ class HeyPeer:
             instruction_text = strip_wake_word(transcript)
         self._log(f"> {instruction_text}")
         if not instruction_text:
-            return Intent(action="unknown", skill_id=None, n_repetitions=1)
+            return Intent(action="unknown", skill_id=None, n_repetitions=1), ""
 
         # No screenshot: this deployment now rejects any non-string message
         # content with a 400 ("Input should be a valid string"), so sending
@@ -476,11 +600,15 @@ class HeyPeer:
         # docstring. Nothing is lost for file actions — the grounding that
         # matters is the real file/folder listing, not a picture of the
         # screen — and skipping the capture and upload is faster too.
-        return self.nemotron.interpret_text(
+        return (
+            self.nemotron.interpret_text(
+                instruction_text,
+                [],
+                watched_files=self._watched_files(),
+                watched_folders=self._watched_folders(),
+                history=list(self._history),
+            ),
             instruction_text,
-            [],
-            watched_files=self._watched_files(),
-            watched_folders=self._watched_folders(),
         )
 
     def _handle_instruction(self, instruction_text: str) -> None:
@@ -497,13 +625,46 @@ class HeyPeer:
                 [],
                 watched_files=self._watched_files(),
                 watched_folders=self._watched_folders(),
+                history=list(self._history),
             )
-            self._dispatch_intent(intent)
+            self._dispatch_intent(intent, instruction_text)
         finally:
             if self._wake_listener is not None:
                 self._wake_listener.unmute()
 
-    def _dispatch_intent(self, intent: Intent) -> None:
+    def _dispatch_intent(self, intent: Intent, instruction_text: str = "") -> None:
+        """Carries out one interpreted turn, and decides whether the exchange
+        stays open afterwards.
+
+        `instruction_text` is what the user said, recorded into the history
+        alongside whatever Hey Peer says back so the *next* turn can refer to
+        this one."""
+        if intent.action in SPOKEN_ACTIONS:
+            # Nothing to do to the computer: this turn is an answer. Covers
+            # both ordinary conversation ("comment ca va ?") and a missing
+            # piece Nemotron needs before it can act ("vers quel dossier ?").
+            message = intent.speech or intent.question
+            if not message:
+                # It chose to speak and then said nothing. Better to admit
+                # that than to stand silent.
+                message = "Je n'ai pas bien compris, peux-tu reformuler ?"
+            self._log(f"Hey Peer: {message}")
+            # Spoken synchronously, and only then is the follow-up window
+            # opened: opening it first would have the microphone listening
+            # while Hey Peer is still talking, and it would answer itself.
+            self._speak(message)
+            self._remember(instruction_text, message)
+            # "ask" is a request for an answer by construction, so it holds
+            # the exchange open whatever `end_turn` says. Leaving that to the
+            # model would mean one careless `true` ends the conversation
+            # immediately after Hey Peer has asked the user a question - the
+            # exact behaviour that made the blob slide away mid-exchange
+            # before there was a follow-up window at all.
+            if intent.end_turn and intent.action != "ask":
+                self._close_exchange()
+            else:
+                self._arm_followup(CONVERSATION_WINDOW_SECONDS)
+            return
         if _has_placeholder_name(intent):
             # Real bug this guards against: a truncated instruction ("Déplace
             # le fichier 4.", no destination) made Nemotron answer
@@ -513,7 +674,10 @@ class HeyPeer:
             # way instead of taking it literally as a name.
             self._log("Hey Peer didn't get a clear enough target for that instruction.")
             self._speak("Je n'ai pas bien compris, peux-tu répéter ?")
+            # A rephrasing is expected, so this is not the end of anything.
+            self._arm_followup(CONVERSATION_WINDOW_SECONDS)
             return
+        self._remember(instruction_text, intent.speech or "")
         if intent.action == "undo":
             self._run_undo()
         elif intent.action == "ask":
@@ -527,7 +691,7 @@ class HeyPeer:
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
-                narration=f"Je déplace {intent.src_filename} vers {intent.dest_folder}.",
+                narration=intent.speech or f"Je déplace {intent.src_filename} vers {intent.dest_folder}.",
                 run=lambda: move_single_file(self.watched_dir, intent.src_filename, intent.dest_folder),
                 done=lambda path: f"Done: moved to {path}.",
                 undo_factory=(lambda path: undo.moved(source, path)) if source else None,
@@ -535,28 +699,28 @@ class HeyPeer:
         elif intent.action == "rename_file" and intent.src_filename and intent.new_name:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
-                narration=f"Je renomme {intent.src_filename} en {intent.new_name}.",
+                narration=intent.speech or f"Je renomme {intent.src_filename} en {intent.new_name}.",
                 run=lambda: rename_file(self.watched_dir, intent.src_filename, intent.new_name),
                 done=lambda path: f"Done: renamed to {path}.",
                 undo_factory=(lambda path: undo.renamed(source, path)) if source else None,
             )
         elif intent.action == "create_file" and intent.target_name:
             self._run_file_action(
-                narration=f"Je crée le fichier {intent.target_name}.",
+                narration=intent.speech or f"Je crée le fichier {intent.target_name}.",
                 run=lambda: create_file(self.watched_dir, intent.target_name),
                 done=lambda path: f"Done: created {path}.",
                 undo_factory=undo.created_file,
             )
         elif intent.action == "create_folder" and intent.target_name:
             self._run_file_action(
-                narration=f"Je crée le dossier {intent.target_name}.",
+                narration=intent.speech or f"Je crée le dossier {intent.target_name}.",
                 run=lambda: create_folder(self.watched_dir, intent.target_name),
                 done=lambda path: f"Done: created {path}.",
                 undo_factory=undo.created_folder,
             )
         elif intent.action == "delete_file" and intent.src_filename:
             self._run_file_action(
-                narration=f"Je supprime {intent.src_filename}.",
+                narration=intent.speech or f"Je supprime {intent.src_filename}.",
                 run=lambda: delete_file(self.watched_dir, intent.src_filename),
                 done=lambda path: f"Done: moved {path} to the recycle bin.",
                 undo_factory=undo.deleted,

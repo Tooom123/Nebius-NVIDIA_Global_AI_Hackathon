@@ -35,6 +35,8 @@ decoder to assume a specific spoken language, so a French-biased prompt
 still shouldn't hurt English recognition.
 """
 
+import threading
+
 import numpy as np
 
 # Two models, right-sized per job rather than one compromise:
@@ -50,6 +52,11 @@ INSTRUCTION_MODEL = "small"
 VERIFY_MODEL = "base"
 
 _models: dict = {}
+# Two threads race for these: `preload` warms them at startup while the
+# wake-word thread may already want one. Without the lock both build the same
+# WhisperModel at once - twice the load time and twice the memory, on the
+# very machine that is trying to answer a wake word.
+_models_lock = threading.Lock()
 
 # Nudges the decoder toward the vocabulary Hey Peer's instructions actually
 # use, without forcing a language — helps most on short phrases and
@@ -61,17 +68,38 @@ INITIAL_PROMPT = (
 
 
 def _get_model(name: str = INSTRUCTION_MODEL):
-    if name not in _models:
-        from faster_whisper import WhisperModel
+    with _models_lock:
+        if name not in _models:
+            from faster_whisper import WhisperModel
 
-        _models[name] = WhisperModel(name, device="cpu", compute_type="int8")
-    return _models[name]
+            _models[name] = WhisperModel(name, device="cpu", compute_type="int8")
+        return _models[name]
+
+
+def is_loaded(name: str) -> bool:
+    """Whether `name` is already in memory, i.e. whether transcribing with it
+    right now would be fast.
+
+    This exists because the caller that matters most - wake-word
+    verification - runs on the microphone thread. Asking a cold model to
+    transcribe there does not merely add latency: it stops the mic being read
+    for as long as the load takes, so Hey Peer is deaf meanwhile. Callers on
+    a latency-critical path check this and take a cheaper route when it is
+    False, rather than blocking. See `HeyPeer._verify_wake_word`.
+    """
+    return name in _models
 
 
 def preload() -> None:
     """Loads both Whisper models now instead of on first use, so neither the
     first spoken instruction nor the first wake-word verification is delayed
-    by a model load."""
+    by a model load.
+
+    The verification model is loaded first on purpose. It is both the smaller
+    of the two and the one needed earliest - it gates the response to the very
+    first "Hey Peer" - so warming it before the larger instruction model
+    shortens the window in which an activation has to take the unverified
+    path."""
     _get_model(VERIFY_MODEL)
     _get_model(INSTRUCTION_MODEL)
 

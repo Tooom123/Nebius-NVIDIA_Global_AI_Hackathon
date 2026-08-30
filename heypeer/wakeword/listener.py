@@ -359,7 +359,6 @@ class WakeWordListener:
         on_level: "Callable[[float, bool], None] | None" = None,
         on_verify: "Callable[[np.ndarray], bool] | None" = None,
         on_ready: "Callable[[], None] | None" = None,
-        ready_delay: float = 0.0,
     ) -> None:
         """`on_level(level, recording)` — level normalized 0-1 (see
         `dbfs_to_level`), `recording` True while capturing the instruction
@@ -380,11 +379,13 @@ class WakeWordListener:
         Returning False suppresses the turn entirely. Optional; without it
         every trigger is treated as genuine.
 
-        `ready_delay` is how long to wait after `on_verify` succeeds before
-        `on_ready` fires - time for whatever it put on screen to finish
-        appearing. `on_ready()` then runs immediately before recording
-        begins, so anything it does (a chime, say) lands exactly on "speak
-        now" and is over before the mic opens."""
+        `on_ready()` runs after `on_verify` succeeds and immediately before
+        recording begins, so anything it does - waiting for an indicator to
+        finish appearing, then chiming - lands exactly on "speak now" and is
+        over before the mic opens. It is the callback's job to decide how
+        long to wait: this used to be a `ready_delay` argument slept here,
+        but a fixed duration cannot know when something in another process
+        has finished animating, and it was consistently too short."""
         import pyaudio
 
         self._running = True
@@ -505,10 +506,9 @@ class WakeWordListener:
                             print("[wakeword] Rejete (pas de mot d'activation).")
                         continue
 
-                    # Let the indicator finish dropping in before listening,
-                    # so the cue genuinely means "speak now".
-                    if ready_delay > 0:
-                        time.sleep(ready_delay)
+                    # Blocks for as long as the callback needs - it waits
+                    # for the indicator to finish dropping in and then
+                    # chimes, so the cue genuinely means "speak now".
                     if on_ready is not None:
                         on_ready()
 

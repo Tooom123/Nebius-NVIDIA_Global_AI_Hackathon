@@ -670,3 +670,252 @@ def test_wake_listener_failure_does_not_raise(tmp_path: Path) -> None:
 
     assert peer._wake_ready.is_set()
     assert peer._wake_listener is None
+
+
+# --- Conversation ---------------------------------------------------------
+#
+# Hey Peer used to answer exactly one kind of turn: a file command. Anything
+# else fell through to "je n'ai pas compris" and the exchange ended there.
+# These cover the other half - that an ordinary spoken turn gets an ordinary
+# spoken answer, and that an exchange lasts until it is actually finished
+# rather than ending after every single sentence.
+
+
+def _conversational(peer: HeyPeer) -> list:
+    """Silences speech and gives the peer a listener to arm, returning what
+    it says. Speaking for real would load a Piper voice per test."""
+    said: list = []
+    peer._speak = said.append
+    peer._wake_listener = MagicMock()
+    return said
+
+
+def test_a_question_that_is_not_a_command_gets_a_spoken_answer(tmp_path: Path) -> None:
+    """"Comment ca va ?" is not a file operation and must not be forced into
+    one. It is answered, and nothing on disk is touched."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply",
+        skill_id=None,
+        n_repetitions=1,
+        speech="Tres bien, et toi ?",
+        end_turn=False,
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=tmp_path, get_instruction=lambda: "comment ca va")
+    said = _conversational(peer)
+
+    peer.on_wake_word()
+
+    assert said == ["Tres bien, et toi ?"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_open_exchange_keeps_listening_without_a_wake_word(tmp_path: Path) -> None:
+    """The point of the whole thing: the user answers back by just talking.
+    `end_turn` False has to open the follow-up window, or the reply is lost."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1, speech="Et toi ?", end_turn=False
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "salut")
+    _conversational(peer)
+
+    peer.on_wake_word()
+
+    peer._wake_listener.arm_followup.assert_called_once()
+    peer._wake_listener.cancel_followup.assert_not_called()
+
+
+def test_a_finished_exchange_stops_listening_and_is_forgotten(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1, speech="De rien !", end_turn=True
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "merci")
+    _conversational(peer)
+
+    peer.on_wake_word()
+
+    peer._wake_listener.arm_followup.assert_not_called()
+    peer._wake_listener.cancel_followup.assert_called()
+    assert peer._history == []
+
+
+def test_the_next_turn_sees_what_was_already_said(tmp_path: Path) -> None:
+    """Without this an exchange is a series of unrelated commands: "et dans
+    Archives du coup ?" is uninterpretable with no memory of the question it
+    answers."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="ask", skill_id=None, n_repetitions=1, question="Vers quel dossier ?"
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "deplace facture")
+    _conversational(peer)
+
+    peer.on_wake_word()
+    peer.on_wake_word()
+
+    history = nemotron.interpret_text.call_args_list[1].kwargs["history"]
+    assert {"role": "user", "content": "deplace facture"} in history
+    assert {"role": "assistant", "content": "Vers quel dossier ?"} in history
+    # The first turn had nothing to go on.
+    assert nemotron.interpret_text.call_args_list[0].kwargs["history"] == []
+
+
+def test_a_new_exchange_does_not_inherit_the_previous_one(tmp_path: Path) -> None:
+    """Carrying an old conversation into the next "Hey Peer" would have Hey
+    Peer answering a question nobody just asked."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1, speech="Bien sur.", end_turn=True
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "salut")
+    _conversational(peer)
+
+    peer.on_wake_word()
+    peer.on_wake_word()
+
+    assert nemotron.interpret_text.call_args_list[1].kwargs["history"] == []
+
+
+def test_ask_holds_the_exchange_open_even_if_the_model_says_otherwise(tmp_path: Path) -> None:
+    """A question with `end_turn` true is self-contradictory - Hey Peer would
+    ask the user something and stop listening for the answer in the same
+    breath. The structure of the action wins over the flag."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="ask",
+        skill_id=None,
+        n_repetitions=1,
+        question="Vers quel dossier ?",
+        end_turn=True,
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "deplace facture")
+    _conversational(peer)
+
+    peer.on_wake_word()
+
+    peer._wake_listener.arm_followup.assert_called_once()
+
+
+def test_the_history_is_bounded(tmp_path: Path) -> None:
+    """A long exchange must not grow the prompt without limit."""
+    from heypeer.main import HISTORY_TURNS
+
+    peer = HeyPeer(nemotron=MagicMock())
+    for i in range(HISTORY_TURNS * 3):
+        peer._remember(f"question {i}", f"answer {i}")
+
+    assert len(peer._history) == HISTORY_TURNS * 2
+    assert peer._history[-1]["content"] == f"answer {HISTORY_TURNS * 3 - 1}"
+
+
+def test_a_file_action_is_narrated_in_the_models_own_words(tmp_path: Path) -> None:
+    """The fixed narration reads like a template being filled in. When
+    Nemotron phrases the sentence for the actual request, use that - falling
+    back to the template only when it doesn't."""
+    watched = tmp_path / "Downloads"
+    watched.mkdir()
+    (watched / "facture.pdf").write_text("x")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="move_file",
+        skill_id=None,
+        n_repetitions=1,
+        src_filename="facture.pdf",
+        dest_folder="Archives",
+        speech="C'est parti, je range la facture.",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched, get_instruction=lambda: "range la facture")
+    said = _conversational(peer)
+    peer._speak_async = said.append
+
+    peer.on_wake_word()
+
+    assert said == ["C'est parti, je range la facture."]
+    assert (watched / "Archives" / "facture.pdf").is_file()
+
+
+# --- Activation timing ----------------------------------------------------
+#
+# The order the user asked for, and had to ask for twice: "Hey Peer" -> the
+# blob comes down -> the beep says it is listening -> the instruction. Each
+# step here failed on real hardware in a way no test could see, because both
+# the blob's arrival and the model's readiness live outside this process.
+
+
+def test_the_chime_waits_for_the_blob_to_be_on_screen(tmp_path: Path) -> None:
+    """The beep announces that Hey Peer is listening, so it must land after
+    the blob, not during its slide.
+
+    It used to be scheduled off the slide's nominal duration, which ignored
+    the time the overlay process takes to wake up and start sliding at all -
+    so the beep regularly played while the blob was still on its way down,
+    which is what the user reported hearing.
+    """
+    order: list[str] = []
+    peer = HeyPeer(nemotron=MagicMock())
+    peer.debug_window = MagicMock()
+    peer.debug_window.wait_until_visible.side_effect = lambda _t: order.append("blob landed") or True
+
+    with patch(
+        "heypeer.wakeword.listener.play_activation_chime",
+        side_effect=lambda blocking=False: order.append(f"chime(blocking={blocking})"),
+    ):
+        peer._on_ready_to_listen()
+
+    assert order == ["blob landed", "chime(blocking=True)"]
+
+
+def test_a_stalled_indicator_does_not_cost_the_user_their_turn(tmp_path: Path) -> None:
+    """If the overlay never reports landing, chime anyway. A UI that has gone
+    quiet must degrade to a missing visual, not to Hey Peer refusing to
+    listen."""
+    peer = HeyPeer(nemotron=MagicMock())
+    peer.debug_window = MagicMock()
+    peer.debug_window.wait_until_visible.return_value = False
+    chime = MagicMock()
+
+    with patch("heypeer.wakeword.listener.play_activation_chime", chime):
+        peer._on_ready_to_listen()
+
+    chime.assert_called_once_with(blocking=True)
+
+
+def test_verification_is_skipped_rather_than_blocking_on_a_cold_model(tmp_path: Path) -> None:
+    """Regression test for the first "Hey Peer" after startup being missed.
+
+    Verification runs on the microphone thread. Whisper's verification model
+    is still loading in the background for the first several seconds, and
+    asking a cold model to transcribe there did not merely add latency: it
+    stopped the mic being read for the whole load, so Hey Peer was deaf
+    exactly when the user was speaking to it. The activation was not lost, it
+    was answered long after they had given up and repeated themselves.
+    """
+    peer = HeyPeer(nemotron=MagicMock())
+    peer.debug_window = MagicMock()
+    transcribe = MagicMock()
+
+    with (
+        patch("heypeer.wakeword.stt.is_loaded", return_value=False),
+        patch("heypeer.wakeword.stt.transcribe", transcribe),
+    ):
+        accepted = peer._verify_wake_word(np.zeros(32000, dtype=np.int16))
+
+    assert accepted is True
+    transcribe.assert_not_called()
+    peer.debug_window.set_state.assert_called_with("recording")
+
+
+def test_verification_runs_normally_once_the_model_is_warm(tmp_path: Path) -> None:
+    peer = HeyPeer(nemotron=MagicMock())
+    peer.debug_window = MagicMock()
+
+    with (
+        patch("heypeer.wakeword.stt.is_loaded", return_value=True),
+        patch("heypeer.wakeword.stt.transcribe", return_value="une phrase ordinaire"),
+    ):
+        accepted = peer._verify_wake_word(np.zeros(32000, dtype=np.int16))
+
+    assert accepted is False  # no wake word in it
