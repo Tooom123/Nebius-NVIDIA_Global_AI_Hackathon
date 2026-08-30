@@ -91,7 +91,21 @@ moves it to the recycle bin/trash, not a permanent delete):
   For a rename, if the user gives the new name without an extension, keep
   the original file's extension.
 
-- If nothing above applies:
+- To undo the last file action (e.g. "annule", "annule ça", "reviens en \
+arrière"):
+  {"action": "undo"}
+
+- When the user clearly wants one of the file actions above but a required \
+piece is missing or ambiguous (they named a file but no destination, or two \
+files match equally well):
+  {"action": "ask", \
+"question": "<one short question in French asking for exactly the missing \
+piece, e.g. 'Vers quel dossier ?' or 'Quel fichier, 4.txt ou 4.pdf ?'>"}
+  Prefer this over "unknown" whenever the intent is recognisable — telling
+  the user what is missing is far more useful than saying nothing was
+  understood. Do not use it to re-ask for something already given.
+
+- If nothing above applies (the user wasn't asking for a file action at all):
   {"action": "unknown"}
 
 Always include every key shown for the chosen form; use null for any you
@@ -129,6 +143,7 @@ def _parse_intent(raw_content: "str | None") -> Intent:
         dest_folder=data.get("dest_folder"),
         new_name=data.get("new_name"),
         target_name=data.get("target_name"),
+        question=data.get("question"),
     )
 
 

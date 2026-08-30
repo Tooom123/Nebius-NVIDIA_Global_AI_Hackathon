@@ -94,6 +94,19 @@ PREBUFFER_CHUNKS = int(PREBUFFER_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
 # never wedge on a stuck verifier.
 VERIFY_TIMEOUT_SECONDS = 6.0
 
+# After Hey Peer finishes acting, it stays open this long for a follow-up
+# command that needs no wake word at all — the natural way a conversation
+# continues. Kept short on purpose: during this window ordinary speech in
+# the room can start a turn, since there is no wake word to verify against.
+# The instruction still has to resolve to a concrete file action, so stray
+# conversation resolves to "unknown" and does nothing.
+FOLLOWUP_WINDOW_SECONDS = 6.0
+# Speech has to clear the room's noise floor by this much to open a
+# follow-up turn — stricter than ordinary end-pointing, because here it is
+# deciding whether to start listening at all rather than whether someone is
+# still talking.
+FOLLOWUP_MARGIN_DB = 6.0
+
 
 def _ensure_openwakeword_models() -> None:
     """openWakeWord's melspectrogram/embedding ONNX models are bundled in
@@ -242,6 +255,20 @@ class WakeWordListener:
         # phrase, so without this the wake word is already gone by the time
         # recording starts.
         self._prebuffer: deque = deque(maxlen=PREBUFFER_CHUNKS)
+        # Timestamp until which speech alone (no wake word) starts a turn.
+        self._followup_until = 0.0
+
+    def arm_followup(self, seconds: float = FOLLOWUP_WINDOW_SECONDS) -> None:
+        """Opens a short window during which speech alone starts a turn, so
+        the user can chain a second command without repeating the wake
+        word."""
+        self._followup_until = time.time() + seconds
+
+    def cancel_followup(self) -> None:
+        self._followup_until = 0.0
+
+    def _followup_open(self) -> bool:
+        return time.time() < self._followup_until
 
     def mute(self) -> None:
         self._muted = True
@@ -333,7 +360,7 @@ class WakeWordListener:
 
     def start(
         self,
-        on_detected: Callable[[np.ndarray], None],
+        on_detected: "Callable[[np.ndarray, bool], None]",
         on_level: "Callable[[float, bool], None] | None" = None,
         on_verify: "Callable[[np.ndarray], bool] | None" = None,
     ) -> None:
@@ -341,6 +368,11 @@ class WakeWordListener:
         `dbfs_to_level`), `recording` True while capturing the instruction
         after a trigger, False while just scanning for the wake word. Meant
         to drive a live audio-reactive UI element; optional.
+
+        `on_detected(audio, followup)` receives the captured turn; `followup`
+        is True when it started from speech during a follow-up window rather
+        than from a wake word, so the handler knows not to expect one in the
+        transcript.
 
         `on_verify(pre_trigger_audio)` decides whether a detection was real,
         given the ~2s of audio containing the wake word itself. It runs on
@@ -408,6 +440,28 @@ class WakeWordListener:
                             end="",
                             flush=True,
                         )
+                # A follow-up turn: speech alone, no wake word, for a short
+                # window after Hey Peer has just acted. Checked before
+                # wake-word scoring because there is nothing to score against
+                # — the user is continuing a conversation, not starting one.
+                if self._followup_open() and dbfs > speech_threshold_dbfs(
+                    estimate_noise_floor(list(self._prebuffer))
+                ) + FOLLOWUP_MARGIN_DB:
+                    self.cancel_followup()
+                    print("[wakeword] Suite (sans mot d'activation).")
+                    pre_audio = (
+                        np.concatenate(list(self._prebuffer))
+                        if self._prebuffer
+                        else np.zeros(0, dtype=np.int16)
+                    )
+                    self._prebuffer.clear()
+                    instruction_audio = self._record_instruction(stream, on_level=on_level)
+                    # No verification: there is no wake word in this audio by
+                    # design, so `on_verify` would reject it. `followup=True`
+                    # tells the handler the same thing.
+                    on_detected(np.concatenate([pre_audio, instruction_audio]), True)
+                    continue
+
                 if self._maybe_trigger(score):
                     if self.debug:
                         print()  # move off the overwritten debug line
@@ -456,7 +510,7 @@ class WakeWordListener:
                         f"[wakeword] Instruction enregistree "
                         f"({len(instruction_audio) / SAMPLE_RATE:.1f}s)."
                     )
-                    on_detected(np.concatenate([pre_audio, instruction_audio]))
+                    on_detected(np.concatenate([pre_audio, instruction_audio]), False)
         finally:
             stream.stop_stream()
             stream.close()

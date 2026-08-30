@@ -52,6 +52,7 @@ from heypeer.capture.events import ActionEvent
 from heypeer.capture.file_watcher import FileOpWatcher
 from heypeer.capture.watcher import ActivityWatcher
 from heypeer.config import SKILLS_DIR, load_settings
+from heypeer.executor import undo
 from heypeer.executor.runner import (
     ExecutionAborted,
     SkillRunner,
@@ -60,6 +61,7 @@ from heypeer.executor.runner import (
     delete_file,
     move_single_file,
     rename_file,
+    resolve_existing_filename,
 )
 from heypeer.nemotron.client import NemotronClient
 from heypeer.nemotron.intent import Intent
@@ -151,6 +153,9 @@ class HeyPeer:
         # whichever thread actually handles instructions (see module
         # docstring) - never handled inline in the audio callback.
         self._detections: queue.Queue = queue.Queue()
+        # Reversal records for completed file actions - the safety net that
+        # replaced the confirmation gate. See heypeer/executor/undo.py.
+        self._undo_stack = undo.UndoStack()
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -334,7 +339,13 @@ class HeyPeer:
             self.debug_window.set_state("recording")
         return True
 
-    def _on_wake_detected(self, audio: np.ndarray) -> None:
+    def _arm_followup(self) -> None:
+        """Lets the next command skip the wake word for a few seconds, so a
+        conversation can continue naturally instead of restarting."""
+        if self._wake_listener is not None:
+            self._wake_listener.arm_followup()
+
+    def _on_wake_detected(self, audio: np.ndarray, followup: bool = False) -> None:
         """Called from the wake-word audio thread once a detection fires and
         the spoken instruction after it has already been recorded. Must stay
         cheap and non-blocking - see module docstring for why the actual
@@ -351,7 +362,7 @@ class HeyPeer:
         the turn ends."""
         if self._wake_listener is not None:
             self._wake_listener.mute()
-        self._detections.put(audio)
+        self._detections.put((audio, followup))
 
     def _stop_voice(self) -> None:
         if self._wake_listener is not None:
@@ -402,7 +413,7 @@ class HeyPeer:
             return None
         return sorted(p.name for p in self.watched_dir.iterdir() if p.is_dir())
 
-    def on_wake_word(self, audio: np.ndarray | None = None) -> None:
+    def on_wake_word(self, audio: np.ndarray | None = None, followup: bool = False) -> None:
         """Handles one wake-word turn. If real recorded audio is given (the
         normal case once a mic is available), it's transcribed locally then
         sent to Nemotron (see `_interpret_audio` for why not native audio
@@ -418,7 +429,7 @@ class HeyPeer:
         try:
             try:
                 if audio is not None and len(audio) > 0:
-                    intent = self._interpret_audio(audio)
+                    intent = self._interpret_audio(audio, followup=followup)
                     if intent is None:
                         return  # false trigger, already logged - see _interpret_audio
                 else:
@@ -441,7 +452,7 @@ class HeyPeer:
             if self._wake_listener is not None:
                 self._wake_listener.unmute()
 
-    def _interpret_audio(self, audio: np.ndarray) -> "Intent | None":
+    def _interpret_audio(self, audio: np.ndarray, followup: bool = False) -> "Intent | None":
         """Transcribes the captured audio locally (Nemotron via this Nebius
         endpoint doesn't accept audio input - see heypeer/wakeword/stt.py and
         heypeer/nemotron/client.py's module docstrings for why) and sends the
@@ -461,15 +472,21 @@ class HeyPeer:
         if not transcript:
             return None  # silence/noise - nothing was actually said
 
-        if not contains_wake_word(transcript):
-            # Logged quietly, not spoken: this is the common case for a false
-            # trigger, and announcing every one of them out loud would be
-            # worse than the false trigger itself.
-            self._log(f'Ignored (no wake word in "{transcript}").')
-            return None
-
-        self._log("Hey Peer detected.")
-        instruction_text = strip_wake_word(transcript)
+        if followup:
+            # A follow-up turn has no wake word in it by design — the user is
+            # continuing, not re-summoning. Checking for one would reject
+            # every single one of them.
+            self._log("Follow-up.")
+            instruction_text = transcript
+        else:
+            if not contains_wake_word(transcript):
+                # Logged quietly, not spoken: this is the common case for a
+                # false trigger, and announcing every one out loud would be
+                # worse than the false trigger itself.
+                self._log(f'Ignored (no wake word in "{transcript}").')
+                return None
+            self._log("Hey Peer detected.")
+            instruction_text = strip_wake_word(transcript)
         self._log(f"> {instruction_text}")
         if not instruction_text:
             return Intent(action="unknown", skill_id=None, n_repetitions=1)
@@ -518,41 +535,87 @@ class HeyPeer:
             self._log("Hey Peer didn't get a clear enough target for that instruction.")
             self._speak("Je n'ai pas bien compris, peux-tu répéter ?")
             return
-        if intent.action == "run_skill" and intent.skill_id is not None:
+        if intent.action == "undo":
+            self._run_undo()
+        elif intent.action == "ask":
+            # Nemotron recognised the intent but is missing a piece. Saying
+            # exactly what's missing is far more useful than "je n'ai pas
+            # compris", which leaves the user guessing what to rephrase.
+            question = intent.question or "Peux-tu préciser ?"
+            self._log(f"Needs clarification: {question}")
+            self._speak(question)
+            self._arm_followup()
+        elif intent.action == "run_skill" and intent.skill_id is not None:
             self._run_skill_intent(intent)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
+            source = self._resolved_path(intent.src_filename)
             self._run_file_action(
                 narration=f"Je déplace {intent.src_filename} vers {intent.dest_folder}.",
                 run=lambda: move_single_file(self.watched_dir, intent.src_filename, intent.dest_folder),
                 done=lambda path: f"Done: moved to {path}.",
+                undo_factory=(lambda path: undo.moved(source, path)) if source else None,
             )
         elif intent.action == "rename_file" and intent.src_filename and intent.new_name:
+            source = self._resolved_path(intent.src_filename)
             self._run_file_action(
                 narration=f"Je renomme {intent.src_filename} en {intent.new_name}.",
                 run=lambda: rename_file(self.watched_dir, intent.src_filename, intent.new_name),
                 done=lambda path: f"Done: renamed to {path}.",
+                undo_factory=(lambda path: undo.renamed(source, path)) if source else None,
             )
         elif intent.action == "create_file" and intent.target_name:
             self._run_file_action(
                 narration=f"Je crée le fichier {intent.target_name}.",
                 run=lambda: create_file(self.watched_dir, intent.target_name),
                 done=lambda path: f"Done: created {path}.",
+                undo_factory=undo.created_file,
             )
         elif intent.action == "create_folder" and intent.target_name:
             self._run_file_action(
                 narration=f"Je crée le dossier {intent.target_name}.",
                 run=lambda: create_folder(self.watched_dir, intent.target_name),
                 done=lambda path: f"Done: created {path}.",
+                undo_factory=undo.created_folder,
             )
         elif intent.action == "delete_file" and intent.src_filename:
             self._run_file_action(
                 narration=f"Je supprime {intent.src_filename}.",
                 run=lambda: delete_file(self.watched_dir, intent.src_filename),
                 done=lambda path: f"Done: moved {path} to the recycle bin.",
+                undo_factory=undo.deleted,
             )
         else:
             self._log("Hey Peer didn't recognize a known skill or file action in that instruction.")
             self._speak("Je n'ai pas compris cette instruction.")
+
+    def _resolved_path(self, spoken_name: str) -> "Path | None":
+        """Where a spoken filename actually points, resolved *before* the
+        action runs — afterwards the file has moved or been renamed and the
+        original path can no longer be recovered, which is what undo needs."""
+        if self.watched_dir is None:
+            return None
+        resolved = resolve_existing_filename(self.watched_dir, spoken_name)
+        return self.watched_dir / resolved if resolved else None
+
+    def _run_undo(self) -> None:
+        entry = self._undo_stack.pop()
+        if entry is None:
+            self._log("Nothing to undo.")
+            self._speak("Il n'y a rien à annuler.")
+            return
+        if entry.undo is None:
+            self._log(f"Not undoable: {entry.description} ({entry.not_undoable_reason})")
+            self._speak(f"Je ne peux pas annuler ça : {entry.not_undoable_reason}.")
+            return
+
+        self._speak_async(f"J'annule {entry.description}.")
+        try:
+            entry.undo()
+            self._log(f"Undone: {entry.description}.")
+            self._arm_followup()
+        except Exception as exc:
+            self._log(f"Undo failed: {exc}")
+            self._speak("Je n'ai pas réussi à annuler.")
 
     def _run_skill_intent(self, intent: Intent) -> None:
         skill = self.memory.get(intent.skill_id)
@@ -583,6 +646,7 @@ class HeyPeer:
         narration: str,
         run: "Callable[[], Path]",
         done: "Callable[[Path], str]",
+        undo_factory: "Callable[[Path], undo.UndoEntry] | None" = None,
     ) -> None:
         """Shared body for every direct, one-off file action (move/rename/
         create file/create folder/delete) - Nemotron resolves which one and
@@ -607,6 +671,12 @@ class HeyPeer:
         try:
             result_path = run()
             self._log(done(result_path))
+            if undo_factory is not None:
+                # Recorded only on success, and only here: the resolved
+                # filename and the final path are known at this point and
+                # nowhere else.
+                self._undo_stack.push(undo_factory(result_path))
+            self._arm_followup()
         except ExecutionAborted as exc:
             self._log(f"Stopped: {exc}")
             self._speak("Je n'ai pas pu faire ça, quelque chose semblait anormal.")
@@ -669,7 +739,8 @@ def run_tray() -> None:
             item = peer._detections.get()
             if item is _SHUTDOWN:
                 return
-            peer.on_wake_word(item)
+            audio, followup = item
+            peer.on_wake_word(audio, followup=followup)
 
     threading.Thread(target=_drain_detections, daemon=True).start()
     peer.tray.run()
@@ -709,7 +780,8 @@ def run_cli() -> None:
                 item = peer._detections.get()
                 if item is _SHUTDOWN:
                     break
-                peer.on_wake_word(item)
+                audio, followup = item
+                peer.on_wake_word(audio, followup=followup)
     finally:
         peer._on_quit()
 
