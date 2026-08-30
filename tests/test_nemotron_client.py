@@ -283,3 +283,68 @@ def test_verify_screen_returns_ok_flag() -> None:
         result = client.verify_screen(b"fake-png-bytes", expected_context="click Save button")
 
     assert result is False
+
+
+def test_system_prompt_is_pure_ascii() -> None:
+    """Models mirror the typography they are shown, and what they return is
+    printed to a terminal and spoken aloud. A non-breaking hyphen in a
+    clarifying question crashed the app on a cp1252 console, so the prompt
+    itself must not demonstrate characters we don't want back."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT
+
+    for prompt in (SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT):
+        offending = sorted({c for c in prompt if ord(c) > 127})
+        assert offending == [], f"non-ASCII in prompt: {offending}"
+
+
+def test_prompt_asks_for_plain_ascii_output() -> None:
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    assert "plain ASCII punctuation" in SYSTEM_PROMPT
+
+
+def test_typographic_punctuation_is_replaced() -> None:
+    """An instruction is not a guarantee - this is the net under it."""
+    from heypeer.nemotron.client import _plain_punctuation
+
+    assert _plain_punctuation("veux‑tu") == "veux-tu"  # the one that crashed it
+    assert _plain_punctuation("a — b") == "a - b"
+    assert _plain_punctuation("c’est") == "c'est"
+    assert _plain_punctuation("bon…") == "bon..."
+
+
+def test_accents_are_preserved() -> None:
+    """Accents are correct French, Piper needs them to pronounce properly,
+    and the console path handles them. Only pure typography is replaced."""
+    from heypeer.nemotron.client import _plain_punctuation
+
+    assert _plain_punctuation("Vers quel dossier déplacer ça ?") == "Vers quel dossier déplacer ça ?"
+
+
+def test_plain_punctuation_handles_empty_values() -> None:
+    from heypeer.nemotron.client import _plain_punctuation
+
+    assert _plain_punctuation(None) is None
+    assert _plain_punctuation("") == ""
+
+
+def test_question_is_normalised_but_filenames_are_not() -> None:
+    """Filenames must stay byte-exact to match real files on disk; the
+    question is free text headed for a terminal and a speech synthesiser."""
+    settings = Settings(
+        nebius_api_key="k", nebius_base_url="u", nemotron_model_id="m"
+    )
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {
+                "action": "ask",
+                "question": "Quel fichier — celui‑ci ?",
+                "src_filename": "rapport‑final.txt",
+            }
+        )
+        mock_openai_cls.return_value = mock_client
+        intent = NemotronClient(settings).interpret_text("x", skill_context=[])
+
+    assert intent.question == "Quel fichier - celui-ci ?"
+    assert intent.src_filename == "rapport‑final.txt"

@@ -1407,6 +1407,36 @@ cp1252 Windows console raised, and the exception unwound the whole turn loop.
 Reproduced the exact failure against a real cp1252 stream and confirmed the
 character now prints as a placeholder instead of raising.
 
+### Round 17: keep exotic typography out of the prompt, and out of what comes back (2026-08-30)
+
+Follow-up to the `\u2011` crash, on the user's point that prompt engineering
+should avoid characters that are fragile to encode. The technical reason is
+stronger than caution alone: **models mirror the typography they are shown**.
+A prompt written with em dashes invites em dashes in the reply — and it is
+the reply that gets printed to a console and read aloud. The prompt was
+demonstrating exactly the characters we did not want back.
+
+- [x] `SYSTEM_PROMPT` is now pure ASCII (it held an em dash and accented
+      French in its examples), verified by a test rather than by eye.
+      `VERIFY_SYSTEM_PROMPT` already was.
+- [x] The prompt asks explicitly for plain ASCII punctuation in the reply,
+      and says why: the strings are printed and spoken, and a Windows console
+      on a legacy code page cannot encode them.
+- [x] `_plain_punctuation` maps typographic characters to plain equivalents
+      on the way out, because an instruction is not a guarantee. Applied to
+      the clarifying `question` only — **filenames are left byte-exact**,
+      since they have to match real files on disk, and a file may legitimately
+      contain any character.
+- [x] Accents are deliberately kept: they are correct French, Piper needs
+      them to pronounce words properly, and the console path handles them
+      safely since round 16. Only characters with no value beyond typography
+      are replaced.
+
+Three layers, none sufficient alone: an ASCII prompt makes exotic output
+unlikely, the instruction makes it rarer, normalisation catches what still
+gets through, and round 16's unfailing `_log` means even that cannot crash
+anything.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
