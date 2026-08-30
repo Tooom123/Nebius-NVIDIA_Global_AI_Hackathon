@@ -145,20 +145,35 @@ class NemotronClient:
     ) -> Intent:
         """The path actually used end to end: a transcribed instruction
         (locally, via `heypeer/wakeword/stt.py` — see module docstring for
-        why not raw audio), optionally with a screenshot for visual context.
-        A `[text, image_url]` content list is confirmed working against the
-        real Nebius endpoint; plain-string content is used when no
-        screenshot is given, keeping the original text-only path unchanged.
+        why not raw audio).
+
+        **`screenshot_path` is currently unusable against this deployment.**
+        A `[text, image_url]` content list did work here earlier, but the
+        endpoint now rejects any non-string content outright:
+
+            400 - {'loc': ['body','messages',1,'content','str'],
+                   'msg': 'Input should be a valid string'}
+
+        i.e. exactly the same shape of refusal that killed audio input (see
+        the module docstring). It is kept as a parameter, and still builds
+        the multimodal content list when passed, in case the deployment
+        regains support — but nothing calls it with a screenshot any more,
+        and doing so will fail. For the file actions Hey Peer actually
+        performs this costs nothing: the grounding that matters is the real
+        file and folder listing below, not a picture of the screen.
 
         `watched_folders` was added after a real bug: without it, Nemotron
         had no way to know what subfolders already existed and would
         sometimes invent a plausible-but-wrong variant of the name the user
         actually said (e.g. "test" -> created "tests") instead of either
         reusing a real existing folder or using the stated name verbatim."""
-        text = (
-            f"Instruction: {instruction_text}\n"
-            f"Known skills: {_skill_context_block(skill_context)}"
-        )
+        text = f"Instruction: {instruction_text}"
+        # Omitted entirely when there are none, rather than sent as "[]".
+        # Skill learning is off by default now, and a long skill list was
+        # bloating every prompt with names like "Repeated sequence in
+        # unknown app" that Nemotron could never usefully match.
+        if skill_context:
+            text += f"\nKnown skills: {_skill_context_block(skill_context)}"
         if watched_files is not None:
             text += f"\nFiles currently in the watched folder: {json.dumps(watched_files)}"
         if watched_folders is not None:

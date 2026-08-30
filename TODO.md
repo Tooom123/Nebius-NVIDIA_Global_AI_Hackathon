@@ -1025,6 +1025,49 @@ just an ellipse, and it can be replaced every frame.
       (~1.2ms, ≈3.6% of one core at 30fps), and only while on screen. Given
       the performance complaints in round 5, that mattered.
 
+### Round 8: voice-to-action only, screenshot dropped, blob reacts to speech (2026-08-30)
+
+- [x] **400 on every request — the screenshot.** The endpoint now rejects
+      any non-string message content outright:
+      `{'loc': ['body','messages',1,'content','str'], 'msg': 'Input should
+      be a valid string'}` — the same shape of refusal that killed audio
+      input earlier. A `[text, image_url]` list did work here before, so
+      this is a deployment change, not a mistake in the request. Stopped
+      sending it. For the file actions Hey Peer performs, nothing is lost:
+      the grounding that matters is the real file/folder listing, not a
+      picture of the screen — and skipping the capture, resize and upload is
+      faster too. `interpret_text` still accepts `screenshot_path` and still
+      builds the multimodal content list, documented as currently unusable,
+      in case the deployment regains support.
+- [x] **Skill learning off; voice-to-action only** (`HEYPEER_LEARN_SKILLS=1`
+      to re-enable). Every learned skill was being sent to Nemotron on every
+      request — the 400's payload shows a dozen entries all named "Repeated
+      sequence in unknown app" — bloating the prompt with things that could
+      never match a spoken instruction. With it off, the prompt for a real
+      instruction is **135 characters**. Skills already on disk aren't even
+      loaded now, so a backlog can't leak back in; deleting
+      `data/skills/skills.json` removes them for good.
+- [x] **The blob now reacts to *how* the user speaks, not just that they
+      do.** Level previously only scaled it, which reads as a balloon
+      inflating. It now also deepens the wobble (~1.9x) and speeds the
+      morph up (~2.2x), so loud speech visibly agitates the shape —
+      measured: radius spread goes 12.5px -> 23.0px from silence to full
+      level, on top of the size change. Since the outline itself now depends
+      on level, one pre-rendered loop can no longer be scaled to fake it, so
+      frames are pre-rendered per level bucket (5 x 40 = 1.1s once, in the
+      background process, ~11 MB). The raw level is smoothed before picking
+      a bucket, or the shape would snap on every syllable.
+- [x] Added a specular highlight to the gradient — a flat diagonal ramp read
+      as a sticker; lifting the upper left toward white makes it read as a
+      lit volume, matching the reference design.
+
+Still open: the user reports slow startup. Removing the skill load helps a
+little, but the dominant cost is almost certainly loading the Whisper
+("small") and Piper models, which happens on background threads and is
+inherent to running them locally. Worth profiling for real before changing
+anything — a smaller Whisper model would trade back the transcription
+accuracy that fixed the garbled-filename problem.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

@@ -82,11 +82,6 @@ def _default_get_instruction() -> str:
 # never be taken literally as a file/folder name (see `_has_placeholder_name`).
 _PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
 
-# Screenshot sent to Nemotron as visual context. Long edge in pixels and JPEG
-# quality — see `_interpret_audio` for why this isn't a full-resolution PNG.
-SCREENSHOT_MAX_PX = 768
-SCREENSHOT_QUALITY = 60
-
 
 def _has_placeholder_name(intent: Intent) -> bool:
     """Whether any name field on `intent` is a stand-in for "not determined"
@@ -114,11 +109,13 @@ class HeyPeer:
         wakeword_threshold: float = 0.9,
         debug_window: DebugWindow | None = None,
         capture_input: bool = False,
+        learn_skills: bool = False,
     ) -> None:
         self.memory = memory
         self.wakeword_debug = wakeword_debug
         self.wakeword_threshold = wakeword_threshold
         self.capture_input = capture_input
+        self.learn_skills = learn_skills
         self.debug_window = debug_window
         self.detector = detector
         # A separate detector for FILE_MOVE events - see module docstring for
@@ -161,21 +158,24 @@ class HeyPeer:
         print(message)
 
     def start_capture(self) -> None:
-        """Starts passive skill-learning capture (input events + file moves).
-        Native/always-on: called once at app startup, independent of the
-        "Mode auto" voice-activation toggle - observation alone never
-        executes anything on its own, only a resolved wake-word intent does.
+        """Starts passive skill-learning capture, if it's enabled at all.
 
-        Input capture (mouse/keyboard habits) is opt-in via
-        `HEYPEER_CAPTURE_INPUT` - see `Settings.capture_input` for why it's
-        off by default. File-move capture is always on: it's cheap and it's
-        what the demo skill actually learns from."""
+        Both halves are off by default now — Hey Peer is voice-to-action
+        only. See `Settings.learn_skills` and `Settings.capture_input` for
+        why; in short, input hooks cost real performance and the skills
+        learned in practice never matched a spoken instruction while
+        bloating every prompt. Nothing here ever executes anything on its
+        own regardless; only a resolved wake-word intent does."""
+        if not self.learn_skills:
+            return
         if self.capture_input:
             self.watcher.start()
         if self.file_watcher is not None:
             self.file_watcher.start()
 
     def stop_capture(self) -> None:
+        if not self.learn_skills:
+            return
         if self.capture_input:
             self.watcher.stop()
         if self.file_watcher is not None:
@@ -367,6 +367,11 @@ class HeyPeer:
             self.memory.save()
 
     def _skill_context(self) -> list[dict]:
+        """Learned skills offered to Nemotron — empty while skill learning is
+        off, which keeps them out of the prompt entirely rather than sending
+        a list Nemotron can't act on."""
+        if not self.learn_skills:
+            return []
         return [{"id": s.id, "name": s.name} for s in self.memory.all()]
 
     def _watched_files(self) -> list[str] | None:
@@ -435,10 +440,6 @@ class HeyPeer:
         on plenty of ordinary speech, see heypeer/wakeword/verify.py), and
         stripping the wake word out so it doesn't leak into the instruction
         Nemotron sees."""
-        import tempfile
-
-        import pyautogui
-
         from heypeer.wakeword.stt import transcribe
         from heypeer.wakeword.verify import contains_wake_word, strip_wake_word
 
@@ -459,25 +460,18 @@ class HeyPeer:
         if not instruction_text:
             return Intent(action="unknown", skill_id=None, n_repetitions=1)
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # Downscaled JPEG, not a full-resolution PNG. The screenshot is
-            # only context ("what is the user looking at"), and a 1920x1080
-            # PNG is ~730 KB once base64-encoded — measured ~23x larger than
-            # a 768px JPEG carrying the same context. That upload was a real
-            # part of the "action takes too long" delay the user reported.
-            screenshot_path = Path(tmp_dir) / "screenshot.jpg"
-            shot = pyautogui.screenshot()
-            shot.thumbnail((SCREENSHOT_MAX_PX, SCREENSHOT_MAX_PX))
-            shot.convert("RGB").save(
-                str(screenshot_path), format="JPEG", quality=SCREENSHOT_QUALITY
-            )
-            return self.nemotron.interpret_text(
-                instruction_text,
-                self._skill_context(),
-                watched_files=self._watched_files(),
-                watched_folders=self._watched_folders(),
-                screenshot_path=str(screenshot_path),
-            )
+        # No screenshot: this deployment now rejects any non-string message
+        # content with a 400 ("Input should be a valid string"), so sending
+        # one broke every request. See `NemotronClient.interpret_text`'s
+        # docstring. Nothing is lost for file actions — the grounding that
+        # matters is the real file/folder listing, not a picture of the
+        # screen — and skipping the capture and upload is faster too.
+        return self.nemotron.interpret_text(
+            instruction_text,
+            self._skill_context(),
+            watched_files=self._watched_files(),
+            watched_folders=self._watched_folders(),
+        )
 
     def _handle_instruction(self, instruction_text: str) -> None:
         """Text-only path used by the tray's manual prompt and by tests.
@@ -608,10 +602,17 @@ class HeyPeer:
 
 def _build_peer(with_debug_window: bool = False) -> HeyPeer:
     settings = load_settings()
-    memory = SkillMemory(SKILLS_DIR / "skills.json")
-    print(f"Hey Peer starting. {len(memory.all())} skill(s) in memory.")
+    # Skills stored on disk aren't even loaded while learning is off, so a
+    # backlog of previously learned ones can't leak into a prompt or slow
+    # startup. Delete data/skills/skills.json to drop them for good.
+    skills_path = SKILLS_DIR / "skills.json"
+    memory = SkillMemory(skills_path if settings.learn_skills else SKILLS_DIR / "_disabled.json")
+    if settings.learn_skills:
+        print(f"Hey Peer starting. {len(memory.all())} skill(s) in memory.")
+    else:
+        print("Hey Peer starting. Voice-to-action mode (skill learning off).")
     print(f"Nemotron model: {settings.nemotron_model_id}")
-    print(f"Watching for file moves in: {settings.watched_dir}")
+    print(f"Watching folder: {settings.watched_dir}")
     return HeyPeer(
         memory=memory,
         detector=PatternDetector(),
@@ -621,6 +622,7 @@ def _build_peer(with_debug_window: bool = False) -> HeyPeer:
         wakeword_threshold=settings.wakeword_threshold,
         debug_window=DebugWindow() if with_debug_window else None,
         capture_input=settings.capture_input,
+        learn_skills=settings.learn_skills,
     )
 
 

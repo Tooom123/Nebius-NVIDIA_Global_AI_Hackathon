@@ -40,6 +40,12 @@ GLOW_ALPHA = 0.55
 # to fade out inside the image rather than being clipped at its edge.
 BLOB_INSET = 0.76
 
+# Specular highlight: where the "light" sits (as a fraction of the frame),
+# how far it reaches, and how far toward white it lifts the gradient.
+HIGHLIGHT_CENTER = (0.34, 0.28)
+HIGHLIGHT_RADIUS = 0.42
+HIGHLIGHT_STRENGTH = 0.42
+
 
 def _gradient(size: int, colors: "tuple[tuple[int, int, int], ...]") -> np.ndarray:
     """A 135-degree linear gradient through `colors`, as an (size, size, 3)
@@ -53,7 +59,17 @@ def _gradient(size: int, colors: "tuple[tuple[int, int, int], ...]") -> np.ndarr
     channels = [
         np.interp(t, stops, [c[i] for c in colors]) for i in range(3)
     ]
-    return np.clip(np.stack(channels, axis=-1), 0, 255).astype(np.uint8)
+    rgb = np.stack(channels, axis=-1)
+
+    # Soft off-centre highlight, lifting the upper left toward white. Without
+    # it the flat diagonal ramp reads as a sticker; this is what gives the
+    # blob the sense of being a lit volume, as in the reference design.
+    hx, hy = HIGHLIGHT_CENTER
+    distance = np.sqrt((xs / size - hx) ** 2 + (ys / size - hy) ** 2)
+    highlight = np.clip(1 - distance / HIGHLIGHT_RADIUS, 0, 1) ** 2 * HIGHLIGHT_STRENGTH
+    rgb = rgb + (255 - rgb) * highlight[..., None]
+
+    return np.clip(rgb, 0, 255).astype(np.uint8)
 
 
 def render_alpha(size: int, t: float, level: float = 0.0) -> Image.Image:
