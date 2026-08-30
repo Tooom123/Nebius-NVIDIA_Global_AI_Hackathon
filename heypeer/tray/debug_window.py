@@ -33,13 +33,20 @@ softness, the glow reaching past the silhouette, growth with mic level — all
 assertable headlessly, none of which was checkable while the design lived in
 CSS behind a web view.
 
-## Cost
+## Smoothness
 
-`render_alpha` is the expensive half (~18ms: polygon fill, blur,
-supersampled downscale) but depends only on time and level, never on color.
-So a loop of alpha frames is rendered **once** up front (~0.2s) and reused;
-per frame only the cheap `compose` runs (~1.2ms, measured) — about 3.6% of
-one core at 30fps, and only while the indicator is actually on screen.
+An earlier version pre-rendered a short loop of frames and cycled them,
+because rendering cost ~18ms. The shape therefore advanced only a few times
+a second and the motion looked stepped. `blob_render` now draws an analytic
+radial field instead of rasterising a polygon and blurring it (~1.4ms,
+measured), so every frame is rendered live at 30fps from continuously
+varying parameters.
+
+Nothing is set directly: amplitude, speed, glow and radius are all eased
+toward their targets, which both gives the design's 400-700ms return to a
+near-sphere and makes a visible jump impossible whatever changes. The noise
+phase is *accumulated* rather than derived from wall-clock time, so a change
+of speed bends the motion instead of teleporting it.
 
 Runs in its own process: a thread-based version once hung the entire
 interpreter in this project's Linux sandbox, and `Process.start()` returns
@@ -52,39 +59,43 @@ pretending to work.
 import multiprocessing
 import time
 
-# Palette per state: blue -> violet -> magenta, shifted per state. The shape
-# language is identical across states, so a transition reads as one object
-# reacting rather than a different indicator appearing.
-STATE_PALETTES = {
-    "idle": ((58, 74, 96), (74, 74, 106), (106, 74, 122)),
-    "listening": ((79, 140, 255), (123, 77, 255), (224, 64, 251)),
-    "recording": ((79, 140, 255), (139, 92, 255), (255, 79, 216)),
-    "thinking": ((91, 109, 255), (155, 77, 255), (208, 64, 251)),
-    "speaking": ((95, 168, 255), (160, 92, 255), (255, 106, 224)),
+# Per state: how far the outline strays from a circle, how fast it churns,
+# how strong the halo is, and how much the mic level adds to each. The
+# palette is deliberately the same throughout - it is one object reacting,
+# not a set of different indicators.
+#
+#   idle       barely breathing, a near-sphere
+#   listening  mic open: a little more irregular, halo lifted
+#   recording  driven by the voice - the level terms do the work
+#   thinking   busy but not voice-driven
+#   speaking   the most alive: broad lobes forming and dissolving
+STATE_ENERGY = {
+    "idle":      {"amplitude": 0.030, "speed": 0.35, "glow": 0.35, "level_gain": 0.0},
+    "listening": {"amplitude": 0.070, "speed": 0.60, "glow": 0.50, "level_gain": 0.0},
+    "recording": {"amplitude": 0.080, "speed": 0.80, "glow": 0.55, "level_gain": 1.0},
+    "thinking":  {"amplitude": 0.120, "speed": 1.60, "glow": 0.60, "level_gain": 0.0},
+    "speaking":  {"amplitude": 0.150, "speed": 1.10, "glow": 0.70, "level_gain": 0.6},
 }
 
-# Only shown while a turn is actually happening — the indicator should appear
+# What a full-scale mic level adds on top of the state's own values.
+LEVEL_AMPLITUDE_GAIN = 0.13
+LEVEL_SPEED_GAIN = 1.4
+LEVEL_GLOW_GAIN = 0.35
+# The voice drives energy far more than size, per the design: a loud voice
+# makes the shape churn rather than simply inflate.
+LEVEL_RADIUS_GAIN = 0.06
+
+# Only shown while a turn is actually happening - the indicator should appear
 # when Hey Peer has heard something, not sit on screen permanently.
 _VISIBLE_STATES = {"recording", "thinking", "speaking"}
 
 SIZE = 240
 TOP_MARGIN = 12  # resting distance from the top edge of the screen
-
-# Pre-rendered morph loop, per level bucket. The mic level changes the
-# outline itself now (it deepens and speeds up the wobble, not just the
-# size — see blob_shape), so a single loop can't be scaled to fake it; each
-# bucket gets its own. 40 frames x 5 buckets ~= 1s of one-off work in the
-# background process, and ~11 MB of masks.
-LOOP_FRAMES = 40
-LOOP_STEP_SECONDS = 0.28
-LEVEL_BUCKETS = 5
-
-# The raw mic level is jumpy; smoothing it keeps the blob from snapping
-# between buckets on every syllable.
-LEVEL_SMOOTHING = 0.25
+# Leaves room for the glow, and for the outline at its most deformed.
+BASE_RADIUS = SIZE * 0.30
 
 FRAME_INTERVAL = 1 / 30
-# While nothing is on screen — the overwhelmingly common case — idle cheaply
+# While nothing is on screen - the overwhelmingly common case - idle cheaply
 # instead of running the frame loop for nothing.
 IDLE_POLL_INTERVAL = 0.1
 
@@ -92,6 +103,15 @@ IDLE_POLL_INTERVAL = 0.1
 # so a state change mid-slide retargets smoothly instead of jumping.
 SLIDE_EASING = 0.24
 SLIDE_SETTLED_PX = 2
+
+# Every animated quantity is eased toward its target rather than set. At
+# 30fps this settles in roughly half a second, which is the design's 400-700ms
+# transition - and it means a state change can never produce a visible jump,
+# whichever quantity it moves.
+ENERGY_EASING = 0.14
+# The raw mic level is jumpy; smoothing it first keeps the shape from
+# twitching on every syllable.
+LEVEL_EASING = 0.30
 
 
 def _screen_width(default: int = 1920) -> int:
@@ -104,8 +124,9 @@ def _screen_width(default: int = 1920) -> int:
 
 
 def _window_process(command_queue: "multiprocessing.Queue") -> None:
-    """Owns the overlay window, the pre-rendered frames, and the animation."""
-    from heypeer.tray.blob_render import compose, render_alpha
+    """Owns the overlay window and the animation loop."""
+    from heypeer.tray.blob_render import OUTLINE_ANGLES, render
+    from heypeer.tray.blob_shape import radius_profile
     from heypeer.tray.overlay import Overlay, is_supported
 
     if not is_supported():
@@ -120,25 +141,21 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
             if command_queue.get()[0] == "quit":
                 return
 
-    # [bucket][frame] — indexed by smoothed level and animation time.
-    frames = [
-        [
-            render_alpha(SIZE, t=i * LOOP_STEP_SECONDS, level=bucket / (LEVEL_BUCKETS - 1))
-            for i in range(LOOP_FRAMES)
-        ]
-        for bucket in range(LEVEL_BUCKETS)
-    ]
-
     x = max(0, (_screen_width() - SIZE) // 2)
     offscreen_y = -SIZE - 20
 
     state = "idle"
     visible = False
     level = 0.0
-    smoothed_level = 0.0
+    smooth_level = 0.0
+    # Current (eased) animation parameters, started at the idle target so the
+    # first frame isn't a jump from nothing.
+    current = dict(STATE_ENERGY["idle"])
+    current["radius"] = BASE_RADIUS
+    phase = 0.0
     y = float(offscreen_y)
     on_screen = False
-    started_at = time.time()
+    last_frame_at = time.time()
 
     while True:
         overlay.pump_messages()
@@ -159,6 +176,7 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
 
         if not on_screen and not visible:
             time.sleep(IDLE_POLL_INTERVAL)
+            last_frame_at = time.time()
             continue
 
         if visible and not on_screen:
@@ -166,19 +184,34 @@ def _window_process(command_queue: "multiprocessing.Queue") -> None:
             on_screen = True
             overlay.set_visible(True)
 
+        now = time.time()
+        dt = min(now - last_frame_at, 0.1)  # a stall must not lurch the phase
+        last_frame_at = now
+
+        smooth_level += (level - smooth_level) * LEVEL_EASING
+        target = STATE_ENERGY.get(state, STATE_ENERGY["idle"])
+        gain = target["level_gain"] * smooth_level
+        wanted = {
+            "amplitude": target["amplitude"] + LEVEL_AMPLITUDE_GAIN * gain,
+            "speed": target["speed"] + LEVEL_SPEED_GAIN * gain,
+            "glow": target["glow"] + LEVEL_GLOW_GAIN * gain,
+            "radius": BASE_RADIUS * (1 + LEVEL_RADIUS_GAIN * gain),
+        }
+        for key, value in wanted.items():
+            current[key] += (value - current[key]) * ENERGY_EASING
+
+        # Accumulated, not derived from wall-clock time: a change of speed
+        # must bend the motion, never teleport the phase.
+        phase += current["speed"] * dt
+
         target_y = float(TOP_MARGIN if visible else offscreen_y)
         y += (target_y - y) * SLIDE_EASING
         if abs(target_y - y) < SLIDE_SETTLED_PX:
             y = target_y
 
-        smoothed_level += (level - smoothed_level) * LEVEL_SMOOTHING
-        bucket = min(LEVEL_BUCKETS - 1, int(round(smoothed_level * (LEVEL_BUCKETS - 1))))
-        frame = int((time.time() - started_at) / LOOP_STEP_SECONDS) % LOOP_FRAMES
-
+        radii = radius_profile(OUTLINE_ANGLES, phase, current["amplitude"])
         overlay.update(
-            compose(frames[bucket][frame], STATE_PALETTES.get(state, STATE_PALETTES["idle"])),
-            x,
-            int(y),
+            render(SIZE, radii, current["radius"], glow=current["glow"]), x, int(y)
         )
 
         if not visible and y == target_y:

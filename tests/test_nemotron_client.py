@@ -348,3 +348,16 @@ def test_question_is_normalised_but_filenames_are_not() -> None:
 
     assert intent.question == "Quel fichier - celui-ci ?"
     assert intent.src_filename == "rapport‑final.txt"
+
+
+def test_prompt_states_that_verbs_are_examples_not_a_vocabulary() -> None:
+    """Regression test: "bouge le fichier A vers B" was not understood. The
+    request does go through the model - but the prompt listed exactly one
+    verb per action, and a small model anchors hard on its examples. Saying
+    outright that they are examples, and giving the common synonyms, is the
+    fix; it is a prompt defect, not a comprehension one."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    assert "examples, not a vocabulary" in SYSTEM_PROMPT
+    for synonym in ("bouge", "mets", "range", "vire", "efface", "rebaptise"):
+        assert synonym in SYSTEM_PROMPT

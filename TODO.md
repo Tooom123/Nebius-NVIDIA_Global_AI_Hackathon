@@ -1506,6 +1506,53 @@ default, so the broken path produced plausible behaviour rather than an
 obvious failure. It only became visible once a *second* change started
 deleting the audio that the too-high threshold had mislabelled.
 
+### Round 20: synonyms, and a genuinely continuous blob (2026-08-30)
+
+- [x] **"bouge le fichier A vers B" was not understood.** The user asked
+      whether the request even reaches an AI. It does — `interpret_text`
+      sends it to Nemotron — so the failure is more interesting than a
+      missing keyword: the prompt listed exactly **one** verb per action
+      ("deplace", "renomme", "supprime"), and a small model anchors hard on
+      its examples rather than generalising from them. Fixed by saying
+      outright that the verbs are examples and not a vocabulary, and listing
+      the common French alternatives (bouge, mets, range, transfere, vire,
+      efface, rebaptise, "reviens en arriere"...). A prompt defect, not a
+      comprehension one.
+- [x] **The blob was stepped, and now moves continuously.** The cause was
+      structural: frames were pre-rendered into a short loop and cycled at
+      one frame every 0.28s — about 3.6fps of actual shape change, however
+      often the window was updated. Pre-rendering existed because drawing a
+      frame cost ~18ms (polygon fill at 3x supersample, then a gaussian
+      blur).
+      Replaced with an **analytic radial field**: for each pixel, its angle
+      gives the outline's radius there and its distance decides body, edge or
+      glow. Measured at ~1.4ms a frame, so every frame is now rendered live
+      at 30fps from continuously varying parameters. Antialiasing and the
+      glow fall out of the field itself rather than being approximated.
+- [x] Implemented the requested design properly:
+      - `R(theta) = R0 * (1 + A * N(theta, phase))`, with `N` a sum of low
+        harmonics drifting at mutually irrational speeds. Band-limited **by
+        construction**, so the outline can never develop a spike or corner
+        however hard the amplitude is driven — asserted by a test, since it
+        is the property the whole look depends on.
+      - Four states as specified: idle breathing at ~3%, listening more
+        irregular with a lifted halo, speaking driven by amplitude with lobes
+        forming and dissolving, and a smooth return toward a near-sphere.
+      - The transition is not a special case: every animated quantity
+        (amplitude, speed, glow, radius) is *eased* toward its target, which
+        settles in roughly half a second — the design's 400-700ms — and makes
+        a visible jump impossible whatever changes.
+      - The noise phase is **accumulated**, not derived from wall-clock time.
+        Evaluating `sin(k*theta + speed*t)` would make any change of speed
+        rewrite the phase and teleport the shape; accumulating bends the
+        motion instead.
+      - Voice drives energy far more than size, as specified: level mostly
+        raises amplitude, churn speed and glow, and only slightly the radius.
+      - Palette exactly as given: cyan #7DD3FC, blue #2563EB, violet #7C3AED,
+        radial with the cyan off-centre toward the top for volume.
+- [x] Deleted `blob_points`, left over from the window-region era and now
+      used only by its own tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
