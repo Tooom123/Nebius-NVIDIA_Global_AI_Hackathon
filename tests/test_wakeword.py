@@ -227,17 +227,20 @@ def test_record_instruction_respects_max_duration_cap(toy_model: Path) -> None:
     assert len(audio) == int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES) * CHUNK_SAMPLES
 
 
-def test_start_skips_scoring_and_triggering_while_muted(
+def test_start_never_triggers_while_muted(
     monkeypatch: pytest.MonkeyPatch, toy_model: Path
 ) -> None:
-    """While muted (Hey Peer's own TTS is playing - see main.py's `_speak`),
-    `start()`'s loop must drain the mic without scoring or triggering, so
-    Hey Peer's own voice bleeding into the mic can't be scored or
-    false-trigger the wake word."""
+    """While muted (a turn is being handled), `start()`'s loop must never
+    trigger, so Hey Peer's own TTS or background chatter can't start a
+    second turn on top of the first.
+
+    It *does* keep the feature buffer moving, on silence — see the muted
+    branch in `start`. Skipping the update entirely left the buffer holding
+    the wake word that had just fired, which stopped the listener re-arming
+    and made chaining two commands impossible."""
     listener = WakeWordListener(str(toy_model), threshold=0.0)  # anything would trigger if scored
     listener.mute()
-    process_spy = MagicMock(wraps=listener.process_chunk)
-    listener.process_chunk = process_spy
+    on_detected = MagicMock()
 
     chunks = [_loud_chunk()] * 3
     fake_stream = _FakeStream(chunks)
@@ -259,9 +262,9 @@ def test_start_skips_scoring_and_triggering_while_muted(
     fake_pyaudio_module.paInt16 = 8
     monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
 
-    listener.start(on_detected=MagicMock())
+    listener.start(on_detected=on_detected)
 
-    process_spy.assert_not_called()
+    on_detected.assert_not_called()
 
 
 def test_play_chime_writes_audio_to_output_stream(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -485,3 +488,37 @@ def test_save_wav_round_trips(tmp_path: Path) -> None:
     read_back, sr = sf.read(str(out_path), dtype="int16")
     assert sr == SR
     assert len(read_back) == len(audio)
+
+
+def test_unmute_rearms_so_a_second_wake_word_works_immediately(toy_model: Path) -> None:
+    """Regression test for "je ne peux pas enchaîner": after a turn the
+    listener stayed effectively deaf for over a second. Two causes, both
+    fixed — the feature buffer still held the wake word that had just fired
+    (so the score stayed high and `_maybe_trigger` never re-armed), and the
+    cooldown was still running."""
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+
+    assert listener._maybe_trigger(0.9) is True  # first activation
+    assert listener._maybe_trigger(0.9) is False  # correctly debounced
+    listener.mute()
+
+    listener.unmute()
+
+    assert listener._armed is True
+    assert listener._maybe_trigger(0.9) is True  # a second "Hey Peer" lands
+
+
+def test_muted_loop_keeps_the_feature_buffer_moving(toy_model: Path) -> None:
+    """The muted branch feeds silence rather than skipping the update, so the
+    audio that triggered the turn is flushed out instead of lingering and
+    keeping the score high once unmuted."""
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+    loud = _loud_chunk()
+    for _ in range(20):
+        listener.process_chunk(loud)
+    scored_hot = listener._score()
+
+    for _ in range(30):  # what the muted branch does each chunk
+        listener.process_chunk(np.zeros(CHUNK_SAMPLES, dtype=np.int16))
+
+    assert listener._score() < scored_hot

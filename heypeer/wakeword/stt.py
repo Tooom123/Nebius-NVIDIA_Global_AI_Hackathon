@@ -37,9 +37,19 @@ still shouldn't hurt English recognition.
 
 import numpy as np
 
-_model = None
+# Two models, right-sized per job rather than one compromise:
+#
+# * INSTRUCTION_MODEL transcribes the actual command, where accuracy decides
+#   whether a filename comes out as "4.txt" or "4.xt".
+# * VERIFY_MODEL only has to recognise one fixed short phrase ("hey peer"),
+#   matched fuzzily afterwards anyway — and it runs *before* the chime, so
+#   its latency is felt directly. Measured on a 2s clip: 0.99s with "small"
+#   versus 0.37s with "base", i.e. the difference between a cue that feels
+#   immediate and one that lags.
+INSTRUCTION_MODEL = "small"
+VERIFY_MODEL = "base"
 
-MODEL_NAME = "small"
+_models: dict = {}
 
 # Nudges the decoder toward the vocabulary Hey Peer's instructions actually
 # use, without forcing a language — helps most on short phrases and
@@ -50,29 +60,40 @@ INITIAL_PROMPT = (
 )
 
 
-def _get_model():
-    global _model
-    if _model is None:
+def _get_model(name: str = INSTRUCTION_MODEL):
+    if name not in _models:
         from faster_whisper import WhisperModel
 
-        _model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
-    return _model
+        _models[name] = WhisperModel(name, device="cpu", compute_type="int8")
+    return _models[name]
 
 
 def preload() -> None:
-    """Loads the Whisper model now instead of on first use, so the user's
-    first spoken instruction isn't delayed by a several-second model load."""
-    _get_model()
+    """Loads both Whisper models now instead of on first use, so neither the
+    first spoken instruction nor the first wake-word verification is delayed
+    by a model load."""
+    _get_model(VERIFY_MODEL)
+    _get_model(INSTRUCTION_MODEL)
 
 
-def transcribe(audio: np.ndarray) -> str:
+def transcribe(
+    audio: np.ndarray, use_vad: bool = True, model_name: str = INSTRUCTION_MODEL
+) -> str:
     """Transcribes int16 mono 16kHz PCM audio to text. Returns "" for
-    empty/silent input rather than calling the model on nothing."""
+    empty/silent input rather than calling the model on nothing.
+
+    `use_vad=False` for short clips. The VAD filter earns its keep on a
+    several-second instruction, where it stops Whisper hallucinating
+    sentences out of background noise — but on a ~2s clip it often discards
+    the whole thing and returns nothing. That made wake-word verification
+    (which transcribes exactly such a clip) reject real activations, so the
+    user had to repeat themselves.
+    """
     if len(audio) == 0:
         return ""
     audio_float = audio.astype(np.float32) / 32768.0
-    model = _get_model()
+    model = _get_model(model_name)
     segments, _info = model.transcribe(
-        audio_float, language=None, vad_filter=True, initial_prompt=INITIAL_PROMPT
+        audio_float, language=None, vad_filter=use_vad, initial_prompt=INITIAL_PROMPT
     )
     return " ".join(segment.text.strip() for segment in segments).strip()

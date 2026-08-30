@@ -298,10 +298,24 @@ class HeyPeer:
         thread while the instruction is still being recorded, so confirmation
         still lands within a few hundred ms of the wake word."""
         try:
-            from heypeer.wakeword.stt import transcribe
+            from heypeer.wakeword.stt import VERIFY_MODEL, transcribe
             from heypeer.wakeword.verify import contains_wake_word
 
-            if not contains_wake_word(transcribe(pre_trigger_audio)):
+            # No VAD filter: this clip is ~2s and the filter frequently
+            # discards all of it, which read as "Hey Peer ignores me and I
+            # have to repeat myself". See `transcribe`.
+            transcript = transcribe(
+                pre_trigger_audio, use_vad=False, model_name=VERIFY_MODEL
+            )
+            if not transcript:
+                # Heard *something* (the detector fired) but couldn't make
+                # out words. That's uncertainty, not a refusal — keep
+                # recording and let the full-audio check in
+                # `_interpret_audio`, which has the whole instruction to work
+                # with, be the one that decides. No chime, since we can't
+                # honestly confirm yet.
+                return True
+            if not contains_wake_word(transcript):
                 return False
         except Exception as exc:
             # Never lose a genuine activation to a verification failure —

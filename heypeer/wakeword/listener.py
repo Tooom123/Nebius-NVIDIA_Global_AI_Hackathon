@@ -247,7 +247,14 @@ class WakeWordListener:
         self._muted = True
 
     def unmute(self) -> None:
+        """Re-arms as well as unmuting, so a new "Hey Peer" can follow
+        immediately after a turn. Without the explicit re-arm the listener
+        waited for the score to fall below the threshold on its own, which
+        made chaining two commands feel broken."""
         self._muted = False
+        self._armed = True
+        self._last_trigger_time = 0.0
+        self._prebuffer.clear()
 
     def _maybe_trigger(self, score: float) -> bool:
         """Returns True at most once per utterance (rising edge + cooldown)."""
@@ -370,7 +377,16 @@ class WakeWordListener:
             while self._running:
                 raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
                 if self._muted:
-                    continue  # drain the mic but don't score/trigger while Hey Peer is talking
+                    # Keep the streaming feature buffer moving, on silence
+                    # rather than on the real (muted) audio. Skipping the
+                    # update entirely — which is what this used to do — left
+                    # the buffer holding the wake word that just fired: on
+                    # unmute it still scored high, so `_maybe_trigger` never
+                    # re-armed and a second "Hey Peer" was ignored for over a
+                    # second. Feeding silence flushes it, so Hey Peer is ready
+                    # again the moment the turn ends.
+                    self.process_chunk(np.zeros(CHUNK_SAMPLES, dtype=np.int16))
+                    continue
                 chunk = np.frombuffer(raw, dtype=np.int16)
                 self._prebuffer.append(chunk)
                 score = self.process_chunk(chunk)

@@ -75,6 +75,7 @@ class Overlay:
         self._hwnd = None
         self._visible = False
         self._wndclass = None  # kept referenced so its WNDPROC isn't collected
+        self._surface = None  # cached (screen DC, memory DC, bitmap, bits) - see _ensure_surface
 
     def create(self) -> bool:
         """Creates the window (hidden). Returns whether it succeeded — a
@@ -143,29 +144,24 @@ class Overlay:
             self._hwnd = None
             return False
 
-    def update(self, image, x: int, y: int) -> bool:
-        """Pushes `image` (RGBA PIL, window-sized) to the screen at (x, y)."""
-        if not self._hwnd:
-            return False
+    def _ensure_surface(self):
+        """Creates the drawing surface once and caches it.
+
+        Everything here used to be rebuilt on every frame — a screen DC, a
+        memory DC and a DIB section created and destroyed 30 times a second,
+        plus re-declaring every ctypes signature. GDI objects are a finite
+        per-process resource and their allocation is not cheap; that churn is
+        what made the indicator feel heavy. The surface depends only on the
+        window size, which never changes, so it belongs here.
+        """
+        if self._surface is not None:
+            return self._surface
+
         import ctypes
         from ctypes import wintypes
 
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
-
-        class POINT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-        class SIZE(ctypes.Structure):
-            _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
-
-        class BLENDFUNCTION(ctypes.Structure):
-            _fields_ = [
-                ("BlendOp", ctypes.c_ubyte),
-                ("BlendFlags", ctypes.c_ubyte),
-                ("SourceConstantAlpha", ctypes.c_ubyte),
-                ("AlphaFormat", ctypes.c_ubyte),
-            ]
 
         class BITMAPINFOHEADER(ctypes.Structure):
             _fields_ = [
@@ -184,8 +180,6 @@ class Overlay:
 
         user32.GetDC.argtypes = [wintypes.HWND]
         user32.GetDC.restype = wintypes.HDC
-        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
-        user32.ReleaseDC.restype = ctypes.c_int
         gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
         gdi32.CreateCompatibleDC.restype = wintypes.HDC
         gdi32.CreateDIBSection.argtypes = [
@@ -195,27 +189,15 @@ class Overlay:
         gdi32.CreateDIBSection.restype = wintypes.HBITMAP
         gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
         gdi32.SelectObject.restype = wintypes.HANDLE
-        gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
-        gdi32.DeleteObject.restype = wintypes.BOOL
-        gdi32.DeleteDC.argtypes = [wintypes.HDC]
-        gdi32.DeleteDC.restype = wintypes.BOOL
-        user32.UpdateLayeredWindow.argtypes = [
-            wintypes.HWND, wintypes.HDC, ctypes.POINTER(POINT), ctypes.POINTER(SIZE),
-            wintypes.HDC, ctypes.POINTER(POINT), wintypes.COLORREF,
-            ctypes.POINTER(BLENDFUNCTION), wintypes.DWORD,
-        ]
-        user32.UpdateLayeredWindow.restype = wintypes.BOOL
 
-        width, height = image.size
-        screen_dc = memory_dc = bitmap = None
         try:
             screen_dc = user32.GetDC(None)
             memory_dc = gdi32.CreateCompatibleDC(screen_dc)
 
             header = BITMAPINFOHEADER()
             header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-            header.biWidth = width
-            header.biHeight = -height  # negative: top-down rows, matching PIL
+            header.biWidth = self.width
+            header.biHeight = -self.height  # negative: top-down rows, matching PIL
             header.biPlanes = 1
             header.biBitCount = 32
             header.biCompression = BI_RGB
@@ -225,15 +207,55 @@ class Overlay:
                 memory_dc, ctypes.byref(header), DIB_RGB_COLORS, ctypes.byref(bits), None, 0
             )
             if not bitmap:
-                return False
+                return None
             gdi32.SelectObject(memory_dc, bitmap)
+            self._surface = (screen_dc, memory_dc, bitmap, bits)
+            return self._surface
+        except Exception:
+            return None
 
+    def update(self, image, x: int, y: int) -> bool:
+        """Pushes `image` (RGBA PIL, window-sized) to the screen at (x, y)."""
+        if not self._hwnd:
+            return False
+        surface = self._ensure_surface()
+        if surface is None:
+            return False
+
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        screen_dc, memory_dc, _bitmap, bits = surface
+
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class SIZE(ctypes.Structure):
+            _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+        class BLENDFUNCTION(ctypes.Structure):
+            _fields_ = [
+                ("BlendOp", ctypes.c_ubyte),
+                ("BlendFlags", ctypes.c_ubyte),
+                ("SourceConstantAlpha", ctypes.c_ubyte),
+                ("AlphaFormat", ctypes.c_ubyte),
+            ]
+
+        user32.UpdateLayeredWindow.argtypes = [
+            wintypes.HWND, wintypes.HDC, ctypes.POINTER(POINT), ctypes.POINTER(SIZE),
+            wintypes.HDC, ctypes.POINTER(POINT), wintypes.COLORREF,
+            ctypes.POINTER(BLENDFUNCTION), wintypes.DWORD,
+        ]
+        user32.UpdateLayeredWindow.restype = wintypes.BOOL
+
+        try:
             payload = _premultiplied_bgra(image)
             ctypes.memmove(bits, payload, len(payload))
 
             blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
             position = POINT(int(x), int(y))
-            size = SIZE(width, height)
+            size = SIZE(self.width, self.height)
             source = POINT(0, 0)
             return bool(
                 user32.UpdateLayeredWindow(
@@ -243,15 +265,29 @@ class Overlay:
             )
         except Exception:
             return False
-        finally:
-            # GDI objects are a finite process-wide resource; leaking one per
-            # frame at 30fps would exhaust them within minutes.
-            if bitmap:
-                gdi32.DeleteObject(bitmap)
-            if memory_dc:
-                gdi32.DeleteDC(memory_dc)
-            if screen_dc:
-                user32.ReleaseDC(None, screen_dc)
+
+    def _release_surface(self) -> None:
+        """GDI objects are a finite process-wide resource — the cached
+        surface has to be handed back explicitly."""
+        if self._surface is None:
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+
+        screen_dc, memory_dc, bitmap, _bits = self._surface
+        self._surface = None
+        try:
+            gdi32.DeleteObject(bitmap)
+            gdi32.DeleteDC(memory_dc)
+            user32.ReleaseDC(None, screen_dc)
+        except Exception:
+            pass
 
     def set_visible(self, visible: bool) -> None:
         if not self._hwnd or visible == self._visible:
@@ -310,6 +346,7 @@ class Overlay:
         user32 = ctypes.windll.user32
         user32.DestroyWindow.argtypes = [wintypes.HWND]
         user32.DestroyWindow.restype = wintypes.BOOL
+        self._release_surface()
         try:
             user32.DestroyWindow(self._hwnd)
         except Exception:
