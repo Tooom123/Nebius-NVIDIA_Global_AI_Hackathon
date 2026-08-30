@@ -1384,6 +1384,29 @@ myself while testing and had to restore it.)
 - [x] `evaluate` defaults to the same resolution, so it scores whichever
       model the app would actually load rather than a fixed path.
 
+### Round 16: model-generated text must not be able to kill the app (2026-08-30)
+
+First live run of the personalised model: **the wake word fired correctly**,
+then the app crashed with
+`UnicodeEncodeError: 'charmap' codec can't encode character '\u2011'`.
+
+U+2011 is a non-breaking hyphen, and it came from Nemotron — the clarifying
+question added in round 11 (`ask`) is printed straight to the console. The
+project already had a rule that console strings are plain ASCII, after
+mojibake in MINGW64; what changed is that some of what gets printed is now
+**model output**, whose characters are not ours to choose. Printing it on a
+cp1252 Windows console raised, and the exception unwound the whole turn loop.
+
+- [x] `_log` can no longer raise: on `UnicodeEncodeError` it re-encodes with
+      replacement. A mangled character is cosmetic; losing the session over
+      one is not.
+- [x] `main()` reconfigures stdout/stderr to UTF-8 with `errors="replace"`
+      where the streams support it, so the same protection covers every other
+      `print` in the app rather than just this one path.
+
+Reproduced the exact failure against a real cp1252 stream and confirmed the
+character now prints as a placeholder instead of raising.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
