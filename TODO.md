@@ -1475,6 +1475,37 @@ worst of it.
       half two rounds ago, and trimming afterwards gets the latency back
       without reopening that.
 
+### Round 19: the latency fix broke comprehension - reverted, and an older bug found (2026-08-30)
+
+Latency was fixed, but nothing could be understood any more. Reading the
+logs, Nemotron was behaving *correctly* - it asked exactly the right
+questions ("Vers quel dossier ?"). The transcripts arriving were truncated:
+"Deplace le fichier.", "Deplace le fichier 15-". The regression was upstream,
+and it was mine.
+
+- [x] **Reverted the trailing-silence trim from round 18.** "Quiet" there
+      means below the speech threshold, and the end of a spoken sentence
+      routinely trails off below it *while still being speech*. Trimming
+      deleted those words. It saved roughly 0.1s of Whisper input and cost
+      the instruction - a plainly bad trade, especially now that the real
+      latency win (sharing one PortAudio instance) had already landed.
+- [x] **Found why the ends of sentences were being classified as silence at
+      all**: the adaptive speech threshold added in round 4 had never
+      actually worked. `_record_instruction` measured the room's noise floor
+      from `self._prebuffer` — but the caller clears the prebuffer just
+      before calling it, so it always saw an empty list and silently fell
+      back to a fixed -40 dBFS. Every measurement, every room, always the
+      same cutoff.
+      The floor is now measured by the caller *before* clearing and passed
+      in. Measured effect: a quiet room now yields a -50 dBFS threshold
+      instead of -40, so a sentence trailing off at -45 dBFS is kept as
+      speech rather than cut.
+
+Worth noting how this one hid: the fallback value was chosen to be a sane
+default, so the broken path produced plausible behaviour rather than an
+obvious failure. It only became visible once a *second* change started
+deleting the audio that the too-high threshold had mislabelled.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

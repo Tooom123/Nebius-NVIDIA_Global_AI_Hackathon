@@ -47,10 +47,6 @@ INSTRUCTION_MIN_SPEECH_CHUNKS = 3
 # against a slow start (a breath, a pause for thought) truncating the whole
 # instruction to nothing.
 INSTRUCTION_MIN_SECONDS = 1.2
-# Chunks of the trailing silence kept when trimming (see `_record_instruction`).
-# Enough that a soft final consonant is never cut, while still dropping most
-# of the ~1.2s of quiet the end-pointing waits through.
-TRAILING_SILENCE_MARGIN_CHUNKS = 3
 
 # Speech is detected relative to the room's own noise floor rather than at a
 # fixed level. A fixed -40 dBFS threshold assumes one particular mic gain and
@@ -310,6 +306,7 @@ class WakeWordListener:
         stream,
         on_level: "Callable[[float, bool], None] | None" = None,
         should_abort: "Callable[[], bool] | None" = None,
+        noise_floor_dbfs: "float | None" = None,
     ) -> np.ndarray:
         """Records audio right after a wake-word trigger, on the same open
         mic stream, until the user stops talking or a max-duration safety
@@ -320,7 +317,15 @@ class WakeWordListener:
         (measured from the prebuffer, which is real audio from the seconds
         just before the user started speaking) rather than a fixed dBFS
         cutoff — see `speech_threshold_dbfs`."""
-        threshold = speech_threshold_dbfs(estimate_noise_floor(list(self._prebuffer)))
+        # `noise_floor_dbfs` is measured by the caller *before* it clears the
+        # prebuffer. Measuring it here instead — which is what this used to do
+        # — always saw an empty buffer and silently fell back to a fixed
+        # cutoff, so the adaptive threshold never actually adapted. A speaker
+        # quieter than that fixed value had the end of every sentence treated
+        # as silence.
+        if noise_floor_dbfs is None:
+            noise_floor_dbfs = estimate_noise_floor(list(self._prebuffer))
+        threshold = speech_threshold_dbfs(noise_floor_dbfs)
         frames = []
         speech_started = False
         speech_chunks = 0
@@ -352,16 +357,13 @@ class WakeWordListener:
                 and quiet_run >= INSTRUCTION_SILENCE_CHUNKS
             ):
                 break
-        if not frames:
-            return np.zeros(0, dtype=np.int16)
-
-        # Drop the trailing silence we deliberately waited through. Ending a
-        # recording takes ~1.2s of quiet by design, and transcribing that
-        # known-empty tail is pure delay between the user finishing and the
-        # action happening - Whisper's cost scales with audio length. A short
-        # margin is kept so a trailing consonant is never clipped.
-        keep = len(frames) - max(0, quiet_run - TRAILING_SILENCE_MARGIN_CHUNKS)
-        return np.concatenate(frames[:keep]) if keep > 0 else np.concatenate(frames)
+        # The trailing quiet is deliberately kept. Trimming it saved ~0.1s of
+        # transcription and cost far more than that: "quiet" here means below
+        # the speech threshold, and the end of a spoken sentence often trails
+        # off below it while still being speech. Cutting there truncated real
+        # instructions ("Deplace le fichier 15-"), which is a much worse
+        # failure than a fraction of a second of extra Whisper input.
+        return np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
 
     def start(
         self,
@@ -454,13 +456,16 @@ class WakeWordListener:
                 ) + FOLLOWUP_MARGIN_DB:
                     self.cancel_followup()
                     print("[wakeword] Suite (sans mot d'activation).")
+                    noise_floor = estimate_noise_floor(list(self._prebuffer))
                     pre_audio = (
                         np.concatenate(list(self._prebuffer))
                         if self._prebuffer
                         else np.zeros(0, dtype=np.int16)
                     )
                     self._prebuffer.clear()
-                    instruction_audio = self._record_instruction(stream, on_level=on_level)
+                    instruction_audio = self._record_instruction(
+                        stream, on_level=on_level, noise_floor_dbfs=noise_floor
+                    )
                     # No verification: there is no wake word in this audio by
                     # design, so `on_verify` would reject it. `followup=True`
                     # tells the handler the same thing.
@@ -474,6 +479,7 @@ class WakeWordListener:
                     # The prebuffer already holds the wake word (detection
                     # fires at the end of the phrase), so it can be verified
                     # right now — before any chime or on-screen reaction.
+                    noise_floor = estimate_noise_floor(list(self._prebuffer))
                     pre_audio = (
                         np.concatenate(list(self._prebuffer))
                         if self._prebuffer
@@ -504,6 +510,7 @@ class WakeWordListener:
                         stream,
                         on_level=on_level,
                         should_abort=lambda: verdict["ok"] is False,
+                        noise_floor_dbfs=noise_floor,
                     )
                     verifier.join(timeout=VERIFY_TIMEOUT_SECONDS)
 

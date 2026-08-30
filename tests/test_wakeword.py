@@ -467,21 +467,39 @@ def test_record_instruction_enforces_a_minimum_duration(toy_model: Path) -> None
     assert reads["n"] >= min_chunks
 
 
-def test_record_instruction_trims_the_trailing_silence(toy_model: Path) -> None:
-    """Ending a recording waits through ~1.2s of quiet by design;
-    transcribing that known-empty tail is pure delay between the user
-    finishing and the action happening."""
+def test_record_instruction_keeps_everything_it_recorded(toy_model: Path) -> None:
+    """Regression test: trimming the trailing quiet before transcription
+    truncated real instructions ("Deplace le fichier 15-"). "Quiet" means
+    below the speech threshold, and the end of a spoken sentence routinely
+    trails off below it while still being speech. The ~0.1s of Whisper time
+    that trimming saved is not worth losing words over."""
     listener = WakeWordListener(str(toy_model))
-    listener._prebuffer.extend([_quiet_chunk()] * 10)
     speech_chunks = 8
     stream = _FakeStream([_loud_chunk()] * speech_chunks + [_quiet_chunk()] * 60)
 
-    audio = listener._record_instruction(stream)
+    audio = listener._record_instruction(stream, noise_floor_dbfs=-60.0)
 
-    # The speech survives, plus a small margin - but not the whole silent
-    # tail that end-pointing sat through.
-    assert len(audio) >= CHUNK_SAMPLES * speech_chunks
-    assert len(audio) < CHUNK_SAMPLES * (speech_chunks + INSTRUCTION_SILENCE_CHUNKS)
+    # Everything up to the end-pointing decision is handed on, tail included.
+    assert len(audio) >= CHUNK_SAMPLES * (speech_chunks + INSTRUCTION_SILENCE_CHUNKS)
+
+
+def test_noise_floor_is_supplied_by_the_caller(toy_model: Path) -> None:
+    """The prebuffer is cleared before recording starts, so measuring the
+    floor inside `_record_instruction` always saw an empty buffer and fell
+    back to a fixed cutoff — the adaptive threshold never adapted, and a
+    speaker quieter than that fixed value had the end of every sentence
+    treated as silence."""
+    listener = WakeWordListener(str(toy_model))
+    assert not listener._prebuffer  # as it is when recording begins
+
+    # A very low floor means a low speech threshold, so quiet speech still
+    # counts as speech and end-pointing waits for it.
+    quiet_speech = np.full(CHUNK_SAMPLES, 400, dtype=np.int16)
+    stream = _FakeStream([quiet_speech] * 30)
+
+    audio = listener._record_instruction(stream, noise_floor_dbfs=-70.0)
+
+    assert len(audio) > CHUNK_SAMPLES * 20  # it kept listening
 
 
 def test_chime_asset_exists_and_is_loadable() -> None:
