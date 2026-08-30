@@ -628,3 +628,45 @@ def test_a_turn_with_no_followup_hides_the_indicator(tmp_path: Path) -> None:
     peer.on_wake_word()
 
     assert [c.args[0] for c in peer.debug_window.set_state.call_args_list][-1] == "listening"
+
+
+def test_wake_listener_is_wired_to_callbacks_that_exist(tmp_path: Path) -> None:
+    """Regression test for a crash that reached the user: `_run_wake_listener`
+    passed `on_ready=self._on_ready_to_listen` while that method did not
+    exist, so the listener thread died with an AttributeError the first time
+    voice started.
+
+    Nothing covered this because every other test calls `on_wake_word`
+    directly and never goes through `_run_wake_listener`, which needs a real
+    WakeWordListener. The wiring between the two was simply untested - and it
+    is exactly the kind of thing that only fails on a real machine, in a
+    background thread, at the worst moment."""
+    nemotron = MagicMock()
+    peer = HeyPeer(nemotron=nemotron)
+    fake_listener = MagicMock()
+
+    with (
+        patch("heypeer.wakeword.listener.WakeWordListener", return_value=fake_listener),
+        patch("heypeer.wakeword.listener.default_model_path") as model_path,
+    ):
+        model_path.return_value = tmp_path / "model.onnx"
+        (tmp_path / "model.onnx").write_bytes(b"x")
+        peer._run_wake_listener()
+
+    fake_listener.start.assert_called_once()
+    for name, callback in fake_listener.start.call_args.kwargs.items():
+        if name.startswith("on_"):
+            assert callable(callback), f"{name} is not callable"
+
+
+def test_wake_listener_failure_does_not_raise(tmp_path: Path) -> None:
+    """A missing model or a bad audio device degrades to a message rather
+    than an unhandled traceback in a background thread."""
+    peer = HeyPeer(nemotron=MagicMock())
+
+    with patch("heypeer.wakeword.listener.default_model_path") as model_path:
+        model_path.return_value = tmp_path / "absent.onnx"
+        peer._run_wake_listener()  # must not raise
+
+    assert peer._wake_ready.is_set()
+    assert peer._wake_listener is None

@@ -289,13 +289,27 @@ class HeyPeer:
             print(f"[wakeword] Verification failed, accepting the trigger: {exc}")
             return True
 
+        # Only the indicator here. The chime follows once it has landed, in
+        # `_on_ready_to_listen` - a single unambiguous cue rather than a
+        # sound and then, a moment later, something appearing on screen.
+        if self.debug_window is not None:
+            self.debug_window.set_state("recording")
+        return True
+
+    def _on_ready_to_listen(self) -> None:
+        """The indicator has arrived; sound the cue, then let recording start.
+
+        Played synchronously: the beep *is* the "speak now" signal, so the mic
+        must open after it rather than during it - otherwise the recording
+        opens with the beep, which also reads as speech to the energy-based
+        end-pointing. The asset is trimmed to ~0.3s so the wait is barely
+        perceptible."""
         from heypeer.wakeword.listener import play_activation_chime
 
         try:
-            play_activation_chime()
-        except Exception as exc:  # best-effort - never block on a beep
+            play_activation_chime(blocking=True)
+        except Exception as exc:  # best-effort - never hold a turn up for a beep
             print(f"[wakeword] Chime playback failed: {exc}")
-        return True
 
     def _arm_followup(self) -> None:
         """Lets the next command skip the wake word for a few seconds, so a

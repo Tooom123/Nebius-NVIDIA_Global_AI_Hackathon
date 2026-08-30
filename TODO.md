@@ -1711,6 +1711,36 @@ Sequence: "Hey Peer" -> verification -> blob descends (0.30s) -> chime
 (0.32s) -> mic opens. One unambiguous cue instead of a sound followed a
 moment later by something appearing.
 
+### Round 26: a method that was wired up but never written (2026-08-30)
+
+The listener thread died on first use with
+`AttributeError: 'HeyPeer' object has no attribute '_on_ready_to_listen'`.
+
+Last round's edit came in two halves: wire `on_ready=self._on_ready_to_listen`
+into `listener.start`, and add the method it refers to. The first landed; the
+second silently did not, because the text it was anchored to had already
+changed. So the app shipped calling a method that does not exist.
+
+- [x] Added the method, and moved the chime into it — the change round 25 was
+      supposed to make. Verified the resulting sequence end to end:
+      `blob:recording -> chime(blocking=True)`, with the listener's 0.30s
+      wait between them.
+- [x] **Covered the gap that let it through.** No test exercised
+      `_run_wake_listener`: every other test calls `on_wake_word` directly,
+      so the wiring between `HeyPeer` and the listener was untested
+      end-to-end. There is now a test that patches `WakeWordListener` and
+      asserts every `on_*` callback handed to `start()` actually exists and
+      is callable, plus one that a missing model degrades to a message rather
+      than an unhandled traceback in a background thread. Confirmed by
+      deleting the method again and watching the test fail with the user's
+      exact AttributeError.
+
+This is the second time in three rounds that a scripted edit half-applied
+without complaint. The lesson is not "be more careful" — it is that wiring
+between components needs a test that instantiates it, because a name that
+only resolves at call time, on a background thread, will otherwise be found
+by the user rather than by me.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
