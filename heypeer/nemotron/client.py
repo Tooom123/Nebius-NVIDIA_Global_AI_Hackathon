@@ -82,10 +82,14 @@ moves it to the recycle bin/trash, not a permanent delete):
   {"action": "delete_file", \
 "src_filename": "<the exact filename from the watched-folder listing>"}
 
-  For rename_file/delete_file, only pick src_filename from the filenames
-  actually given to you — never invent one. All of the above only apply to
-  a specific single file/folder named directly; if the user's instruction
-  doesn't clearly name one, use "unknown" instead of guessing.
+  The instruction is a *spoken* one that has been transcribed, so filenames
+  arrive the way people say them: usually without the extension ("le fichier
+  4" means 4.txt if that is what the listing contains), sometimes slightly
+  misheard ("15.xt" for "15.txt"). Match what the user said against the
+  listing and answer with the file's real name. If the closest match is
+  still clearly a different file, answer "unknown" rather than picking it.
+  For a rename, if the user gives the new name without an extension, keep
+  the original file's extension.
 
 - If nothing above applies:
   {"action": "unknown"}
@@ -131,9 +135,19 @@ def _parse_intent(raw_content: "str | None") -> Intent:
 class NemotronClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._client = OpenAI(
-            api_key=settings.nebius_api_key, base_url=settings.nebius_base_url
-        )
+        self._openai_client = None
+
+    @property
+    def _client(self) -> OpenAI:
+        """Built on first use rather than at construction. Nothing here needs
+        the network until an instruction is actually interpreted, and
+        deferring it keeps the OpenAI client's setup off the startup path."""
+        if self._openai_client is None:
+            self._openai_client = OpenAI(
+                api_key=self.settings.nebius_api_key,
+                base_url=self.settings.nebius_base_url,
+            )
+        return self._openai_client
 
     def interpret_text(
         self,

@@ -21,6 +21,9 @@ level are all assertable headlessly. None of that was checkable when the
 look lived in CSS.
 """
 
+import math
+from functools import lru_cache
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -40,17 +43,28 @@ GLOW_ALPHA = 0.55
 # to fade out inside the image rather than being clipped at its edge.
 BLOB_INSET = 0.76
 
-# Specular highlight: where the "light" sits (as a fraction of the frame),
-# how far it reaches, and how far toward white it lifts the gradient.
-HIGHLIGHT_CENTER = (0.34, 0.28)
-HIGHLIGHT_RADIUS = 0.42
-HIGHLIGHT_STRENGTH = 0.42
+# Lighting for the spherical shading (see `_gradient`). The light sits up
+# and to the left, matching the reference design's highlight.
+LIGHT_DIRECTION = (-0.45, -0.55, 0.70)
+# Floor brightness on the unlit side — without it the far edge goes black
+# instead of staying a deep saturated colour.
+AMBIENT = 0.62
+# Tight bright spot facing the light. Higher sharpness = smaller, glossier.
+SPECULAR_STRENGTH = 0.5
+SPECULAR_SHARPNESS = 6.0
+# Light picked up along the silhouette, so the edge reads as curved.
+RIM_STRENGTH = 0.16
+RIM_SHARPNESS = 2.5
 
 
+@lru_cache(maxsize=16)
 def _gradient(size: int, colors: "tuple[tuple[int, int, int], ...]") -> np.ndarray:
-    """A 135-degree linear gradient through `colors`, as an (size, size, 3)
-    uint8 array. Diagonal rather than vertical so the blob reads as lit from
-    the upper left, matching the reference design."""
+    """A shaded sphere in `colors`, as an (size, size, 3) uint8 array.
+
+    Cached: it depends only on the size and the palette, neither of which
+    changes per frame, and the shading maths below is far too expensive to
+    redo 30 times a second. The caller must not mutate the result.
+    """
     ys, xs = np.mgrid[0:size, 0:size]
     # Projection onto the (1, 1) diagonal, normalized to 0-1.
     t = (xs + ys) / (2 * (size - 1))
@@ -61,13 +75,35 @@ def _gradient(size: int, colors: "tuple[tuple[int, int, int], ...]") -> np.ndarr
     ]
     rgb = np.stack(channels, axis=-1)
 
-    # Soft off-centre highlight, lifting the upper left toward white. Without
-    # it the flat diagonal ramp reads as a sticker; this is what gives the
-    # blob the sense of being a lit volume, as in the reference design.
-    hx, hy = HIGHLIGHT_CENTER
-    distance = np.sqrt((xs / size - hx) ** 2 + (ys / size - hy) ** 2)
-    highlight = np.clip(1 - distance / HIGHLIGHT_RADIUS, 0, 1) ** 2 * HIGHLIGHT_STRENGTH
-    rgb = rgb + (255 - rgb) * highlight[..., None]
+    # --- Spherical shading -------------------------------------------------
+    # A flat diagonal ramp reads as a sticker. Treating the blob as a lit
+    # sphere is what makes it look three-dimensional, as in the reference
+    # design. Reconstruct a surface normal from the distance to the centre
+    # (z = sqrt(1 - x² - y²), the front hemisphere of a unit sphere) and
+    # light it with a simple Lambert term plus a specular lobe.
+    nx = (xs / (size - 1)) * 2 - 1
+    ny = (ys / (size - 1)) * 2 - 1
+    r2 = np.clip(nx**2 + ny**2, 0, 1)
+    nz = np.sqrt(1 - r2)
+
+    lx, ly, lz = LIGHT_DIRECTION
+    norm = math.sqrt(lx * lx + ly * ly + lz * lz)
+    lambert = np.clip((nx * lx + ny * ly + nz * lz) / norm, 0, 1)
+
+    # Ambient floor keeps the unlit side coloured rather than black.
+    shading = AMBIENT + (1 - AMBIENT) * lambert
+    rgb = rgb * shading[..., None]
+
+    # Specular: a tight highlight where the surface faces the light most
+    # directly — the wet, glassy dot that sells the sphere.
+    specular = lambert**SPECULAR_SHARPNESS * SPECULAR_STRENGTH
+    rgb = rgb + (255 - rgb) * specular[..., None]
+
+    # Rim light on the far edge, the way a real object picks up light from
+    # its surroundings. Without it the blob's silhouette dies into the
+    # background instead of reading as a curved edge.
+    rim = np.clip(1 - nz, 0, 1) ** RIM_SHARPNESS * RIM_STRENGTH
+    rgb = rgb + (255 - rgb) * rim[..., None]
 
     return np.clip(rgb, 0, 255).astype(np.uint8)
 

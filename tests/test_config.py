@@ -32,7 +32,7 @@ def test_empty_string_env_vars_fall_back_to_defaults(
     settings = load_settings()  # must not raise
 
     assert settings.watched_dir == Path.home() / "Downloads"
-    assert settings.wakeword_threshold == 0.9
+    assert settings.wakeword_threshold == 0.55
     assert settings.wakeword_debug is False
 
 
