@@ -435,9 +435,14 @@ def test_the_prompt_tells_the_model_to_answer_rather_than_guess_an_action() -> N
     the prompt, not just in the reviewer's head."""
     from heypeer.nemotron.client import SYSTEM_PROMPT
 
-    assert '"reply"' in SYSTEM_PROMPT
-    assert "do NOT invent an action name" in SYSTEM_PROMPT
-    assert "end_turn" in SYSTEM_PROMPT
+    # Whitespace-normalised: this is a sentence in a wrapped paragraph, and
+    # asserting on where the line breaks fall makes the test fail every time
+    # the paragraph is re-wrapped without its meaning changing (round 36
+    # rewrapped this exact sentence while fixing an unrelated contradiction).
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    assert '"reply"' in prompt
+    assert "do NOT invent an action name" in prompt
+    assert "end_turn" in prompt
 
 
 def test_the_prompt_forbids_replaying_an_action_from_earlier_in_the_exchange() -> None:
@@ -459,7 +464,11 @@ def test_the_prompt_forbids_inventing_facts_it_cannot_check() -> None:
     check."""
     from heypeer.nemotron.client import SYSTEM_PROMPT
 
-    assert "You cannot see the" in SYSTEM_PROMPT
+    # Reworded in round 36 (the model can now genuinely see the screen via
+    # "read_screen", so "you cannot see the screen" became actively wrong) -
+    # checking the surviving, still-true half of the same instruction:
+    # Hey Peer still has no clock or calendar, and still must not invent one.
+    assert "You do not know the current time" in SYSTEM_PROMPT
     assert "Making one up is worse than saying so" in SYSTEM_PROMPT
 
 
@@ -510,6 +519,30 @@ def test_nothing_hey_peer_can_do_is_listed_as_something_it_cannot() -> None:
         assert described not in section, (
             f"the prompt refuses {described!r} ({action!r}), which Hey Peer does"
         )
+
+
+def test_nothing_hey_peer_can_do_is_listed_as_something_it_cannot_by_keyword() -> None:
+    """The exact-phrase check above missed a real instance: round 35 added
+    adjust_volume, and the "cannot do yet" list still said "control the
+    volume" - different wording for the same refusal ("change the volume"
+    is what ACTION_DESCRIPTIONS actually says), so the substring check above
+    never fired. The prompt still routed "baisse le son" to reply-and-
+    decline until this was found and fixed by hand.
+
+    A single keyword per capability, checked the same way, catches a
+    reworded refusal the exact-phrase check cannot. Deliberately not every
+    action - a keyword like "file" or "app" would false-positive constantly
+    in ordinary prose - only the ones that have *actually* drifted this way
+    at least once, so this list grows from real incidents, not speculation.
+    """
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    section = prompt[
+        prompt.index("Things you cannot do yet") : prompt.rindex("Never invent a fact")
+    ].lower()
+    for keyword in ("volume", "screen", "brightness", "clipboard"):
+        assert keyword not in section, f"the prompt still mentions {keyword!r} as unsupported"
 
 
 def test_the_prompt_routes_unknown_facts_to_a_search_rather_than_a_refusal() -> None:
@@ -634,3 +667,65 @@ def test_summarize_for_speech_returns_empty_string_on_bad_json() -> None:
         summary = client.summarize_for_speech("some text")
 
     assert summary == ""
+
+
+# --- describe_image (round 36: read_screen) ---------------------------------
+
+
+def test_describe_image_returns_the_answer() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"answer": "Il y a un message d'erreur 404."}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        answer = client.describe_image(b"fake-png-bytes", "qu'est-ce qu'il y a sur mon ecran ?")
+
+    assert answer == "Il y a un message d'erreur 404."
+
+
+def test_describe_image_sends_the_image_as_image_url_content() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"answer": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.describe_image(b"fake-png-bytes", "what is this?")
+
+    content = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    types = [part["type"] for part in content]
+    assert types == ["text", "image_url"]
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_describe_image_passes_the_users_own_question_through() -> None:
+    """A specific question gets a specific answer, not a generic
+    description of the whole screen - the question is the user's own
+    instruction text, forwarded as-is."""
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"answer": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.describe_image(b"fake-png-bytes", "y a-t-il un message d'erreur ?")
+
+    content = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "y a-t-il un message d'erreur ?" in content[0]["text"]
+
+
+def test_describe_image_returns_empty_string_on_no_answer() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=None))]
+        mock_client.chat.completions.create.return_value = response
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        answer = client.describe_image(b"fake-png-bytes", "what is this?")
+
+    assert answer == ""

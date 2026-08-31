@@ -742,6 +742,10 @@ class HeyPeer:
             self._run_clipboard_copy(intent.speech, language)
         elif intent.action == "clipboard_read":
             self._run_clipboard_read(intent.speech, language)
+        elif intent.action == "summarize_document" and intent.target_name:
+            self._run_summarize_document(intent.target_name, intent.speech, language)
+        elif intent.action == "read_screen":
+            self._run_read_screen(instruction_text, intent.speech, language)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
@@ -1054,6 +1058,90 @@ class HeyPeer:
             self._speak(_bilingual(
                 language, "Je n'ai pas réussi à lire le presse-papier.",
                 "I couldn't read the clipboard.",
+            ), language=language)
+
+    def _run_summarize_document(
+        self, filename: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Same two-part shape as `_run_clipboard_read`: an intro spoken
+        before anything has been read, then the summary once the document's
+        text is actually extracted - reusing the exact same second-stage
+        call (`summarize_for_speech`), since a document's text and clipboard
+        text are both just "some text worth condensing" to it."""
+        from heypeer.executor.documents import extract_text
+
+        resolved = self.watched_dir and resolve_existing_filename(self.watched_dir, filename)
+        if not resolved:
+            self._speak(_bilingual(
+                language, f"Je ne vois pas de fichier {filename}.",
+                f"I can't find the file {filename}.",
+            ), language=language)
+            return
+
+        text = extract_text(self.watched_dir / resolved)
+        if not text:
+            # Covers both "genuinely empty" and "a scanned PDF with no text
+            # layer at all" - see documents.py's module docstring for why
+            # there is no way to tell those apart without OCR, and both are
+            # truthfully "nothing to summarize" either way.
+            self._speak(_bilingual(
+                language, f"Je n'ai rien pu extraire de {resolved}.",
+                f"I couldn't extract anything from {resolved}.",
+            ), language=language)
+            return
+
+        self._speak(narration or _bilingual(
+            language, f"Voici un résumé de {resolved} :", f"Here's a summary of {resolved}:",
+        ), language=language)
+        try:
+            summary = self.nemotron.summarize_for_speech(text, language)
+        except Exception as exc:
+            self._log(f"Document summarization failed: {exc}")
+            summary = ""
+        if summary:
+            self._speak(summary, language=language)
+        else:
+            self._speak(_bilingual(
+                language, "Je n'ai pas réussi à résumer ce document.",
+                "I couldn't summarize that document.",
+            ), language=language)
+
+    def _run_read_screen(
+        self, question: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """`question` is the user's own instruction text, passed straight
+        through to `describe_image` - "qu'est-ce qu'il y a sur mon ecran ?"
+        gets a description, "y a-t-il une erreur ?" gets answered
+        specifically, rather than both getting the same generic summary.
+
+        Same two-part shape as the other read-then-speak handlers: the
+        narration Nemotron wrote *before* anything was captured, then the
+        actual answer once a screenshot exists to ask about.
+        """
+        from heypeer.executor import screen
+
+        self._speak(narration or _bilingual(
+            language, "Je regarde l'écran...", "Let me look at the screen...",
+        ), language=language)
+
+        image_bytes = screen.capture()
+        if image_bytes is None:
+            self._speak(_bilingual(
+                language, "Je n'ai pas pu capturer l'écran.", "I couldn't capture the screen.",
+            ), language=language)
+            return
+
+        try:
+            answer = self.nemotron.describe_image(image_bytes, question, language)
+        except Exception as exc:
+            self._log(f"Screen analysis failed: {exc}")
+            answer = ""
+        if answer:
+            self._speak(answer, language=language)
+        else:
+            self._speak(_bilingual(
+                language, "Je n'ai pas réussi à analyser l'écran.",
+                "I couldn't analyze the screen.",
             ), language=language)
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":

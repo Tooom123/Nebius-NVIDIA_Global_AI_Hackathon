@@ -3,17 +3,29 @@
 Nebius Token Factory exposes an OpenAI-compatible Chat Completions API, so this
 uses the `openai` SDK pointed at Nebius's base URL.
 
-`interpret_text` (optionally with a screenshot — `[text, image_url]` content,
-confirmed working against the real endpoint) is the path actually used by the
-running app. `interpret()` sends the full omni payload (audio clip +
-screenshot + text) and is kept here, but nothing calls it: tested directly
-against this Nebius deployment, every audio content-part shape tried
+`interpret_text` is the path actually used for every spoken turn — text
+only. Its `screenshot_path` parameter still builds a `[text, image_url]`
+content list when given one, but nothing currently calls it that way: this
+same shape (`response_format={"type": "json_object"}` *and* an image)
+returned a hard 400 the last time it was tried on this deployment (see the
+docstring on `interpret_text` itself), and re-verifying that on every single
+turn is not worth the risk for a capability nothing here uses. `interpret()`
+sends the full omni payload (audio clip + screenshot + text) and is kept
+here, but nothing calls it either: every audio content-part shape tried
 (`input_audio`, `audio_url`, `audio`) was rejected with an identical 422 the
 moment the content list contains anything other than `text`/`image_url` —
-there is no audio-input support on this endpoint today. Spoken instructions
-are transcribed locally instead (see `heypeer/wakeword/stt.py`) and sent
-through `interpret_text`, keeping the actual reasoning/intent step on
-Nemotron while working around the missing audio input.
+there is no audio-input support on this endpoint. Spoken instructions are
+transcribed locally instead (see `heypeer/wakeword/stt.py`) and sent through
+`interpret_text`, keeping the actual reasoning/intent step on Nemotron while
+working around the missing audio input.
+
+Plain `[text, image_url]` content *without* `json_object` mode, on its own,
+separate request, does work — re-confirmed live, repeatedly, right before
+adding it: `describe_image` uses exactly that shape for "read_screen", the
+one place in this project that actually sends an image today. It is a
+second, narrower call for the same reason `summarize_for_speech` is: made
+only when a screenshot is genuinely needed, not threaded through the
+classifier prompt every turn.
 """
 
 import base64
@@ -244,6 +256,26 @@ when you write this>", "end_turn": true}
   summarized *after* this - you never see it when producing this JSON, so
   do not invent or guess at its content.
 
+- Summarize an existing document (e.g. "resume facture.pdf", "de quoi \
+parle ce document ?"). PDF and plain text files only:
+  {"action": "summarize_document", \
+"target_name": "<the exact filename from the watched-folder listing>", \
+"speech": "<one short sentence introducing the summary, e.g. \"Voici un \
+resume de facture.pdf :\" - not the summary itself, which you do not have \
+yet when you write this>", "end_turn": true}
+  Same reasoning as clipboard_read: the document is read and summarized
+  *after* this JSON, so do not invent or guess at what it says.
+
+- Look at the screen and answer a question about it (e.g. "qu'est-ce qu'il \
+y a sur mon ecran ?", "y a-t-il un message d'erreur ?", "que dit cette \
+fenetre ?"):
+  {"action": "read_screen", "speech": "<one short sentence, e.g. \"Je \
+regarde l'ecran...\" - never describe what is on screen, you have not \
+seen it yet when you write this>", "end_turn": true}
+  A screenshot is taken and analysed *after* this JSON - you do not see the
+  screen when producing it, so never answer the question itself here, only
+  announce that you are about to look.
+
 - Ask for the one piece you are missing, when the action itself is clear:
   {"action": "ask", \
 "question": "<one short question asking for exactly the missing piece, in \
@@ -291,19 +323,19 @@ extension, keep the original file's.
 
 ## Things you cannot do yet
 
-This action list will grow. Today it is file operations in one watched folder,
-starting applications, playing music on Spotify, web searches, and
-conversation. When the user asks for anything else - send a message or an
-email, change a setting, control the volume, edit what is inside a file - do
-NOT bend it into the nearest file action and do NOT invent an action name. Use "reply", say plainly
-and briefly that you cannot do that yet, and set "end_turn" as the
-conversation warrants. Guessing at an action the user did not ask for is the
-worst thing you can do here: it touches their files.
+This action list will grow. When the user asks for something with no action
+above for it - send a message or an email, edit what is *inside* a file
+(reading one is fine, writing into one is not), anything requiring a login -
+do NOT bend it into the nearest action you do have and do NOT invent an
+action name. Use "reply", say plainly and briefly that you cannot do that
+yet, and set "end_turn" as the conversation warrants. Guessing at an action
+the user did not ask for is the worst thing you can do here: it touches
+something real.
 
-Never invent a fact. You cannot see the clock, the calendar, the screen, or
-anything outside the watched folder listing you were given.
-Making one up is worse than saying so: "Il est 14h" invented on the
-spot is indistinguishable, to the user, from a real answer.
+Never invent a fact. You do not know the current time, the calendar, or
+anything in a folder you were not shown - unlike the screen, nothing looks
+at those for you. Making one up is worse than saying so: "Il est 14h"
+invented on the spot is indistinguishable, to the user, from a real answer.
 
 But not knowing something is not the end of the exchange. Ask yourself, in
 this order:
@@ -311,10 +343,15 @@ this order:
 1. Do I already know this? Then "reply", answered. Ordinary knowledge is not
    a reason to open a browser: "combien font deux et deux" and "c'est quoi
    la capitale du Perou" are answers, not searches.
-2. Is it about this computer or this moment - the current time, what is on
-   their screen, what is in a folder you were not shown? Then "reply",
-   saying plainly that you cannot check it.
-3. Otherwise a web page has it: "search_web". The weather, the news, opening
+2. Is it about what is currently on the screen - an error message, what a
+   window says, whether something specific is visible? Then "read_screen".
+   You do not see the screen while writing this JSON, only after - do not
+   answer the question here, and do not decline it either, the same way
+   "clipboard_read" does not answer from its own JSON.
+3. Is it about this computer or this moment specifically, other than the
+   screen - the current time, what is in a folder you were not shown? Then
+   "reply", saying plainly that you cannot check it.
+4. Otherwise a web page has it: "search_web". The weather, the news, opening
    hours, a price, a score, anything that changed after you were trained,
    anything about a specific place or day. Do not refuse it. "Quelle est la
    meteo a Paris aujourd'hui ?" is a search, not something to say no to.
@@ -328,15 +365,15 @@ typographic punctuation a Windows console cannot encode. These strings are
 printed to a terminal and spoken aloud.
 """
 
-# A second, narrower prompt for "clipboard_read" - once the clipboard's own
-# text is actually available (never seen by the classifier prompt above,
-# which only produces intent JSON before anything has been read), this turns
-# it into something worth saying out loud rather than reading it verbatim -
-# see `NemotronClient.summarize_for_speech`.
+# A second, narrower prompt for "clipboard_read" and "summarize_document" -
+# once the actual text is available (never seen by the classifier prompt
+# above, which only produces intent JSON before anything has been read),
+# this turns it into something worth saying out loud rather than reading it
+# verbatim - see `NemotronClient.summarize_for_speech`.
 SUMMARIZE_SYSTEM_PROMPT = """\
-You turn a block of text into something worth saying out loud. The text is
-whatever the user had on their clipboard; you were not told what it is or
-where it came from.
+You turn a block of text into something worth saying out loud. The text
+came from the clipboard or a document Hey Peer read for the user; you were
+not told which, or anything else about where it came from.
 
 Write two or three short sentences, in the given language, that either
 summarize the text (if it is long enough that reading it verbatim would be
@@ -557,6 +594,44 @@ class NemotronClient:
         except json.JSONDecodeError:
             return ""
         return _plain_punctuation(data.get("summary")) or ""
+
+    def describe_image(self, image_bytes: bytes, question: str, language: str = "fr") -> str:
+        """Answers `question` about `image_bytes` (a PNG screenshot) - the
+        one place in this project that actually sends an image to Nemotron
+        today; see the module docstring for the history behind that being
+        worth calling out.
+
+        A short, spoken answer to whatever the user actually asked ("qu'est-
+        ce qu'il y a sur mon ecran ?", "y a-t-il un message d'erreur ?"), not
+        a generic description - `question` is the user's own instruction
+        text, passed straight through, so a specific question gets a
+        specific answer rather than a description of the whole screen.
+        """
+        image_b64 = base64.b64encode(image_bytes).decode()
+        content = [
+            {
+                "type": "text",
+                "text": (
+                    f"Question ({'English' if language == 'en' else 'French'}): {question}\n\n"
+                    'Answer in two or three short spoken sentences, in that language, plain ASCII '
+                    'punctuation only. Respond with ONLY a JSON object: {"answer": "<the answer>"}'
+                ),
+            },
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+        ]
+        response = self._client.chat.completions.create(
+            model=self.settings.nemotron_model_id,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": content}],
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+        return _plain_punctuation(data.get("answer")) or ""
 
     def verify_screen(self, screenshot_png: bytes, expected_context: str) -> bool:
         """Visual verification hook used by SkillRunner between replay steps."""
