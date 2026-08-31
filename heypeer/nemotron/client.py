@@ -379,6 +379,15 @@ is what tells the speech synthesiser which voice to use, so it has to match
 what you actually wrote, not default to "fr" out of habit. Use null for any
 other key you have no value for.
 
+This applies just as much to the short, fire-and-forget actions (volume, \
+brightness, window control, clipboard) as to longer ones - do not let \
+writing a one-line "speech" feel like it does not need "language" set \
+correctly too. For "Hey Peer, turn up the volume": \
+{"action": "adjust_volume", "target_name": "up", \
+"speech": "Turning the volume up.", "language": "en", "end_turn": true} - \
+not "language": "fr", even though "monte le son" is the example verb shown \
+above, and even though most of this prompt's examples are in French.
+
 ## Recognising an action
 
 The user speaks ordinary French, so the same action arrives worded many
