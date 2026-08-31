@@ -235,18 +235,29 @@ only what's actually being built is.
       before). **Unverified against real hardware/voice** - the mechanism
       is provable on a toy classifier, "does the real miss stop happening"
       is not, the same as every wake-word change in this project.
-- [ ] **Formalize action registration.** Today, adding an action means
-      touching three places by hand: the `SYSTEM_PROMPT` text, the `Intent`
-      dataclass, and the if/elif chain in `_dispatch_intent`. This project
-      has already shipped two bugs from exactly that kind of drift - the
-      prompt refusing apps and web search one round after gaining them
-      (round 29), then the same for the weather (round 31) - both only
-      caught because a human happened to try the sentence. A small
-      table-driven registry (action name -> required fields + handler) makes
-      "the prompt still refuses something it can do" a thing a test can
-      check mechanically, not something that needs a human to stumble on it
-      live. (Rhasspy's clean split between its "intent" and "handle" domains,
-      generalized past its own grammar-specific implementation.)
+- [x] **Formalize action registration.** Not a full table-driven rewrite of
+      `_dispatch_intent` - at 9 actions, a static coverage test buys the same
+      safety property with far less risk to well-tested, working dispatch
+      logic. Two mechanical tests now parse `_dispatch_intent`'s own source
+      by AST: every member of `ACTIONS` must appear as a compared string
+      literal somewhere in it, and every compared literal must name a real
+      member of `ACTIONS` - catching both a forgotten branch and a stale one
+      the moment the mismatch exists, not when a human happens to say the
+      sentence live.
+      Writing the second test found a real one immediately: `"ask"` had a
+      whole `elif` branch - a different fallback message, a different
+      follow-up window - that could never run, because the earlier
+      `if intent.action in SPOKEN_ACTIONS:` block already returns for "ask"
+      before the elif chain is reached. Existing tests only ever exercised
+      the reachable branch, so this had been silently dead since
+      `SPOKEN_ACTIONS` was introduced. Removed.
+      Also: round 31's prompt-contradiction guard hand-copied its list of
+      "things Hey Peer can do" as English phrases, itself exactly the kind
+      of duplicated list the backlog note above worried about. It's now
+      driven by a new `ACTION_DESCRIPTIONS` dict in `intent.py`, keyed by
+      `ACTIONS` - a future action missing an entry there fails right where
+      the action is declared, not silently inside a test file nobody
+      thought to update.
 - [ ] **A local fast path for the small, closed vocabulary of file commands**,
       tried before the LLM call and falling back to it on no match. Rhasspy's
       `sentences.ini`/Fsticuffs is a *closed* grammar - wrong as the primary

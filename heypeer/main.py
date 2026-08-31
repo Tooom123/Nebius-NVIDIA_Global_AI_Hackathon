@@ -690,14 +690,6 @@ class HeyPeer:
             self._run_play_music(intent.query)
         elif intent.action == "search_web" and intent.query:
             self._run_search_web(intent.query, intent.speech)
-        elif intent.action == "ask":
-            # Nemotron recognised the intent but is missing a piece. Saying
-            # exactly what's missing is far more useful than "je n'ai pas
-            # compris", which leaves the user guessing what to rephrase.
-            question = intent.question or "Peux-tu préciser ?"
-            self._log(f"Needs clarification: {question}")
-            self._speak(question)
-            self._arm_followup()
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(

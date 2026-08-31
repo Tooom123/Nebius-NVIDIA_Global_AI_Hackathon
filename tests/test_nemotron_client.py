@@ -496,14 +496,20 @@ def test_nothing_hey_peer_can_do_is_listed_as_something_it_cannot() -> None:
     "je n'ai pas acces a cette information".
     """
     from heypeer.nemotron.client import SYSTEM_PROMPT
+    from heypeer.nemotron.intent import ACTION_DESCRIPTIONS
 
     prompt = " ".join(SYSTEM_PROMPT.split())
     section = prompt[
         prompt.index("Things you cannot do yet") : prompt.rindex("Never invent a fact")
     ].lower()
-    for described in ("open an application", "search the web", "play music",
-                      "move a file", "rename a file", "delete a file"):
-        assert described not in section, f"the prompt refuses {described!r}, which Hey Peer does"
+    # Driven by ACTION_DESCRIPTIONS rather than a phrase list copied here by
+    # hand, so a future action missing this check is a missing dict entry,
+    # not a human forgetting to update a second list that only this test
+    # reads.
+    for action, described in ACTION_DESCRIPTIONS.items():
+        assert described not in section, (
+            f"the prompt refuses {described!r} ({action!r}), which Hey Peer does"
+        )
 
 
 def test_the_prompt_routes_unknown_facts_to_a_search_rather_than_a_refusal() -> None:

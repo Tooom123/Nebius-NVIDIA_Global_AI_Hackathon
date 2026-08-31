@@ -23,6 +23,32 @@ ACTIONS = (
 # distinguishes them, and the distinction is worth keeping in the logs.
 SPOKEN_ACTIONS = ("reply", "ask")
 
+# What each action actually is, in the plain English used to check the
+# prompt's own "Things you cannot do yet" section against reality (see
+# test_nemotron_client.py's prompt-contradiction guard). Twice now, an
+# action shipped in the dispatch code while the prompt still refused it in
+# prose written before that action existed (round 29: apps and web search;
+# round 31: the same for the weather, i.e. web search again). Both times a
+# human had to say the exact sentence live before anyone noticed.
+#
+# This does not automate the fix - the guard test still greps prompt prose,
+# which is free text and can always drift in a way no table catches - but it
+# makes the *list of things to check for* follow from ACTIONS mechanically,
+# so a new action missing its entry here fails on its own, right where the
+# action is declared, rather than the guard test silently checking a
+# now-incomplete hand-copied list forever.
+ACTION_DESCRIPTIONS = {
+    "move_file": "move a file",
+    "rename_file": "rename a file",
+    "create_file": "create a file",
+    "create_folder": "create a folder",
+    "delete_file": "delete a file",
+    "undo": "undo",
+    "open_app": "open an application",
+    "play_music": "play music",
+    "search_web": "search the web",
+}
+
 
 @dataclass(frozen=True)
 class Intent:

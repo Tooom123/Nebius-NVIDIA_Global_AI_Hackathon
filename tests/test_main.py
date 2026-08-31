@@ -1160,3 +1160,83 @@ def test_a_web_search_opens_a_quoted_search_url(tmp_path: Path) -> None:
     assert url.startswith("https://www.google.com/search?q=")
     assert " " not in url
     assert not _armed_a_followup(peer)
+
+
+# --- Action-registration coverage (round 32) -------------------------------
+#
+# The other half of "the prompt says both yes and no": *this* code, not the
+# prompt text, forgetting to wire a newly added action into dispatch. Found
+# while adding this check: intent.action == "ask" was a dead elif branch here
+# for as long as SPOKEN_ACTIONS has existed - the earlier `if intent.action
+# in SPOKEN_ACTIONS:` block already returns for "ask" before the elif chain
+# is ever reached, so it silently used a different fallback message and a
+# different follow-up window than the one every test actually exercised.
+# Removed, and this test is what would have caught it: not "does ask work"
+# (existing tests already covered that, on the branch that actually runs),
+# but "is every action's string literal referenced somewhere in this
+# method" - which a dead, unreachable elif still technically satisfies, so
+# it does not catch that specific class of staleness. It does catch the
+# more common one: an action added to ACTIONS with no branch for it at all.
+
+
+def test_every_action_has_a_branch_in_dispatch() -> None:
+    """Static, not behavioural: parses `_dispatch_intent`'s own source and
+    checks every `ACTIONS` member (other than the ones handled generically
+    via `SPOKEN_ACTIONS`, and "unknown", which has no dedicated branch by
+    design - it falls through to the final `else`) appears as a compared
+    string literal somewhere in the method.
+
+    This is deliberately cheap and mechanical rather than a battery of live
+    per-action tests: it exists to catch a *forgotten* branch the moment an
+    action is added to `ACTIONS`, not to verify each branch's behaviour -
+    the tests elsewhere in this file already do that per action.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from heypeer.nemotron.intent import ACTIONS, SPOKEN_ACTIONS
+
+    source = textwrap.dedent(inspect.getsource(HeyPeer._dispatch_intent))
+    tree = ast.parse(source)
+    compared_literals = {
+        node.comparators[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.comparators[0], ast.Constant)
+        and isinstance(node.comparators[0].value, str)
+    }
+
+    for action in ACTIONS:
+        if action in SPOKEN_ACTIONS or action == "unknown":
+            continue
+        assert action in compared_literals, (
+            f"{action!r} is in ACTIONS but _dispatch_intent has no branch for it"
+        )
+
+
+def test_dispatch_has_no_branch_for_an_action_that_does_not_exist() -> None:
+    """The other direction: a branch for a retired or misspelled action name
+    would be silently unreachable, the same way the "ask" elif was. Every
+    action-shaped string literal compared in `_dispatch_intent` should name
+    something `ACTIONS` still recognises."""
+    import ast
+    import inspect
+    import textwrap
+
+    from heypeer.nemotron.intent import ACTIONS
+
+    source = textwrap.dedent(inspect.getsource(HeyPeer._dispatch_intent))
+    tree = ast.parse(source)
+    compared_literals = {
+        node.comparators[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.comparators[0], ast.Constant)
+        and isinstance(node.comparators[0].value, str)
+    }
+
+    for literal in compared_literals:
+        assert literal in ACTIONS, (
+            f"_dispatch_intent compares against {literal!r}, which is not in ACTIONS"
+        )
