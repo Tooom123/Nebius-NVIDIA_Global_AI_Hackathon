@@ -258,14 +258,43 @@ only what's actually being built is.
       `ACTIONS` - a future action missing an entry there fails right where
       the action is declared, not silently inside a test file nobody
       thought to update.
-- [ ] **A local fast path for the small, closed vocabulary of file commands**,
-      tried before the LLM call and falling back to it on no match. Rhasspy's
-      `sentences.ini`/Fsticuffs is a *closed* grammar - wrong as the primary
-      NLU here, since arbitrary phrasing is the reason the LLM was chosen -
-      but as a narrow front gate for "supprime X", "renomme X en Y", "deplace
-      X vers Y" it removes a network round trip from the single most common
-      class of instruction. This is the most direct answer available to the
-      latency complaints that recur across this project's whole history.
+- [x] **A local fast path for the small, closed vocabulary of file commands**,
+      tried before the LLM call and falling back to it on no match. Handles
+      exactly three fixed sentence shapes - `heypeer/nemotron/fast_path.py` -
+      built from the single most specific verb the prompt lists for each
+      action ("supprime"/"efface", "renomme ... en", "deplace ... vers"),
+      deliberately never the wider synonym lists ("mets", "place", "fous",
+      "lance", ...) the prompt also accepts, because several of those are
+      shared verbatim across *different* actions - only the model can tell
+      "mets" (move) from "mets" (play) apart from the object.
+      Does no filename matching of its own: `runner.resolve_existing_filename`
+      already does that, and `move_single_file`/`rename_file`/`delete_file`
+      already call it, so this only extracts the raw spoken name and checks
+      it resolves *before* returning anything - a candidate that doesn't
+      resolve is a decline, not a best guess, and the instruction reaches
+      Nemotron exactly as if this module didn't exist.
+      Found while writing the tests, not the code: the destination-folder
+      capture is `.+?` up to end of string, so "vers Archives s'il te plait"
+      captured the whole trailing clause as the folder name. There is no
+      folder-listing equivalent of `resolve_existing_filename` to validate
+      that against for a *new* folder, and inventing one (word limits, a
+      stopword list) would be exactly the kind of "probably fine" guess this
+      module refuses to make - so a move only fast-paths to a folder that
+      already exists. Moving into a brand-new folder still reaches Nemotron
+      correctly, which already handles it.
+      Also found while wiring it in: this project's own tests construct a
+      follow-up turn directly (`on_wake_word(audio, followup=True)`) without
+      a preceding real turn to populate history first - a reasonable,
+      deliberate shortcut, but it meant the planned "skip the fast path
+      whenever history is non-empty" check alone would have silently let
+      the fast path answer a test built to exercise Nemotron's follow-up
+      handling instead. `followup` is now checked explicitly, not inferred
+      from history alone.
+      Verified against the live model on every sentence it would take over:
+      identical answers except one cosmetic difference ("le fichier 4"
+      resolves to `src_filename="4"` locally vs `"4.txt"` from the model,
+      since Nemotron does its own resolution before answering) that does not
+      change the final action - `delete_file` re-resolves either way.
 
 ### Queued, lower urgency (not started)
 
