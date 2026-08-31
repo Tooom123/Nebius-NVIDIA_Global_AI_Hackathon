@@ -2662,6 +2662,51 @@ the exact confused case as a counter-example. Re-measured: 8/8 after,
 
 474 tests.
 
+### Round 39: computer use exists - it just was not being reached (2026-08-31)
+
+The user's own diagnosis, checked before answering it: "on ne peut pas
+bruteforce tous les use cases d'internet, il nous faut une comprehension et
+un computer use." Correct, and the answer turned out to be two-layered.
+
+**Hey Peer already has a path to real computer use** - not built this
+round, already there since round 38's `general_task`: Hermes Agent has a
+dedicated Computer Use feature ("drive your desktop - clicking, typing,
+scrolling, dragging - in the background on macOS, Windows, and Linux") and
+a separate Browser Automation feature (managed cloud Chromium via Browser
+Use/Browserbase, with `browser_navigate`/`browser_snapshot`/
+`browser_vision`) - confirmed from Hermes's own documentation, not assumed.
+`general_task` already dispatches to it exactly the way it would need to.
+
+**What was actually missing was routing, not capability.** Tested live
+before concluding anything: "ouvre YouTube et joue la derniere video de
+Squeezie" and "va sur Amazon et ajoute des piles AA au panier" both went to
+`open_app` - matching "ouvre"/"va sur" against that action's own trigger
+words (they are literally in its synonym list) even though the target is a
+website with a task attached, not a desktop application. `open_app` would
+have tried to launch "YouTube" as an app - it is not one, KNOWN_APPS has no
+such entry - and silently dropped the rest of the instruction. Fixed by
+naming the exact failing sentences as `general_task` examples and stating
+explicitly that `open_app` is only for a real desktop application, not a
+website or online service. Re-verified live afterward: both route correctly
+now, and every previously-correct case (Chrome, Spotify, the weather,
+deleting a file, ordinary conversation) still does too.
+
+**NemoClaw/OpenShell still are not the answer here either** - restated
+because it is relevant to this exact question: they are the sandboxing/
+deployment layer NVIDIA built to run an agent like this *safely, always-on*
+- a real next step if this were going to production, not something with a
+capability of its own to dispatch a click to.
+
+**Nothing here is verified beyond the prompt routing.** Whether Hermes's
+computer-use/browser-automation actually clicks the right YouTube video
+depends on the agent itself, its configured model, and whether it is even
+installed - none of that is testable from this sandbox (no `hermes` binary,
+confirmed in round 38). What this round establishes is that the *dispatch*
+is correctly reached now; whether the dispatched task succeeds is real
+computer-use behaviour to verify on real hardware.
+
+475 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

@@ -174,8 +174,10 @@ notes.txt"):
 - Undo the last file action (e.g. "annule", "reviens en arriere"):
   {"action": "undo", "speech": "<one short sentence>", "end_turn": true}
 
-- Start an application (e.g. "lance Spotify", "ouvre Chrome"). Use the app's
-  ordinary name, not a path or an executable:
+- Start an application (e.g. "lance Spotify", "ouvre Chrome"). Only for a
+  real desktop application by its ordinary name, not a path or an
+  executable, and not a website or an online service - "ouvre YouTube",
+  "va sur Amazon" are not this, see "general_task" below for why:
   {"action": "open_app", "target_name": "<the application name>", \
 "speech": "<one short sentence>", "end_turn": true}
   For Spotify specifically, "lance Spotify" means start it AND start playing -
@@ -318,12 +320,21 @@ read back weeks from now with no other context - not \"vendredi\" alone, \
   just for the rest of this conversation.
 
 - Carry out a general, multi-step task with no action above for it, that a \
-capable assistant with broader tools (web research, scheduling, more) could \
-still reasonably do (e.g. "cherche les meilleurs vols pour Paris le mois \
+capable assistant with broader tools (web research, scheduling, browsing \
+and interacting with a website - clicking, filling a form, navigating - or \
+controlling the desktop more generally) could still reasonably do. This is \
+the action for anything on a website or an online service beyond just \
+opening it: "ouvre YouTube et joue la derniere video de Squeezie", "va sur \
+Amazon et ajoute des piles AA au panier", "clique sur le premier resultat", \
+"remplis ce formulaire avec mon adresse" - none of these are "open_app", \
+because they need to actually look at a page and act inside it, which \
+opening an application by name does not do. Also for anything else with no \
+more specific action: "cherche les meilleurs vols pour Paris le mois \
 prochain et fais-moi un resume", "programme un rappel chaque lundi pour \
-faire le point"). Do not use this for anything an action above already \
-covers - moving a file, playing music, opening an app all have their own, \
-more specific action:
+faire le point". Do not use this for anything an action above already \
+covers - moving a file, playing music, opening an app by itself, or a \
+plain web search with nothing to click, all have their own, more specific \
+action:
   {"action": "general_task", \
 "content": "<the task, written out fully enough that someone with no other \
 context than this sentence could carry it out>", \
