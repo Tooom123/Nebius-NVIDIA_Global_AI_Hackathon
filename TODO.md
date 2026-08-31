@@ -1947,6 +1947,74 @@ Known gap: a track or artist name is unbounded English vocabulary and cannot
 be respelled the way a fixed list of app names can, so "Alright, de Kendrick
 Lamar" is still read with whatever espeak decides.
 
+### Round 30: three fixes to app launching (2026-08-31)
+
+**The turn did not end.** "le blob et heypeer restent eveille alors que le
+lancement de spotify marque la fin de la requette" - and the user's own
+diagnosis was right: the follow-up window was being held open *over the music
+Hey Peer had just started*, which through a headset it then heard as speech.
+
+`open_app`, `play_music` and `search_web` now arm no follow-up. That is the
+whole fix: `on_wake_word` already closes the exchange and hides the blob for
+any turn that armed nothing, so "end the turn" is spelled by not arming one.
+My first attempt called `_close_exchange()` explicitly in each handler, which
+was redundant with a mechanism that was already there.
+
+The one case on this path that is *not* the end of the request stays open: an
+app Hey Peer does not recognise, since it just said so and a rephrasing is
+expected.
+
+**"Je lance le titre par l'artiste".** Two changes. `find_track` returns a
+`Track` rather than a tuple, so the sentence is built from the *resolved*
+track - the model writes its `speech` before anything has been looked up, so
+it can only repeat what the user said, and naming what was actually found is
+how they notice the search matched something else. And the model's narration
+is now ignored for this action rather than preferred over it.
+
+**"Il oublie de lancer le titre en haut de la recherche."** This is the
+no-credentials fallback, and it cannot play anything - `spotify:search:` opens
+results, and there is no documented, credential-free way to resolve a query to
+a Spotify track id. Approaches considered and rejected: the web player's
+undocumented anonymous-token endpoint (fragile and not ours to use), and
+driving the desktop UI by keystroke to hit the first result (the pyautogui
+skills machinery was deleted from this project for good reasons).
+
+So the fix is honesty plus a shove: "no credentials" and "found nothing" are
+now different sentences, and the first prints a one-time setup hint. Saying
+"je n'ai pas trouve" when the truth is "I am not configured to search" sends
+the user off trying to pronounce the title better.
+
+**More apps, and web search.** The registry goes from 10 to 22 (Discord with
+its URI scheme, Edge, Slack, Teams, Zoom, WhatsApp, Telegram, VLC, Word,
+Excel, PowerPoint, Outlook, Parametres) and there is a `search_web` action.
+The query is percent-encoded into a fixed search URL rather than the model
+being asked for an address: a search string can say anything, a URL can *go*
+anywhere, and the difference matters when the text came out of a microphone.
+
+Verified live, including the cases that could have gone to the wrong action:
+
+    "lance Starman de David Bowie"    -> play_music "Starman David Bowie"
+    "cherche la meteo sur internet"   -> search_web "meteo demain"
+    "ouvre discord"                   -> open_app   Discord
+    "quelle heure est-il ?"           -> reply      (not a web search)
+
+**Every French line I added last round was unaccented, and audibly wrong.**
+Not the English-phoneme failure of round 28 - these stay in French and become
+a *different French word*: "reussi" is `ʁøsˈi` where "réussi" is `ʁeysˈi`,
+"precis" takes a schwa where "précis" has an é, "trouve" is the present tense
+where "trouvé" is the participle. I had carried the prompt's ASCII-only rule,
+which exists for the model, into Hey Peer's own speech, where it does not
+belong.
+
+Two tests now read the spoken lines straight out of `main.py` by AST, so this
+covers the whole app rather than a list that drifts: one asserts every line
+stays within French after respelling, the other that none contains a word from
+a list of accent traps. The phoneme test cannot see the second class, which is
+why there are two. Both were confirmed by putting the bad line back.
+
+That first test also caught "PowerPoint", which espeak reads half in each
+language - `pˈaʊə pwˈɛ̃`, English "power" glued to French "point".
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

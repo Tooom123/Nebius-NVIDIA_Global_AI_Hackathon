@@ -161,6 +161,16 @@ permanent delete (e.g. "supprime le fichier notes.txt"):
   do not correct a title you think you recognise, and do not add an artist
   they did not mention.
 
+- Look something up on the internet (e.g. "cherche la meteo de demain",
+  "recherche des recettes de tarte sur internet", "google la capitale du
+  Perou"):
+  {"action": "search_web", "query": "<what to search for>", \
+"speech": "<one short sentence>", "end_turn": true}
+  Use this when the user wants to look something up in a browser. If they are
+  instead asking YOU a question you can answer, answer it with "reply" - do
+  not send them to a search engine for "comment ca va" or "quelle heure
+  est-il".
+
 - Ask for the one piece you are missing, when the action itself is clear:
   {"action": "ask", \
 "question": "<one short question in French asking for exactly the missing \
@@ -185,6 +195,8 @@ user means, not on the exact word:
 - undo: annule, "reviens en arriere", "remets comme avant", "oublie ca"
 - open an app: lance, ouvre, demarre, "mets-moi", "va sur"
 - play music: mets, joue, lance, "fais tourner", "envoie", "balance"
+- search the web: cherche, recherche, google, "trouve-moi", "regarde sur
+  internet", "c'est quoi" when they clearly want a web page
 
 "lance" is deliberately in three of those lists. It is the same word for
 starting an app, playing a track and moving a file, so the object decides:
@@ -202,7 +214,8 @@ extension, keep the original file's.
 ## Things you cannot do yet
 
 This action list will grow. Today it is file operations in one watched folder,
-starting applications, playing music on Spotify, and conversation. When the user asks for anything else - open an application,
+starting applications, playing music on Spotify, web searches, and
+conversation. When the user asks for anything else - open an application,
 send a message, search the web, change a setting - do NOT bend it into the
 nearest file action and do NOT invent an action name. Use "reply", say plainly
 and briefly that you cannot do that yet, and set "end_turn" as the

@@ -26,7 +26,8 @@ FRENCH_CORPUS = (
     "quatre cinq six sept huit neuf dix zéro. Voilà, c'est fait ! Peux-tu répéter ? "
     "Très bien, et toi ? D'accord, à bientôt. Je joue la musique que tu veux. "
     "Je ne peux pas encore faire ça, désolé. Je renomme le fichier et je le mets "
-    "à la corbeille."
+    "à la corbeille. Je n'ai pas réussi à ouvrir le navigateur. Voici ce que "
+    "je sais faire : déplacer, renommer, supprimer."
 )
 
 
@@ -50,6 +51,70 @@ def french_phonemes(phonemize) -> set:
 
 def _foreign(phonemize, french: set, text: str) -> list:
     return sorted(set(phonemize(text)) - french)
+
+
+# Words that are a different French word without their accent, and that Hey
+# Peer's own sentences use. "reussi" is `ʁøsˈi`, "réussi" is `ʁeysˈi`;
+# "precis" gets a schwa where "précis" has an é; "trouve" is the present
+# tense where "trouvé" is the participle. None of these leak into English, so
+# the phoneme check below cannot see them - they are simply the wrong French.
+ACCENT_TRAPS = (
+    "reussi", "precis", "trouve", "deplace", "cree", "meteo", "desole",
+    "repeter", "annee", "donnees", "prefere", "termine", "reponse",
+)
+
+
+def _spoken_literals() -> list:
+    """The French Hey Peer says, read out of `main.py` rather than listed
+    here - a list would drift the moment a new line is added."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path("heypeer/main.py").read_text(encoding="utf-8"))
+    found = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in ("_speak", "_speak_async"):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                found.append(arg.value)
+            elif isinstance(arg, ast.JoinedStr):
+                # Only the literal parts: `{query}` is whatever the user said.
+                found.append(
+                    "".join(v.value for v in arg.values
+                            if isinstance(v, ast.Constant) and isinstance(v.value, str))
+                )
+    return found
+
+
+def test_hey_peer_has_lines_to_check() -> None:
+    """Guards the two tests below against silently checking nothing if the
+    way `main.py` speaks ever changes."""
+    assert len(_spoken_literals()) > 8
+
+
+def test_every_line_hey_peer_speaks_stays_within_french(phonemize, french_phonemes) -> None:
+    """Covers the whole app at once, so a new spoken line cannot quietly
+    reintroduce the defect this module exists to fix."""
+    for line in _spoken_literals():
+        foreign = _foreign(phonemize, french_phonemes, for_speech(line))
+        assert foreign == [], f"{line!r} leaves French: {foreign}"
+
+
+def test_hey_peers_own_french_is_accented() -> None:
+    """A separate check because the phoneme test cannot see this class of
+    mistake: an unaccented French word stays in French, it is just a
+    different word. Every line added in the app-launching round arrived
+    unaccented and was audibly wrong."""
+    import re
+
+    for line in _spoken_literals():
+        for trap in ACCENT_TRAPS:
+            assert not re.search(rf"\b{trap}\b", line.lower()), (
+                f"{line!r} contains unaccented {trap!r}"
+            )
 
 
 # Sentences Hey Peer really says, each containing something espeak gets wrong.
