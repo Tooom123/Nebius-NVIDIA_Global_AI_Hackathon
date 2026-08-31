@@ -862,3 +862,19 @@ def test_the_prompt_says_tu_never_vous_in_french() -> None:
 
     prompt = " ".join(SYSTEM_PROMPT.split())
     assert '"tu", never "vous"' in prompt
+
+
+def test_the_prompt_routes_website_interaction_to_general_task_not_open_app() -> None:
+    """Found live: "ouvre YouTube et joue la derniere video de Squeezie" and
+    "va sur Amazon et ajoute des piles AA au panier" both went to
+    "open_app" - matching "ouvre"/"va sur" against open_app's own trigger
+    words even though the target is a website with a task attached, not a
+    desktop application. open_app would try to launch "YouTube" as an app
+    (it isn't one) and silently drop the rest of the instruction. Fixed by
+    naming the exact failing cases as general_task examples and stating
+    explicitly that open_app is only for a real desktop application."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    assert "va sur Amazon et ajoute des piles AA au panier" in prompt
+    assert "not a website or an online service" in prompt
