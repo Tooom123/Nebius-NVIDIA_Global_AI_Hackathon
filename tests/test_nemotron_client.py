@@ -461,3 +461,71 @@ def test_the_prompt_forbids_inventing_facts_it_cannot_check() -> None:
 
     assert "You cannot see the" in SYSTEM_PROMPT
     assert "Making one up is worse than saying so" in SYSTEM_PROMPT
+
+
+def test_the_prompt_does_not_still_tell_the_model_it_cannot_see_the_web() -> None:
+    """Regression test for a stale instruction, which is the failure mode a
+    growing prompt has.
+
+    Before `search_web` existed, the prompt listed the weather and the web
+    among the things Hey Peer cannot check and told the model to say so.
+    Adding the action did not remove that, so the two contradicted each other
+    and the older, more specific line won: "Quelle est la meteo a Paris ?"
+    was answered "je n'ai pas acces a cette information" by an assistant that
+    could have opened a browser.
+    """
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    # rindex: the phrase also appears as a forward reference higher up.
+    refusal = prompt[prompt.rindex("Never invent a fact") : prompt.index("But not knowing")]
+    for reachable in ("weather", "web", "news"):
+        assert reachable not in refusal.lower(), (
+            f"the prompt still tells the model it cannot check the {reachable}"
+        )
+
+
+def test_nothing_hey_peer_can_do_is_listed_as_something_it_cannot() -> None:
+    """The general form of the bug above, and how it was actually found.
+
+    "Things you cannot do yet" still named "open an application" and "search
+    the web" - both shipped in the two preceding rounds. A prompt that grows
+    by appending describes each new capability twice: once as supported, and
+    once, further down, as refused. The older line is more specific, so it
+    tends to win - which is exactly how "quelle est la meteo" came back as
+    "je n'ai pas acces a cette information".
+    """
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    section = prompt[
+        prompt.index("Things you cannot do yet") : prompt.rindex("Never invent a fact")
+    ].lower()
+    for described in ("open an application", "search the web", "play music",
+                      "move a file", "rename a file", "delete a file"):
+        assert described not in section, f"the prompt refuses {described!r}, which Hey Peer does"
+
+
+def test_the_prompt_routes_unknown_facts_to_a_search_rather_than_a_refusal() -> None:
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    # Whitespace-normalised: these are sentences in a wrapped paragraph, and
+    # asserting on where the line breaks fall makes the test fail every time
+    # the paragraph is re-wrapped without its meaning changing.
+    prompt = " ".join(SYSTEM_PROMPT.split())
+
+    assert '"search_web"' in prompt
+    assert "Do not refuse it." in prompt
+    # And the two distinctions that keep it from searching for everything:
+    # what only this machine knows, and what the model already knows.
+    assert "the current time" in prompt
+    assert "combien font deux et deux" in prompt
+
+
+def test_the_prompt_forbids_promising_an_answer_a_browser_has_to_keep() -> None:
+    """`search_web` opens a browser; it tells the user nothing. The model's
+    first draft said "Voici la meteo a Paris", which is a claim the action
+    does not deliver."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    assert "promise the browser has to keep" in " ".join(SYSTEM_PROMPT.split())
