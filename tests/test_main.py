@@ -992,17 +992,47 @@ def test_a_resolved_track_is_played_and_named(tmp_path: Path) -> None:
     narrated: list = []
     peer._speak_async = narrated.append
 
+    from heypeer.executor.spotify import Track
+
     with (
+        patch("heypeer.executor.spotify.credentials_missing", return_value=False),
         patch(
             "heypeer.executor.spotify.find_track",
-            return_value=("spotify:track:abc", "Alright, de Kendrick Lamar"),
+            return_value=Track("spotify:track:abc", "Starman", "David Bowie"),
         ),
         patch("heypeer.executor.spotify.play_uri") as play_uri,
     ):
         peer.on_wake_word()
 
     play_uri.assert_called_once_with("spotify:track:abc")
-    assert narrated == ["Je lance Alright, de Kendrick Lamar."]
+    assert narrated == ["Je lance Starman par David Bowie."]
+
+
+def test_the_track_name_comes_from_the_search_not_from_the_model(tmp_path: Path) -> None:
+    """The model writes its sentence before anything has been looked up, so
+    it can only repeat what the user said. Naming the resolved track is how
+    they find out the search matched something else."""
+    from heypeer.executor.spotify import Track
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="play_music", skill_id=None, n_repetitions=1, query="starman bowie",
+        speech="Je mets starman.",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets starman de bowie")
+    _conversational(peer)
+    narrated: list = []
+    peer._speak_async = narrated.append
+
+    with (
+        patch("heypeer.executor.spotify.credentials_missing", return_value=False),
+        patch("heypeer.executor.spotify.find_track",
+              return_value=Track("spotify:track:abc", "Starman", "David Bowie")),
+        patch("heypeer.executor.spotify.play_uri"),
+    ):
+        peer.on_wake_word()
+
+    assert narrated == ["Je lance Starman par David Bowie."]
 
 
 def test_without_credentials_it_opens_the_search_and_says_so(tmp_path: Path) -> None:
@@ -1019,11 +1049,101 @@ def test_without_credentials_it_opens_the_search_and_says_so(tmp_path: Path) -> 
     peer._speak_async = narrated.append
 
     with (
-        patch("heypeer.executor.spotify.find_track", return_value=None),
+        patch("heypeer.executor.spotify.find_track") as find_track,
         patch("heypeer.executor.spotify.play_uri") as play_uri,
     ):
         peer.on_wake_word()
 
+    find_track.assert_not_called()  # nothing to search with
     assert play_uri.call_args.args[0].startswith("spotify:search:")
-    assert "recherche" in narrated[0]
-    assert "je lance" not in narrated[0].lower()
+    assert "configuration Spotify" in narrated[0]
+    assert "pas trouve" not in narrated[0]  # not a failed search - a missing setup step
+
+
+def _armed_a_followup(peer) -> bool:
+    """Whether the turn left the microphone open for a reply.
+
+    `on_wake_word` closes the exchange and hides the blob for any turn that
+    armed nothing, so this is the same question as "did the turn end".
+    """
+    return peer._wake_listener.arm_followup.called
+
+
+def test_launching_an_app_ends_the_turn(tmp_path: Path) -> None:
+    """Reported from real use: after "lance Spotify" the blob stayed on
+    screen and Hey Peer kept listening - over the music it had just started,
+    which through a headset it then heard as speech. Opening an app finishes
+    the request."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="open_app", skill_id=None, n_repetitions=1, target_name="spotify",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "lance spotify")
+    _conversational(peer)
+    peer._speak_async = MagicMock()
+
+    with patch("heypeer.executor.spotify.launch_and_play"):
+        peer.on_wake_word()
+
+    assert not _armed_a_followup(peer)
+
+
+def test_starting_music_ends_the_turn(tmp_path: Path) -> None:
+    """Same reason, more sharply: holding the microphone open after starting
+    playback means holding it open over the music."""
+    from heypeer.executor.spotify import Track
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="play_music", skill_id=None, n_repetitions=1, query="starman bowie",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets starman")
+    _conversational(peer)
+    peer._speak_async = MagicMock()
+
+    with (
+        patch("heypeer.executor.spotify.credentials_missing", return_value=False),
+        patch("heypeer.executor.spotify.find_track",
+              return_value=Track("spotify:track:abc", "Starman", "David Bowie")),
+        patch("heypeer.executor.spotify.play_uri"),
+    ):
+        peer.on_wake_word()
+
+    assert not _armed_a_followup(peer)
+
+
+def test_an_unknown_app_keeps_the_exchange_open(tmp_path: Path) -> None:
+    """The one case on this path that is *not* the end of the request: Hey
+    Peer just said it doesn't know that app, so a rephrasing is expected."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="open_app", skill_id=None, n_repetitions=1, target_name="Machin",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "ouvre Machin")
+    _conversational(peer)
+
+    peer.on_wake_word()
+
+    assert _armed_a_followup(peer)
+
+
+def test_a_web_search_opens_a_quoted_search_url(tmp_path: Path) -> None:
+    """The query is encoded into a fixed search URL rather than the model
+    being asked for an address: a search string can say anything, a URL can
+    *go* anywhere."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="search_web", skill_id=None, n_repetitions=1,
+        query="meteo demain Paris", speech="Je cherche la meteo.",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "cherche la meteo de demain")
+    _conversational(peer)
+    peer._speak_async = MagicMock()
+
+    with patch("heypeer.executor.apps.open_url") as open_url:
+        peer.on_wake_word()
+
+    url = open_url.call_args.args[0]
+    assert url.startswith("https://www.google.com/search?q=")
+    assert " " not in url
+    assert not _armed_a_followup(peer)

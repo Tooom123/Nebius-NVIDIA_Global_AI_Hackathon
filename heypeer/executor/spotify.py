@@ -32,6 +32,7 @@ needs neither and drives the app the user already has open.
 
 import time
 import urllib.parse
+from dataclasses import dataclass
 
 SEARCH_URL = "https://api.spotify.com/v1/search"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -46,6 +47,34 @@ _token: "tuple[str, float] | None" = None  # (token, expiry timestamp)
 
 class SpotifyUnavailable(RuntimeError):
     """Spotify could not be searched or driven."""
+
+
+@dataclass(frozen=True)
+class Track:
+    """One resolved track: what to play, and what to say about it."""
+
+    uri: str
+    title: str
+    artist: str
+
+    @property
+    def spoken(self) -> str:
+        """"Starman par David Bowie" - the phrasing the user asked for. Said
+        from the *resolved* track rather than from what they said or what the
+        model wrote, because that is the only version that reflects what is
+        actually about to play."""
+        return f"{self.title} par {self.artist}" if self.artist else self.title
+
+
+def credentials_missing(client_id: str, client_secret: str) -> bool:
+    """Whether searching is possible at all.
+
+    Worth its own function because "no credentials" and "found nothing" are
+    different things to say out loud: one is a setup step the user has not
+    done, the other is a search that genuinely missed. Reporting the first as
+    the second sends them looking for a better way to pronounce the title.
+    """
+    return not (client_id and client_secret)
 
 
 def _access_token(client_id: str, client_secret: str) -> str:
@@ -102,21 +131,23 @@ def _first_track(query: str, client_id: str, client_secret: str) -> "dict | None
     return items[0] if items else None
 
 
-def find_track(query: str, client_id: str = "", client_secret: str = "") -> "tuple[str, str] | None":
-    """`(uri, "Title, de Artist")` for `query`, or None.
+def find_track(query: str, client_id: str = "", client_secret: str = "") -> "Track | None":
+    """The `Track` best matching `query`, or None.
 
-    Both halves come from one search on purpose: the URI is what gets played
-    and the description is what gets said, and issuing two requests for them
-    would double the wait in front of a user who asked for music. Saying what
-    was actually found is how they discover the search matched something other
-    than what they asked for.
+    The URI and the title/artist come from one search on purpose: the first is
+    what gets played and the second is what gets said, and asking twice would
+    double the wait in front of someone who just asked for music. Saying what
+    was actually found is also how the user discovers the search matched
+    something other than what they said.
     """
-    track = _first_track(query, client_id, client_secret)
-    if track is None:
+    item = _first_track(query, client_id, client_secret)
+    if item is None:
         return None
-    artists = ", ".join(a["name"] for a in track.get("artists", []))
-    label = f"{track['name']}, de {artists}" if artists else track["name"]
-    return track["uri"], label
+    return Track(
+        uri=item["uri"],
+        title=item["name"],
+        artist=", ".join(a["name"] for a in item.get("artists", [])),
+    )
 
 
 def search_uri(query: str) -> str:

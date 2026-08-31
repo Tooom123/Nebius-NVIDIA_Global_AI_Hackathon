@@ -294,7 +294,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 292 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 303 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.
@@ -316,6 +316,15 @@ app plays directly. That search needs only *application* credentials
 (`SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET`, free, no user login, no Premium);
 without them it opens the search results and says so rather than claiming to have
 started the music.
+
+"Cherche la météo sur internet" opens a web search; the query is percent-encoded
+into a fixed search URL rather than the model being asked for an address, because
+a search string can say anything and a URL can *go* anywhere.
+
+Starting an app, playing music and searching the web all **end the turn** — no
+follow-up window. Holding the microphone open after starting playback means
+holding it open over the music, which through a headset is how Hey Peer ended up
+listening to itself.
 
 Apps are launched from a **registry**, not from whatever the model returned —
 `resolve_app` refuses a name it doesn't know. Everything on that path began as a

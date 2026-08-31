@@ -32,11 +32,32 @@ def test_a_resolved_track_gives_both_what_to_play_and_what_to_say() -> None:
         patch("heypeer.executor.spotify._access_token", return_value="tok"),
         patch("requests.get", return_value=_api_response([TRACK])) as get,
     ):
-        uri, label = spotify.find_track("Alright Kendrick Lamar", "id", "secret")
+        track = spotify.find_track("Alright Kendrick Lamar", "id", "secret")
 
-    assert uri == "spotify:track:3IOQOtSaNBROSjjB65Uzcq"
-    assert label == "Alright, de Kendrick Lamar"
+    assert track.uri == "spotify:track:3IOQOtSaNBROSjjB65Uzcq"
+    assert track.spoken == "Alright par Kendrick Lamar"
     assert get.call_count == 1
+
+
+def test_a_track_is_named_the_way_the_user_asked_for_it() -> None:
+    """"lance le titre par l'artiste" - and from the *resolved* track, which
+    is the only version that describes what is about to play."""
+    assert spotify.Track("spotify:track:x", "Starman", "David Bowie").spoken == (
+        "Starman par David Bowie"
+    )
+
+
+def test_a_track_with_no_artist_is_not_named_par_nothing() -> None:
+    assert spotify.Track("spotify:track:x", "Interlude", "").spoken == "Interlude"
+
+
+def test_missing_credentials_are_distinguished_from_a_failed_search() -> None:
+    """Different things to say out loud: one is a setup step the user has not
+    done, the other is a search that genuinely missed. Reporting the first as
+    the second sends them looking for a better way to pronounce the title."""
+    assert spotify.credentials_missing("", "") is True
+    assert spotify.credentials_missing("id", "") is True
+    assert spotify.credentials_missing("id", "secret") is False
 
 
 def test_without_credentials_nothing_is_requested_at_all() -> None:

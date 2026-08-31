@@ -67,6 +67,10 @@ RESPELLINGS = {
     "word": "ouorde",
     "firefox": "faïer-fox",
     "screenshot": "scrine-chotte",
+    # espeak reads this one half in each language: "pˈaʊə pwˈɛ̃", English
+    # "power" glued to French "point".
+    "powerpoint": "paouar-point",
+    "outlook": "aoutlouk",
 }
 
 # French names of the letters, for spelling an extension out. espeak already

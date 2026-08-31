@@ -170,6 +170,10 @@ class HeyPeer:
         # moment the exchange closes - see `_close_exchange`. Bounded, so a
         # long conversation cannot grow the prompt without limit.
         self._history: list[dict] = []
+        # Whether the "add your Spotify credentials" hint has been printed
+        # this run. It applies to every music request, and repeating it would
+        # bury the line saying what actually happened.
+        self._spotify_hint_shown = False
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -683,7 +687,9 @@ class HeyPeer:
         elif intent.action == "open_app" and intent.target_name:
             self._run_open_app(intent.target_name, intent.speech)
         elif intent.action == "play_music" and intent.query:
-            self._run_play_music(intent.query, intent.speech)
+            self._run_play_music(intent.query)
+        elif intent.action == "search_web" and intent.query:
+            self._run_search_web(intent.query, intent.speech)
         elif intent.action == "ask":
             # Nemotron recognised the intent but is missing a piece. Saying
             # exactly what's missing is far more useful than "je n'ai pas
@@ -742,7 +748,8 @@ class HeyPeer:
 
         Spotify is special-cased because "lance Spotify" means start it *and*
         start the music: opening the app alone leaves the user in silence
-        looking at a player that has not begun."""
+        looking at a player that has not begun.
+        """
         from heypeer.executor.apps import LaunchFailed, launch, resolve_app
 
         app = resolve_app(spoken_name)
@@ -761,35 +768,95 @@ class HeyPeer:
             else:
                 launch(app)
             self._log(f"Launched {app.name}.")
-            self._arm_followup()
         except LaunchFailed as exc:
             self._log(f"Launch failed: {exc}")
-            self._speak(f"Je n'ai pas reussi a ouvrir {app.name}.")
+            self._speak(f"Je n'ai pas réussi à ouvrir {app.name}.")
+        # No follow-up window: opening an app finishes the request. `on_wake_word`
+        # closes the exchange and hides the blob for any turn that armed nothing,
+        # so "end the turn" is spelled by not arming one.
 
-    def _run_play_music(self, query: str, narration: "str | None") -> None:
+    def _run_play_music(self, query: str) -> None:
         """Plays what the user asked for on Spotify.
 
-        Resolving the track first means Hey Peer can say what it actually
-        found, which is how the user discovers the search matched something
-        other than what they said. Without credentials it can only open the
-        search results - a real difference, so it says that instead of
-        claiming to have started the music."""
-        from heypeer.executor.spotify import find_track, play_uri, search_uri
+        Three outcomes, deliberately said differently, because they send the
+        user to three different places:
+
+        * **Found it.** Play the track and name it - "Je lance Starman par
+          David Bowie". The name comes from the resolved track, never from
+          the model's sentence: it is the only version that describes what is
+          actually about to play, and it is how the user notices the search
+          matched something other than what they said.
+        * **Nothing matched.** Say so, and open the search so they can look.
+        * **Not configured.** Also opens the search, but that is a setup step
+          they have not done, not a failed search. Reporting it as "je n'ai
+          pas trouve" sends them off trying to pronounce the title better.
+
+        None of them opens a follow-up window. Starting music is the end of
+        the request, and holding the microphone open afterwards means holding
+        it open *over the music* - which, through a headset, is exactly how
+        Hey Peer ended up awake and listening to itself.
+        """
+        from heypeer.executor.spotify import (
+            credentials_missing,
+            find_track,
+            play_uri,
+            search_uri,
+        )
 
         settings = load_settings()
-        found = find_track(query, settings.spotify_client_id, settings.spotify_client_secret)
-        if found is None:
-            self._log(f"No track resolved for {query!r} - opening the search instead.")
-            self._speak_async(f"Je n'ai pas trouve, j'ouvre la recherche pour {query}.")
+        if credentials_missing(settings.spotify_client_id, settings.spotify_client_secret):
+            self._log(f"Spotify search is not configured - opening the search for {query!r}.")
+            self._print_spotify_setup_hint()
+            self._speak_async(
+                "Je ne peux pas encore lancer un titre précis, il me manque la "
+                f"configuration Spotify. J'ouvre la recherche pour {query}."
+            )
             play_uri(search_uri(query))
-            self._arm_followup(CONVERSATION_WINDOW_SECONDS)
             return
 
-        uri, label = found
-        self._speak_async(narration or f"Je lance {label}.")
-        play_uri(uri)
-        self._log(f"Playing {label} ({uri}).")
-        self._arm_followup()
+        track = find_track(query, settings.spotify_client_id, settings.spotify_client_secret)
+        if track is None:
+            self._log(f"Nothing on Spotify matched {query!r} - opening the search instead.")
+            self._speak_async(f"Je n'ai pas trouvé {query} sur Spotify, j'ouvre la recherche.")
+            play_uri(search_uri(query))
+            return
+
+        self._speak_async(f"Je lance {track.spoken}.")
+        play_uri(track.uri)
+        self._log(f"Playing {track.spoken} ({track.uri}).")
+
+    def _print_spotify_setup_hint(self) -> None:
+        """Says once per run how to make "lance Starman de David Bowie"
+        actually play it. Once, because this fires on every music request and
+        the console is where the user reads what happened."""
+        if self._spotify_hint_shown:
+            return
+        self._spotify_hint_shown = True
+        self._log(
+            "\n  Pour lancer directement un titre, ajoute dans .env :\n"
+            "    SPOTIFY_CLIENT_ID=...\n"
+            "    SPOTIFY_CLIENT_SECRET=...\n"
+            "  (application gratuite a creer sur developer.spotify.com - ces\n"
+            "   identifiants autorisent la recherche et rien d'autre : pas de\n"
+            "   connexion, pas de Premium, aucun acces a ton compte.)\n"
+        )
+
+    def _run_search_web(self, query: str, narration: "str | None") -> None:
+        """Opens a web search for `query`.
+
+        The query is percent-encoded into a fixed search URL rather than the
+        model being asked for an address - see `apps.search_url`. A search
+        string can say anything; a URL can *go* anywhere.
+        """
+        from heypeer.executor.apps import open_url, search_url
+
+        self._speak_async(narration or f"Je cherche {query}.")
+        try:
+            open_url(search_url(query))
+            self._log(f"Searching the web for {query!r}.")
+        except Exception as exc:
+            self._log(f"Web search failed: {exc}")
+            self._speak("Je n'ai pas réussi à ouvrir le navigateur.")
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":
         """Where a spoken filename actually points, resolved *before* the

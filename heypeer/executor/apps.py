@@ -58,17 +58,43 @@ KNOWN_APPS = (
         executable="spotify",
         windows_paths=(r"%APPDATA%\Spotify\Spotify.exe",),
     ),
-    App(name="Chrome", aliases=("google chrome", "le navigateur"), executable="chrome"),
+    App(name="Chrome", aliases=("google chrome", "le navigateur", "navigateur"),
+        executable="chrome",
+        windows_paths=(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe",
+                       r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe",
+                       r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")),
     App(name="Firefox", aliases=(), executable="firefox"),
-    App(name="Discord", aliases=(), executable="discord"),
+    App(name="Edge", aliases=("microsoft edge",), executable="msedge"),
+    App(name="Discord", aliases=("discorde",), uri_scheme="discord:", executable="discord",
+        windows_paths=(r"%LOCALAPPDATA%\Discord\Update.exe",)),
+    App(name="Slack", aliases=(), uri_scheme="slack:", executable="slack"),
+    App(name="Teams", aliases=("microsoft teams",), uri_scheme="msteams:", executable="teams"),
+    App(name="Zoom", aliases=(), uri_scheme="zoommtg:", executable="zoom"),
+    App(name="WhatsApp", aliases=("ouatsape",), uri_scheme="whatsapp:", executable="whatsapp"),
+    App(name="Telegram", aliases=(), uri_scheme="tg:", executable="telegram"),
     App(name="Steam", aliases=(), uri_scheme="steam:", executable="steam"),
+    App(name="VLC", aliases=("vlc media player", "le lecteur video"), executable="vlc"),
+    App(name="Word", aliases=("microsoft word",), executable="winword"),
+    App(name="Excel", aliases=("microsoft excel",), executable="excel"),
+    App(name="PowerPoint", aliases=("power point",), executable="powerpnt"),
+    App(name="Outlook", aliases=("les mails", "ma boite mail"), executable="outlook"),
     App(name="Explorateur", aliases=("explorateur de fichiers", "explorer", "les fichiers"),
         executable="explorer"),
     App(name="Bloc-notes", aliases=("notepad", "le bloc note"), executable="notepad"),
     App(name="Calculatrice", aliases=("calculette", "calc"), executable="calc"),
+    App(name="Parametres", aliases=("les parametres", "reglages"), uri_scheme="ms-settings:"),
     App(name="Terminal", aliases=("invite de commandes", "cmd", "console"), executable="wt"),
     App(name="VS Code", aliases=("visual studio code", "vscode", "code"), executable="code"),
 )
+
+# Where "cherche X sur internet" goes. A plain query string appended to a
+# search engine, not a URL the model composed - same reasoning as the app
+# registry: nothing here opens an address chosen by a language model.
+SEARCH_ENGINE_URL = "https://www.google.com/search?q={query}"
+
+# Which app to try opening web results in. Falling back to the default
+# browser is not a failure - it is what the user configured.
+DEFAULT_BROWSER = "Chrome"
 
 
 def _normalise(text: str) -> str:
@@ -149,3 +175,57 @@ def launch(app: App) -> None:
         except Exception as exc:
             last_error = exc
     raise LaunchFailed(f"Could not start {app.name}: {last_error}")
+
+
+def search_url(query: str) -> str:
+    """The search-results URL for `query`.
+
+    The query is percent-encoded into a fixed template rather than the model
+    being asked for a URL. A search string can say anything; a URL can *go*
+    anywhere, and the difference matters when the text originated in a
+    microphone.
+    """
+    import urllib.parse
+
+    return SEARCH_ENGINE_URL.format(query=urllib.parse.quote_plus(query))
+
+
+def open_url(url: str, prefer_app: "str | None" = DEFAULT_BROWSER) -> None:
+    """Opens `url`, in `prefer_app` if that browser can be found.
+
+    `os.startfile` takes no arguments, so opening a URL *in a named browser*
+    means finding its executable and passing the URL to it. When that fails -
+    which it usually does on Windows, where browsers live in the App Paths
+    registry rather than on PATH - the URL goes to the default handler
+    instead. That is the right outcome anyway: the default browser is the one
+    the user chose.
+    """
+    if prefer_app:
+        app = resolve_app(prefer_app)
+        if app is not None:
+            for candidate in _executable_candidates(app):
+                try:
+                    subprocess.Popen(  # noqa: S603
+                        [candidate, url],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:
+                    continue
+    _open_target(url)
+
+
+def _executable_candidates(app: App) -> list:
+    """Concrete paths that might be `app`'s executable, best first."""
+    candidates = []
+    if app.executable:
+        found = shutil.which(app.executable)
+        if found:
+            candidates.append(found)
+    if sys.platform == "win32":
+        for path in app.windows_paths:
+            expanded = os.path.expandvars(path)
+            if os.path.isfile(expanded):
+                candidates.append(expanded)
+    return candidates
