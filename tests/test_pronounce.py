@@ -64,9 +64,32 @@ ACCENT_TRAPS = (
 )
 
 
+def _string_value(node) -> "str | None":
+    """The literal text of a plain string or an f-string's literal parts
+    (`{query}` inside one is whatever the user said, not checked here) -
+    or None if `node` is neither."""
+    import ast
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value for v in node.values
+                       if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    return None
+
+
 def _spoken_literals() -> list:
     """The French Hey Peer says, read out of `main.py` rather than listed
-    here - a list would drift the moment a new line is added."""
+    here - a list would drift the moment a new line is added.
+
+    Since round 34, a fixed fallback line is often wrapped in
+    `_bilingual(language, french, english)` rather than passed to
+    `_speak`/`_speak_async` directly - only the French half (its second
+    argument) is a French sentence, so that is what this extracts from a
+    call shaped that way. The English half is exactly what it should be by
+    construction (plain English, written directly, not respelled for a
+    French voice) and has nothing to check it against here.
+    """
     import ast
     from pathlib import Path
 
@@ -78,14 +101,17 @@ def _spoken_literals() -> list:
         if node.func.attr not in ("_speak", "_speak_async"):
             continue
         for arg in node.args:
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                found.append(arg.value)
-            elif isinstance(arg, ast.JoinedStr):
-                # Only the literal parts: `{query}` is whatever the user said.
-                found.append(
-                    "".join(v.value for v in arg.values
-                            if isinstance(v, ast.Constant) and isinstance(v.value, str))
-                )
+            if (
+                isinstance(arg, ast.Call)
+                and isinstance(arg.func, ast.Name)
+                and arg.func.id == "_bilingual"
+                and len(arg.args) >= 2
+            ):
+                value = _string_value(arg.args[1])
+            else:
+                value = _string_value(arg)
+            if value is not None:
+                found.append(value)
     return found
 
 

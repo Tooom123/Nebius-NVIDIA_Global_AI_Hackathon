@@ -35,20 +35,28 @@ def test_a_resolved_track_gives_both_what_to_play_and_what_to_say() -> None:
         track = spotify.find_track("Alright Kendrick Lamar", "id", "secret")
 
     assert track.uri == "spotify:track:3IOQOtSaNBROSjjB65Uzcq"
-    assert track.spoken == "Alright par Kendrick Lamar"
+    assert track.spoken() == "Alright par Kendrick Lamar"
     assert get.call_count == 1
 
 
 def test_a_track_is_named_the_way_the_user_asked_for_it() -> None:
     """"lance le titre par l'artiste" - and from the *resolved* track, which
     is the only version that describes what is about to play."""
-    assert spotify.Track("spotify:track:x", "Starman", "David Bowie").spoken == (
+    assert spotify.Track("spotify:track:x", "Starman", "David Bowie").spoken() == (
         "Starman par David Bowie"
     )
 
 
+def test_a_track_is_named_in_english_too() -> None:
+    """"By", not "par", when the request itself was in English - see
+    round 34's language-matching fix."""
+    assert spotify.Track("spotify:track:x", "Starman", "David Bowie").spoken("en") == (
+        "Starman by David Bowie"
+    )
+
+
 def test_a_track_with_no_artist_is_not_named_par_nothing() -> None:
-    assert spotify.Track("spotify:track:x", "Interlude", "").spoken == "Interlude"
+    assert spotify.Track("spotify:track:x", "Interlude", "").spoken() == "Interlude"
 
 
 def test_missing_credentials_are_distinguished_from_a_failed_search() -> None:

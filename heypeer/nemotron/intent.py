@@ -77,6 +77,15 @@ class Intent:
     # response; optional on a file action, where it replaces the fixed
     # narration with something phrased for the actual request.
     speech: str | None = None
+    # The language "speech"/"question" is actually written in - "fr" or
+    # "en", the two Piper voices Hey Peer has. Nemotron reports this itself
+    # rather than the caller guessing it from the text afterwards: a
+    # language guess on a short spoken sentence is unreliable (langdetect-
+    # style heuristics are notoriously bad on a handful of words), where
+    # Nemotron already knows which language it just wrote in because it
+    # chose to write in it. None (a malformed or pre-language-aware answer)
+    # falls back to French - see tts.speak.
+    language: str | None = None
     # Whether the exchange is finished. False keeps the microphone open for a
     # reply with no wake word, which is what makes this a conversation rather
     # than a series of unrelated commands: Hey Peer stops listening when the

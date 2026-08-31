@@ -57,13 +57,16 @@ class Track:
     title: str
     artist: str
 
-    @property
-    def spoken(self) -> str:
-        """"Starman par David Bowie" - the phrasing the user asked for. Said
-        from the *resolved* track rather than from what they said or what the
-        model wrote, because that is the only version that reflects what is
-        actually about to play."""
-        return f"{self.title} par {self.artist}" if self.artist else self.title
+    def spoken(self, language: str = "fr") -> str:
+        """"Starman par David Bowie" (or "Starman by David Bowie") - the
+        phrasing the user asked for, in whichever language they asked in.
+        Said from the *resolved* track rather than from what they said or
+        what the model wrote, because that is the only version that
+        reflects what is actually about to play."""
+        if not self.artist:
+            return self.title
+        preposition = "by" if language == "en" else "par"
+        return f"{self.title} {preposition} {self.artist}"
 
 
 def credentials_missing(client_id: str, client_secret: str) -> bool:
