@@ -229,3 +229,30 @@ def _executable_candidates(app: App) -> list:
             if os.path.isfile(expanded):
                 candidates.append(expanded)
     return candidates
+
+
+def is_running(process_name: str) -> bool:
+    """Whether a process named `process_name` (e.g. "Spotify.exe") is
+    currently running.
+
+    Windows-only, and False everywhere else - the only caller so far
+    (`spotify.play_track`) only needs the distinction on Windows, and a
+    wrong "not running" answer there just costs one harmless extra
+    settle-and-press, never a missing one.
+
+    Uses `tasklist` rather than a process-listing dependency: this project
+    has stayed deliberately light on dependencies (Piper over a heavier TTS
+    engine, no `psutil`), and `tasklist` is a standard part of Windows with
+    nothing to install.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        output = subprocess.check_output(  # noqa: S603, S607
+            ["tasklist", "/FI", f"IMAGENAME eq {process_name}", "/NH"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return False
+    return process_name.lower() in output.lower()

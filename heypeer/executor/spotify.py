@@ -160,10 +160,42 @@ def search_uri(query: str) -> str:
 
 
 def play_uri(uri: str) -> None:
-    """Opens a `spotify:` URI, which the desktop app plays."""
+    """Opens a `spotify:` URI in the desktop app - and nothing more.
+
+    This alone is the right call for a search-results URI, where there is
+    nothing to press play on. For a track, use `play_track` instead: whether
+    playback actually starts depends on whether Spotify was already running,
+    which this function does not know or care about.
+    """
     from heypeer.executor.apps import _open_target
 
     _open_target(uri)
+
+
+def play_track(uri: str, settle_seconds: float = LAUNCH_SETTLE_SECONDS) -> None:
+    """Plays a `spotify:track:` URI - reliably, unlike calling `play_uri` on
+    one directly.
+
+    Found live: "lance un titre" would land on the track but not always
+    start playing it. The cause is the same cold-start gap `launch_and_play`
+    already exists to close, one level down: opening a track URI in an
+    *already-running* Spotify plays it immediately, exactly like clicking a
+    spotify: link while the app is open. Opening one while Spotify is closed
+    cold-starts the app, which comes up showing the track - paused, the same
+    way plain "lance Spotify" does not start music on its own.
+
+    So the fix only fires on a cold start, checked with `apps.is_running`
+    before opening anything: an already-running Spotify is left alone, since
+    it already plays the track unaided, and pressing play on it would toggle
+    an already-playing track *off*.
+    """
+    from heypeer.executor.apps import is_running
+
+    was_running = is_running("Spotify.exe")
+    play_uri(uri)
+    if not was_running:
+        time.sleep(settle_seconds)
+        press_play()
 
 
 def press_play() -> None:

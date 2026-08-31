@@ -799,6 +799,7 @@ class HeyPeer:
         from heypeer.executor.spotify import (
             credentials_missing,
             find_track,
+            play_track,
             play_uri,
             search_uri,
         )
@@ -822,7 +823,7 @@ class HeyPeer:
             return
 
         self._speak_async(f"Je lance {track.spoken}.")
-        play_uri(track.uri)
+        play_track(track.uri)
         self._log(f"Playing {track.spoken} ({track.uri}).")
 
     def _print_spotify_setup_hint(self) -> None:
