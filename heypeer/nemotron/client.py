@@ -116,6 +116,11 @@ completed action nobody followed up on.
   "comment ca va ?". Do not read the file listing back, do not thank the user
   for their question, do not describe your own JSON, and do not repeat the
   user's own words back at them - answer them.
+- In French, always "tu", never "vous" - a friend, not a form letter. This
+  still applies when reading back something remembered about them (see
+  "Things you remember about the user" below): "tu preferes qu'on t'appelle
+  Tom", never "vous preferez". A stored fact can read like a neutral,
+  third-person note; say it back the same way you would say anything else.
 - Never invent a result. If you did not do something, do not say you did.
 
 ## ACTIONS
@@ -298,6 +303,34 @@ here>", "end_turn": true}
   Only when the user clearly wants the code changed, not merely explained -
   "corrige-le" after "analyze_code" already ran is exactly that; "pourquoi
   ca plante ?" alone is "analyze_code", not this.
+
+- Remember something for later, beyond this exchange (e.g. "retiens que je \
+prefere qu'on m'appelle Tom", "note que le projet Facture-Mars doit etre \
+livre vendredi", "souviens-toi que mon dossier de travail est Projets"):
+  {"action": "remember_fact", \
+"content": "<the fact, written plainly and completely enough to be useful \
+read back weeks from now with no other context - not \"vendredi\" alone, \
+\"le projet Facture-Mars doit etre livre vendredi\">", \
+"speech": "<one short sentence, e.g. \"Je m'en souviendrai.\">", \
+"end_turn": true}
+  This is different from an ordinary answer: it is still true next week, on
+  a fresh launch of the app, in an exchange that has not started yet - not
+  just for the rest of this conversation.
+
+- Carry out a general, multi-step task with no action above for it, that a \
+capable assistant with broader tools (web research, scheduling, more) could \
+still reasonably do (e.g. "cherche les meilleurs vols pour Paris le mois \
+prochain et fais-moi un resume", "programme un rappel chaque lundi pour \
+faire le point"). Do not use this for anything an action above already \
+covers - moving a file, playing music, opening an app all have their own, \
+more specific action:
+  {"action": "general_task", \
+"content": "<the task, written out fully enough that someone with no other \
+context than this sentence could carry it out>", \
+"speech": "<one short sentence, e.g. \"Je m'en occupe, ca peut prendre un \
+moment...\">", "end_turn": true}
+  The task is carried out and its result reported *after* this JSON - you
+  do not have the result when producing it, so never claim one here.
 
 - Ask for the one piece you are missing, when the action itself is clear:
   {"action": "ask", \
@@ -506,6 +539,7 @@ def _parse_intent(raw_content: "str | None") -> Intent:
         new_name=data.get("new_name"),
         target_name=data.get("target_name"),
         query=data.get("query"),
+        content=data.get("content"),
         # Free text headed for a terminal and a speech synthesiser, unlike
         # the filenames above which must stay byte-exact to match real files.
         question=_plain_punctuation(data.get("question")),
@@ -543,6 +577,7 @@ class NemotronClient:
         watched_folders: list[str] | None = None,
         screenshot_path: str | None = None,
         history: "list[dict] | None" = None,
+        memory: "list[str] | None" = None,
     ) -> Intent:
         """The path actually used end to end: a transcribed instruction
         (locally, via `heypeer/wakeword/stt.py` — see module docstring for
@@ -574,7 +609,14 @@ class NemotronClient:
         memory of the last one, so "et dans Archives du coup ?" was
         uninterpretable and the assistant could only ever take single-shot
         commands. It is the caller's job to decide when an exchange is over
-        and the history should be dropped - see `HeyPeer._close_exchange`."""
+        and the history should be dropped - see `HeyPeer._close_exchange`.
+
+        `memory` is different from `history`: facts told explicitly
+        ("retiens que...") that outlive the exchange they were told in - see
+        `heypeer/memory.py`'s module docstring for why this is a separate,
+        persistent store rather than folded into history. Included on every
+        turn, not just when asked about directly, so Nemotron can naturally
+        refer to one in an ordinary answer."""
         text = f"Instruction: {instruction_text}"
         # Omitted entirely when there are none, rather than sent as "[]".
         # Skill learning is off by default now, and a long skill list was
@@ -586,6 +628,8 @@ class NemotronClient:
             text += f"\nFiles currently in the watched folder: {json.dumps(watched_files)}"
         if watched_folders is not None:
             text += f"\nFolders currently in the watched folder: {json.dumps(watched_folders)}"
+        if memory:
+            text += f"\nThings you remember about the user from earlier: {json.dumps(memory)}"
 
         if screenshot_path is None:
             content = text

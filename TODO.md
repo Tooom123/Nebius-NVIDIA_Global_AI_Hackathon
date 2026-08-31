@@ -2595,6 +2595,73 @@ speculative hardening this project's own established discipline (rounds
 
 449 tests.
 
+### Round 38: persistent memory, and Hermes Agent for open-ended tasks (2026-08-31)
+
+Two of the three named track tools researched properly before touching
+anything, since the user's own one-line descriptions turned out to not
+quite match reality once looked up: **NemoClaw is not a computer-use agent
+that sees the screen and drives the mouse and keyboard** - it is an
+NVIDIA security/sandboxing layer that hosts *other* agents (OpenClaw,
+Hermes, LangChain) inside **OpenShell** sandboxes, with network policy,
+inference routing, and audit trails. Both are deployment infrastructure,
+not something with a "call this to do X" surface Hey Peer could dispatch a
+voice command to - noted for the pitch as "how we would harden this in
+production", not built as a feature this round. **Hermes Agent** is the one
+of the three that is concretely integrable: open-source, model-agnostic,
+documented one-shot invocation (`hermes chat -q "task"`), a broad built-in
+tool catalogue (web search, browser automation, scheduling), and - notably
+- its own persistent memory.
+
+**Persistent memory is native, not routed through Hermes.** The track names
+"persistent memory" as a requirement Hey Peer genuinely lacked - `_history`
+is conversation memory, dropped the moment an exchange closes, by design.
+Hermes's own memory (`~/.hermes/state.db`) was tempting to lean on instead
+of building a second store, and rejected for the same reason Spotify
+credentials or the coding agent are optional rather than load-bearing:
+"your data under your control" cannot be true of Hey Peer's own memory if
+remembering a fact silently does nothing whenever an unrelated external
+tool is not installed. `heypeer/memory.py` is a small, bounded (50 facts)
+local JSON store; a new `remember_fact` action ("retiens que je prefere
+qu'on m'appelle Tom") writes to it, and every turn now includes the stored
+facts as context via a new `memory` parameter on `interpret_text` - the
+same mechanism `watched_files` already uses - so Nemotron can naturally
+refer to one without a separate "recall" action being needed. Verified
+end to end across two entirely separate `HeyPeer` instances (simulating an
+app restart), not just within one process.
+
+**A real bug found by the test suite, not assumed away**: the first draft
+had `def load(path: Path = DEFAULT_PATH)` - a default bound once at import
+time. A test that patched `heypeer.memory.DEFAULT_PATH` to a temp file
+found this the hard way: the patch had no effect, and the write went
+straight to this project's own real `data/memory.json` on disk instead of
+the fixture. Fixed by resolving `DEFAULT_PATH` *inside* the function
+(`path: Path | None = None`, defaulting late) rather than in the signature
+- the standard fix for this exact class of bug, and a reminder that a
+default argument value is bound once, not per call.
+
+**`general_task`** dispatches Hermes the same way `fix_code` (round 37)
+dispatches Claude Code - `hermes chat -q "<task>"`, same honest-degradation
+shape (`is_available()` check, a hard timeout, a spoken message on
+failure). Deliberately **no undo entry** for this one, unlike `fix_code`:
+an open-ended task ("cherche des vols pour Paris") is not reliably a single
+reversible file edit, so pretending to capture "the" change to restore
+would be dishonest - said plainly in the module docstring rather than
+built and quietly not actually working. Same honesty as `coding_agent.py`
+about what is verified: there is no `hermes` binary in this sandbox either,
+so the exact CLI flags are Hermes's documented behaviour, not observed.
+
+**A tone bug found while verifying memory recall live, unrelated to memory
+itself but only actually surfaced by it**: reading a stored fact back
+drifted to the formal "vous" register roughly two-thirds of the time
+("Vous preferez qu'on vous appelle Tom" - the fixed system prompt has
+always used "tu" in its own examples, but never said so as a rule, and a
+stored fact reads like a neutral, third-person note, which pulled the
+model that way). Fixed with an explicit "tu, never vous" rule, including
+the exact confused case as a counter-example. Re-measured: 8/8 after,
+0/6 before.
+
+474 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
