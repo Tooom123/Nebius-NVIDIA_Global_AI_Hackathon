@@ -6,18 +6,42 @@ resolves a spoken phrase to an app name and this module decides whether that
 name is something it knows how to start - because the failure mode of the
 obvious alternative is handing a language model's output to the shell.
 
-Launching goes through the most specific route each app actually has:
+Launching tries, in order, every route an app might actually have:
 
-1. A **URI scheme** (`spotify:`) when the app registers one. This is the
-   right answer where it exists: the OS resolves it to whatever the user has
-   installed - Store app, desktop build, either version - and it is the same
-   mechanism a link in a browser uses.
-2. An **executable name** otherwise, resolved through PATH and, on Windows,
-   the App Paths registry that `os.startfile` consults.
+1. A **URI scheme** (`spotify:`) when the app registers one *and it is
+   trustworthy* - genuinely documented, not just plausible-looking. Spotify
+   and Steam both really do register one system-wide; this is the right
+   answer where it holds, since the OS resolves it to whatever the user has
+   installed (Store app, desktop build, either version) the same way a link
+   in a browser does. A scheme that turns out not to be registered just
+   fails fast and costs nothing - the next route is tried regardless.
+2. A **Start Menu shortcut** matching the app's name or an alias. This is
+   how a person actually opens most installed software, and it is why it
+   comes before a bare executable name: Discord, Slack, Teams, and most
+   other Electron/Squirrel-installed apps install to a per-user, versioned
+   folder under `%LOCALAPPDATA%` that is never on PATH, and their real
+   launcher (`Update.exe` for Squirrel apps specifically) needs a
+   command-line argument to start the app rather than open its own updater
+   - `os.startfile` cannot pass one. Every installer, Squirrel included,
+   drops a shortcut in the Start Menu as a side effect of installing
+   *specifically* so the shell can find the app without any of that - the
+   shortcut already encodes the correct target, arguments and working
+   directory.
+3. An **executable name**, resolved to a real path first via `shutil.which`
+   (PATH) or a known install location, rather than handed to `os.startfile`
+   as a bare string - `os.startfile` wraps `ShellExecute`, which is not
+   documented to search PATH for an extensionless name the way
+   `subprocess`/`CreateProcess` is, so a bare `"discord"` attempt is not
+   reliable even when an executable really is on PATH.
 
 Unknown names are refused rather than guessed at. "Lance Machin" gets an
 answer saying Hey Peer doesn't know that app, which is a worse experience for
 exactly one turn and is not a way to start arbitrary processes.
+
+None of this has been run against a real Windows install - every mechanism
+above is reasoned from how Windows installers and `ShellExecute` are
+documented to behave, not observed. See `_find_start_menu_shortcut` and
+`launch` for what is and isn't independently testable from here.
 """
 
 import difflib
@@ -65,18 +89,22 @@ KNOWN_APPS = (
                        r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")),
     App(name="Firefox", aliases=(), executable="firefox"),
     App(name="Edge", aliases=("microsoft edge",), executable="msedge"),
-    App(name="Discord", aliases=("discorde",), uri_scheme="discord:", executable="discord",
-        windows_paths=(r"%LOCALAPPDATA%\Discord\Update.exe",)),
+    # These five are Electron/Squirrel-style installs: no reliable PATH
+    # entry, and their URI scheme (if any) is a guess, not a documented,
+    # verified one the way Spotify's and Steam's are - the Start Menu
+    # shortcut search is what actually launches them in practice; the
+    # scheme is kept as a free first attempt only.
+    App(name="Discord", aliases=("discorde",), uri_scheme="discord:", executable="discord"),
     App(name="Slack", aliases=(), uri_scheme="slack:", executable="slack"),
     App(name="Teams", aliases=("microsoft teams",), uri_scheme="msteams:", executable="teams"),
     App(name="Zoom", aliases=(), uri_scheme="zoommtg:", executable="zoom"),
     App(name="WhatsApp", aliases=("ouatsape",), uri_scheme="whatsapp:", executable="whatsapp"),
-    App(name="Telegram", aliases=(), uri_scheme="tg:", executable="telegram"),
+    App(name="Telegram", aliases=("telegram desktop",), uri_scheme="tg:", executable="telegram"),
     App(name="Steam", aliases=(), uri_scheme="steam:", executable="steam"),
     App(name="VLC", aliases=("vlc media player", "le lecteur video"), executable="vlc"),
     App(name="Word", aliases=("microsoft word",), executable="winword"),
     App(name="Excel", aliases=("microsoft excel",), executable="excel"),
-    App(name="PowerPoint", aliases=("power point",), executable="powerpnt"),
+    App(name="PowerPoint", aliases=("power point", "microsoft powerpoint"), executable="powerpnt"),
     App(name="Outlook", aliases=("les mails", "ma boite mail"), executable="outlook"),
     App(name="Explorateur", aliases=("explorateur de fichiers", "explorer", "les fichiers"),
         executable="explorer"),
@@ -151,21 +179,76 @@ def _open_target(target: str) -> None:
     )
 
 
+# Both scopes a Windows installer can put a shortcut in: the per-user Start
+# Menu (where Squirrel/Electron apps like Discord install theirs) and the
+# all-users one (traditional MSI installers).
+_START_MENU_ROOTS = (
+    r"%APPDATA%\Microsoft\Windows\Start Menu\Programs",
+    r"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs",
+)
+
+
+def _find_start_menu_shortcut(app: App, roots: "tuple[str, ...] | None" = None) -> "Path | None":
+    """A `.lnk` file under the Start Menu matching `app`'s name or an alias,
+    searched recursively (installers commonly nest shortcuts in a publisher
+    or suite subfolder - "Discord.lnk" sits directly under Programs, but
+    "Microsoft Office Tools/Word.lnk" does not).
+
+    Exact match (case-insensitive) against the shortcut's filename first;
+    a substring match either way second, since a shortcut's real name
+    sometimes only partially overlaps what is in `KNOWN_APPS` ("VLC media
+    player.lnk" for `App(name="VLC", aliases=("vlc media player", ...))` is
+    an exact-alias match, but an install this code has not specifically
+    special-cased might only ever match this loosely).
+
+    `roots` is overridable so this is independently testable without a real
+    Windows Start Menu - see `tests/test_apps.py`.
+    """
+    import glob
+    from pathlib import Path
+
+    wanted = [_normalise(key) for key in (app.name, *app.aliases)]
+    search_roots = roots if roots is not None else _START_MENU_ROOTS
+
+    found: "list[Path]" = []
+    for root in search_roots:
+        expanded = os.path.expandvars(root) if roots is None else root
+        if not os.path.isdir(expanded):
+            continue
+        found.extend(
+            Path(p) for p in glob.glob(os.path.join(expanded, "**", "*.lnk"), recursive=True)
+        )
+
+    for shortcut in found:
+        if _normalise(shortcut.stem) in wanted:
+            return shortcut
+    for shortcut in found:
+        stem = _normalise(shortcut.stem)
+        if any(w in stem or stem in w for w in wanted):
+            return shortcut
+    return None
+
+
 def launch(app: App) -> None:
-    """Starts `app`, trying its URI scheme first and its executable after.
+    """Starts `app`: its URI scheme first (a free attempt, tried even where
+    it is only a guess - see `KNOWN_APPS`), then a matching Start Menu
+    shortcut, then a resolved executable path.
 
     Raises `LaunchFailed` if nothing works, which the caller turns into a
     spoken message - an app the user does not actually have installed is a
-    normal thing to be asked for, not an error worth a traceback.
+    normal thing to be asked for, not an error worth a traceback. Failing
+    honestly here matters more than usual: the previous version of this
+    function could "succeed" at opening the wrong thing (a Squirrel
+    updater window instead of the app it updates) and report it as done.
     """
     attempts = []
     if app.uri_scheme:
         attempts.append(app.uri_scheme)
-    if app.executable:
-        attempts.append(app.executable)
-    for path in app.windows_paths:
-        if sys.platform == "win32":
-            attempts.append(os.path.expandvars(path))
+    if sys.platform == "win32":
+        shortcut = _find_start_menu_shortcut(app)
+        if shortcut is not None:
+            attempts.append(str(shortcut))
+    attempts.extend(_executable_candidates(app))
 
     last_error: "Exception | None" = None
     for target in attempts:
