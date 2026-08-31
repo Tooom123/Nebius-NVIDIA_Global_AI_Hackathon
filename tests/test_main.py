@@ -2095,3 +2095,176 @@ def test_general_task_pushes_no_undo_entry(tmp_path: Path, fake_tts: MagicMock) 
         peer.on_wake_word()
 
     assert len(peer._undo_stack) == 0
+
+
+# --- Screen-based code debugging (round 40) ---------------------------------
+#
+# "ca fonctionne bien mais seulement si le fichier est dans le dossier
+# telechargement" - analyze_code/fix_code only ever worked for a file
+# already in the watched folder, useless for an actual coding project.
+# _resolve_code_path is the fix: a real path (absolute, or otherwise
+# directly resolvable) is checked first, before falling back to the
+# watched-folder-only resolution every other file action still uses.
+# debug_screen_code is the other half: no filename needed at all, looked
+# up from the screen instead.
+
+
+def test_resolve_code_path_accepts_a_real_path_outside_the_watched_dir(
+    tmp_path: Path,
+) -> None:
+    """The actual fix for the reported bug: a real project file, nowhere
+    near the watched folder (~/Downloads by default), must resolve."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    project_file = tmp_path / "MonProjet" / "calc.py"
+    project_file.parent.mkdir()
+    project_file.write_text("def f(): return 1 / 0\n")
+
+    peer = HeyPeer(nemotron=MagicMock(), watched_dir=watched_dir)
+
+    assert peer._resolve_code_path(str(project_file)) == project_file
+
+
+def test_resolve_code_path_still_falls_back_to_the_watched_dir(tmp_path: Path) -> None:
+    """A bare filename that IS in the watched folder must keep working
+    exactly as before - this is an addition, not a replacement."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+
+    peer = HeyPeer(nemotron=MagicMock(), watched_dir=watched_dir)
+
+    assert peer._resolve_code_path("facture.pdf") == watched_dir / "facture.pdf"
+
+
+def test_resolve_code_path_declines_when_neither_resolves(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    peer = HeyPeer(nemotron=MagicMock(), watched_dir=watched_dir)
+
+    assert peer._resolve_code_path("nowhere/introuvable.py") is None
+
+
+def test_fix_code_works_on_a_file_outside_the_watched_directory(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """End to end, not just the resolver in isolation: the actual reported
+    complaint, fixed."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    project_file = tmp_path / "MonProjet" / "calc.py"
+    project_file.parent.mkdir()
+    project_file.write_text("def f():\n    return 1 / 0\n")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="fix_code", skill_id=None, n_repetitions=1, target_name=str(project_file),
+    )
+    nemotron.summarize_for_speech.return_value = "Corrige."
+    peer = HeyPeer(
+        nemotron=nemotron, watched_dir=watched_dir,
+        get_instruction=lambda: f"corrige {project_file}",
+    )
+
+    def fake_run(prompt, cwd):
+        assert cwd == project_file.parent  # real project context, not Downloads
+        project_file.write_text("def f():\n    return 1\n")
+        return "Fixed."
+
+    with (
+        patch("heypeer.executor.coding_agent.is_available", return_value=True),
+        patch("heypeer.executor.coding_agent.run", side_effect=fake_run),
+        patch("heypeer.executor.coding_agent.open_diff_in_vscode"),
+    ):
+        peer.on_wake_word()
+
+    assert project_file.read_text() == "def f():\n    return 1\n"
+    assert len(peer._undo_stack) == 1
+
+
+def test_debug_screen_code_speaks_the_diagnosis_and_opens_a_followup(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="debug_screen_code", skill_id=None, n_repetitions=1,
+        speech="Je regarde l'écran...",
+    )
+    nemotron.diagnose_screen_code.return_value = (
+        "Le probleme vient de calc.py, division par zero. Je corrige ?"
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "qu'est-ce qui ne va pas ici ?")
+    peer._wake_listener = MagicMock()
+
+    with patch("heypeer.executor.screen.capture", return_value=b"fake-png-bytes"):
+        peer.on_wake_word()
+
+    nemotron.diagnose_screen_code.assert_called_once_with(
+        b"fake-png-bytes", "qu'est-ce qui ne va pas ici ?", "fr"
+    )
+    assert fake_tts.call_args_list[-1].args == (
+        "Le probleme vient de calc.py, division par zero. Je corrige ?",
+    )
+    # Unlike read_screen/analyze_code: this ends in a question, so the
+    # exchange must stay open for "oui"/"corrige-le" without repeating the
+    # wake word.
+    peer._wake_listener.arm_followup.assert_called_once()
+
+
+def test_debug_screen_code_capture_failure_is_reported_honestly(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="debug_screen_code", skill_id=None, n_repetitions=1,
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "qu'est-ce qui ne va pas ici ?")
+
+    with patch("heypeer.executor.screen.capture", return_value=None):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_with("Je n'ai pas pu capturer l'écran.", language="fr")
+    nemotron.diagnose_screen_code.assert_not_called()
+
+
+def test_debug_then_fix_is_one_continuous_exchange(tmp_path: Path, fake_tts: MagicMock) -> None:
+    """The whole point of the flow: diagnose from the screen, ask, and a
+    plain "oui" - no wake word, no filename repeated - reaches fix_code
+    with the file the diagnosis itself named, because it is now in the
+    exchange history."""
+    project_file = tmp_path / "MonProjet" / "calc.py"
+    project_file.parent.mkdir()
+    project_file.write_text("def f():\n    return 1 / 0\n")
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.side_effect = [
+        Intent(
+            action="debug_screen_code", skill_id=None, n_repetitions=1,
+            speech="Je regarde l'écran...",
+        ),
+        Intent(
+            action="fix_code", skill_id=None, n_repetitions=1, target_name=str(project_file),
+        ),
+    ]
+    nemotron.diagnose_screen_code.return_value = (
+        f"Le fichier est {project_file}, division par zero. Je corrige ?"
+    )
+    nemotron.summarize_for_speech.return_value = "Corrige."
+
+    it = iter(["qu'est-ce qui ne va pas ici ?", "oui, corrige"])
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: next(it))
+
+    def fake_run(prompt, cwd):
+        project_file.write_text("def f():\n    return 1\n")
+        return "Fixed."
+
+    with (
+        patch("heypeer.executor.screen.capture", return_value=b"fake-png-bytes"),
+        patch("heypeer.executor.coding_agent.is_available", return_value=True),
+        patch("heypeer.executor.coding_agent.run", side_effect=fake_run),
+        patch("heypeer.executor.coding_agent.open_diff_in_vscode"),
+    ):
+        peer.on_wake_word(followup=False)
+        peer.on_wake_word(followup=True)
+
+    assert project_file.read_text() == "def f():\n    return 1\n"

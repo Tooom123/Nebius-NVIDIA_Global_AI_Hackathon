@@ -2707,6 +2707,68 @@ computer-use behaviour to verify on real hardware.
 
 475 tests.
 
+### Round 40: coding help without a filename, from actually testing on real code (2026-08-31)
+
+Real feedback from testing round 37's coding assistant on a real file: "ca
+fonctionne bien mais seulement si le fichier est dans le dossier
+telechargement." Confirmed the diagnosis exactly - the test file
+(`test.py`, at the repo root, not in `~/Downloads`) could not be found,
+because `analyze_code`/`fix_code` only ever resolved a name against the
+watched folder, the same as every file-organizing action. Coding is a
+different kind of task from moving a PDF: the file is wherever the user's
+actual project lives, essentially never Downloads.
+
+**The fix has two parts, matching the two things the user actually asked
+for.**
+
+`_resolve_code_path` (new, `main.py`) tries `name_or_path` as a real path in
+its own right first - absolute, or otherwise directly resolvable - before
+falling back to the existing watched-folder resolution. This is additive,
+not a replacement: a bare filename that IS in the watched folder still
+resolves exactly as before (verified - no regression on any existing
+`analyze_code`/`fix_code` test). `fix_code`'s coding agent now also runs
+with the file's own containing folder as its working directory, not
+`watched_dir` - real project context (sibling files, a `.git` root) instead
+of an unrelated Downloads folder that happened to be watched. This is a
+wider blast radius than file actions have - no path-containment check the
+watched directory otherwise gives - stated plainly in the docstring rather
+than glossed over; the safety net for this action stays undo-on-write, the
+same as before.
+
+**"Je lui dis ce qui ne va pas, il regarde mon ecran, et si je dis oui, il
+corrige dans VSCode."** A new `debug_screen_code` action - a screenshot,
+diagnosed by a new `NemotronClient.diagnose_screen_code` (its own narrow
+prompt, `DIAGNOSE_SCREEN_CODE_SYSTEM_PROMPT`) that both explains what looks
+wrong *and* names the file if it can read one off a tab or a title bar,
+phrased as a question ("le probleme vient de X dans calc.py, veux-tu que je
+corrige ?"). Unlike every other read-then-speak handler in this project,
+this one deliberately leaves a follow-up window open - the diagnosis IS a
+question, so "oui"/"corrige-le" has to reach `fix_code` without repeating
+the wake word. The file name the diagnosis spoke becomes part of the
+exchange history the same way anything else Hey Peer says does, so Nemotron
+resolves `fix_code`'s `target_name` from it on the follow-up turn with no
+new plumbing - the same mechanism that already lets "et dans Archives du
+coup ?" refer back to an earlier turn.
+
+Verified end to end, not assumed from the parts working separately: one
+continuous exchange - "qu'est-ce qui ne va pas ici ?" -> a screen diagnosis
+naming a file outside the watched directory -> "oui, corrige" with no wake
+word -> the real file changed, an undo entry pushed. The image-legibility
+half (does a synthetic PIL test image read clearly enough for a real
+diagnosis) could not be fully judged from here - a crude test render
+produced a garbled French diagnosis but still correctly named the file and
+asked the fix question, so the *mechanism* is confirmed; diagnosis quality
+against a real, sharp VS Code screenshot needs real hardware.
+
+**Also fixed live, found while re-verifying:** "ouvre YouTube et joue la
+derniere video de X" and "va sur Amazon et ajoute Y au panier" - round 39's
+own fix - were still occasionally landing on `open_app` after this round's
+edits to that same prompt section. Re-measured at 8 repeats each: 7/8 and
+8/8 correct, consistent with the stochastic residual already measured and
+accepted in round 39, not a new regression - checked rather than assumed.
+
+486 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
