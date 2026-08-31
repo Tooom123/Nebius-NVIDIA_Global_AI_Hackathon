@@ -1240,3 +1240,108 @@ def test_dispatch_has_no_branch_for_an_action_that_does_not_exist() -> None:
         assert literal in ACTIONS, (
             f"_dispatch_intent compares against {literal!r}, which is not in ACTIONS"
         )
+
+
+# --- Fast path integration (round 32) --------------------------------------
+#
+# heypeer/nemotron/fast_path.py handles a small, closed vocabulary of file
+# commands without a network round trip. These tests are about the wiring -
+# does it actually short-circuit Nemotron when it should, and never touch it
+# when it shouldn't - not the matching logic itself, which test_fast_path.py
+# already covers on its own.
+
+
+def test_a_matching_instruction_never_reaches_nemotron(tmp_path: Path) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+    nemotron = MagicMock()
+    peer = HeyPeer(
+        nemotron=nemotron, watched_dir=watched_dir,
+        get_instruction=lambda: "supprime facture.pdf",
+    )
+
+    with patch("send2trash.send2trash") as trash:
+        peer.on_wake_word()
+
+    nemotron.interpret_text.assert_not_called()
+    trash.assert_called_once_with(str(watched_dir / "facture.pdf"))
+
+
+def test_a_non_matching_instruction_still_goes_to_nemotron(tmp_path: Path) -> None:
+    """The overwhelming majority of instructions - anything outside the
+    three fixed shapes fast_path recognises - must be entirely unaffected by
+    its existence."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1, speech="Tres bien, et toi ?",
+    )
+    peer = HeyPeer(
+        nemotron=nemotron, watched_dir=watched_dir,
+        get_instruction=lambda: "comment ca va",
+    )
+
+    peer.on_wake_word()
+
+    nemotron.interpret_text.assert_called_once()
+
+
+def test_an_unresolvable_fast_path_candidate_falls_back_to_nemotron(tmp_path: Path) -> None:
+    """Shaped exactly like a fast-path command, but the file doesn't exist -
+    fast_path declines, and the instruction must still reach the model
+    rather than silently going nowhere."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1,
+        speech="Je ne trouve pas ce fichier.",
+    )
+    peer = HeyPeer(
+        nemotron=nemotron, watched_dir=watched_dir,
+        get_instruction=lambda: "supprime introuvable.pdf",
+    )
+
+    peer.on_wake_word()
+
+    nemotron.interpret_text.assert_called_once()
+
+
+def test_the_fast_path_is_skipped_during_an_open_exchange(tmp_path: Path) -> None:
+    """Even text shaped exactly like a fast-path command must go through
+    Nemotron once a conversation is already open - a fixed sentence shape
+    cannot know whether "supprime facture.pdf" here actually continues
+    whatever the open exchange was about."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="delete_file", skill_id=None, n_repetitions=1, src_filename="facture.pdf",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir)
+    peer._history.append({"role": "user", "content": "some earlier turn"})
+
+    with patch("send2trash.send2trash"):
+        peer._interpret("supprime facture.pdf")
+
+    nemotron.interpret_text.assert_called_once()
+
+
+def test_the_fast_path_also_applies_to_the_manual_prompt_path(tmp_path: Path) -> None:
+    """`_handle_instruction` is the tray/manual-prompt entry point - a
+    separate call site from the voice path, and easy to leave unwired by
+    accident."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+    nemotron = MagicMock()
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir)
+
+    with patch("send2trash.send2trash") as trash:
+        peer._handle_instruction("supprime facture.pdf")
+
+    nemotron.interpret_text.assert_not_called()
+    trash.assert_called_once_with(str(watched_dir / "facture.pdf"))

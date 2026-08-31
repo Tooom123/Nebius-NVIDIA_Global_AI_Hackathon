@@ -532,13 +532,7 @@ class HeyPeer:
                     self._log("Hey Peer detected.")
                     instruction_text = self.get_instruction()
                     self._log(f"> {instruction_text}")
-                    intent = self.nemotron.interpret_text(
-                        instruction_text,
-                        [],
-                        watched_files=self._watched_files(),
-                        watched_folders=self._watched_folders(),
-                        history=list(self._history),
-                    )
+                    intent = self._interpret(instruction_text)
             except Exception as exc:
                 self._log(f"Failed to interpret the instruction: {exc}")
                 return
@@ -553,6 +547,41 @@ class HeyPeer:
                     self.debug_window.set_state("listening")
             if self._wake_listener is not None:
                 self._wake_listener.unmute()
+
+    def _interpret(self, instruction_text: str, followup: bool = False) -> Intent:
+        """Resolves one instruction to an `Intent` - the local fast path
+        first, Nemotron otherwise.
+
+        Only tried on a fresh turn: a follow-up (`followup=True`, or an
+        open exchange - non-empty history) always goes straight to Nemotron.
+        A follow-up continues a conversation Nemotron itself is holding the
+        context for - "et le deuxieme aussi" cannot be understood from a
+        fixed sentence shape, and that is exactly the case an LLM's grasp of
+        context is for.
+
+        Both checks matter: in real use, `self._history` alone would be
+        enough - a follow-up window only ever opens after `_remember` has
+        already recorded the turn that opened it (see `_dispatch_intent`),
+        so history is never empty during one. But this project's own tests
+        construct a follow-up turn directly, without a preceding real turn
+        to populate history first - a reasonable, deliberate shortcut this
+        method has to honour too, not silently defeat.
+        """
+        if not followup and not self._history and self.watched_dir is not None:
+            from heypeer.nemotron.fast_path import try_fast_path
+
+            fast = try_fast_path(instruction_text, self.watched_dir, self._watched_folders())
+            if fast is not None:
+                self._log("Handled locally, without asking the model.")
+                return fast
+
+        return self.nemotron.interpret_text(
+            instruction_text,
+            [],
+            watched_files=self._watched_files(),
+            watched_folders=self._watched_folders(),
+            history=list(self._history),
+        )
 
     def _interpret_audio(
         self, audio: np.ndarray, followup: bool = False
@@ -604,16 +633,7 @@ class HeyPeer:
         # docstring. Nothing is lost for file actions — the grounding that
         # matters is the real file/folder listing, not a picture of the
         # screen — and skipping the capture and upload is faster too.
-        return (
-            self.nemotron.interpret_text(
-                instruction_text,
-                [],
-                watched_files=self._watched_files(),
-                watched_folders=self._watched_folders(),
-                history=list(self._history),
-            ),
-            instruction_text,
-        )
+        return (self._interpret(instruction_text, followup=followup), instruction_text)
 
     def _handle_instruction(self, instruction_text: str) -> None:
         """Text-only path used by the tray's manual prompt and by tests.
@@ -624,13 +644,7 @@ class HeyPeer:
         if self._wake_listener is not None:
             self._wake_listener.mute()
         try:
-            intent = self.nemotron.interpret_text(
-                instruction_text,
-                [],
-                watched_files=self._watched_files(),
-                watched_folders=self._watched_folders(),
-                history=list(self._history),
-            )
+            intent = self._interpret(instruction_text)
             self._dispatch_intent(intent, instruction_text)
         finally:
             if self._wake_listener is not None:
