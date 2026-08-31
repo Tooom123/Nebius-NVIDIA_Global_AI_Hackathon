@@ -17,6 +17,7 @@ rolling feature buffer internally, cutting the per-chunk work roughly to the
 size of one chunk instead of the size of the whole detection window.
 """
 
+import math
 import threading
 import time
 from collections import deque
@@ -32,6 +33,11 @@ SAMPLE_RATE = 16000
 CLIP_SECONDS = 1.5
 CHUNK_SAMPLES = 1280  # 80ms chunks, openWakeWord's standard streaming granularity
 COOLDOWN_SECONDS = 1.5  # minimum gap between two separate detections
+
+# Enough real chunks to fully flush openWakeWord's synthetic-silence seed
+# (see `_prime_feature_buffer`) out of the scoring window - one CLIP_SECONDS'
+# worth, rounded up so the window is never partly stale.
+PRIMING_CHUNKS = math.ceil(CLIP_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
 
 # Simple energy-based end-pointing for the instruction recorded right after a
 # wake-word trigger — good enough for a spoken command a few seconds long
@@ -295,6 +301,47 @@ class WakeWordListener:
         self._features(chunk)
         return self._score()
 
+    def _prime_feature_buffer(self, stream) -> None:
+        """Reads `PRIMING_CHUNKS` of real microphone audio and feeds it into
+        the streaming feature buffer, before scoring anything for real.
+
+        openWakeWord's `AudioFeatures` seeds `feature_buffer` at construction
+        by running the embedding model over ten seconds of pure silence
+        (`self.feature_buffer = self._get_embeddings(np.zeros(160000))` in
+        its own source - "fill with blank data to start"). `_score()` looks
+        at the most recent `CLIP_SECONDS` of that buffer, so for the first
+        `CLIP_SECONDS` of real listening, the window it scores is a mix of
+        real embeddings and that synthetic-silence seed - nothing like the
+        plain `CLIP_SECONDS` of real speech `train.py` actually trained on.
+
+        Found from a report that repeated after round 25's fix for a
+        different cold-start gap (Whisper's *verifier* model loading):
+        "le premier Hey Peer est souvent rate, le bit avant que le blob
+        descende". This is the detector itself, independent of that earlier
+        fix - not necessarily scoring low, but scoring against a window the
+        classifier never saw anything like in training, so its answer
+        either way (trigger or not) can't be trusted. The fix isn't "raise
+        the score" - it's refusing to let `_maybe_trigger` decide anything
+        from that window at all: no callback fires until the mix is fully
+        flushed by real audio, which the mic supplies on its own as
+        ordinary room tone before anyone has spoken.
+
+        This close to microphone hardware and openWakeWord's own internals,
+        a synthetic tone-vs-noise toy classifier (see the test suite) can
+        confirm the *mechanism* - priming reads and discards, never scores,
+        never calls back - but not that this measurably fixes the reported
+        miss on a real voice against the real trained model; that needs
+        the user's own hardware, the same as every other wake-word change
+        in this project.
+        """
+        for _ in range(PRIMING_CHUNKS):
+            if not self._running:
+                # stop() during priming - same as the main loop, priming has
+                # to notice rather than block shutdown for up to CLIP_SECONDS.
+                return
+            raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
+            self._features(np.frombuffer(raw, dtype=np.int16))
+
     def _record_instruction(
         self,
         stream,
@@ -409,6 +456,7 @@ class WakeWordListener:
         )
         if self.debug:
             print(f"[wakeword] Ecoute demarree (seuil de detection = {self.threshold}).")
+        self._prime_feature_buffer(stream)
         try:
             while self._running:
                 raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)

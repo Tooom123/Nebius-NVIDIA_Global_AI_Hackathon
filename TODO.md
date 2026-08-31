@@ -205,6 +205,91 @@ each major implementation (per project convention).
         `run_cli()` both call `peer.tray.set_auto_mode(True)` right after
         `start_capture()`; the tray menu item is unchanged (still a plain
         toggle) so it can still be turned off for that session.
+## Backlog (2026-08-31) — curated from a Rhasspy/Wyoming comparison, plus two
+## still-open reports from earlier this session. Checked off as each lands.
+
+Rhasspy (github.com/rhasspy) was researched as "what does an established local
+voice-assistant project do that we don't". Full ranked list and what was
+explicitly rejected (MQTT/Hermes, the full Wyoming multi-process split, closed
+grammar as the *primary* NLU, a bolt-on speaker verifier, its old multi-engine
+TTS/STT zoo) lives in this session's conversation record, not repeated here -
+only what's actually being built is.
+
+### Doing this round
+
+- [x] **A cold-start gap in the wake-word detector itself.** Distinct from
+      round 25's "the first Hey Peer was answered several seconds late"
+      (that was Whisper's *verifier* model still loading) - this is the
+      *detector* itself, scoring against a window openWakeWord seeds with
+      ten seconds of synthetic silence at construction
+      (`AudioFeatures.feature_buffer = self._get_embeddings(np.zeros(160000))`
+      in its own source), so for the first `CLIP_SECONDS` of real listening
+      the classifier is looking at something it never saw in training - a
+      mix of real audio and that seed, not a clean clip. `start()` now
+      reads and discards `CLIP_SECONDS` of real audio (`_prime_feature_
+      buffer`) before entering the scored loop: no detection can fire from
+      that unreliable window, whatever it would have scored. Two tests
+      cover the mechanism (priming reads exactly `PRIMING_CHUNKS`, never
+      scores or calls back; `start()` genuinely calls it, not just defines
+      it - this project has shipped the "wired up but never written" gap
+      before). **Unverified against real hardware/voice** - the mechanism
+      is provable on a toy classifier, "does the real miss stop happening"
+      is not, the same as every wake-word change in this project.
+- [ ] **Formalize action registration.** Today, adding an action means
+      touching three places by hand: the `SYSTEM_PROMPT` text, the `Intent`
+      dataclass, and the if/elif chain in `_dispatch_intent`. This project
+      has already shipped two bugs from exactly that kind of drift - the
+      prompt refusing apps and web search one round after gaining them
+      (round 29), then the same for the weather (round 31) - both only
+      caught because a human happened to try the sentence. A small
+      table-driven registry (action name -> required fields + handler) makes
+      "the prompt still refuses something it can do" a thing a test can
+      check mechanically, not something that needs a human to stumble on it
+      live. (Rhasspy's clean split between its "intent" and "handle" domains,
+      generalized past its own grammar-specific implementation.)
+- [ ] **A local fast path for the small, closed vocabulary of file commands**,
+      tried before the LLM call and falling back to it on no match. Rhasspy's
+      `sentences.ini`/Fsticuffs is a *closed* grammar - wrong as the primary
+      NLU here, since arbitrary phrasing is the reason the LLM was chosen -
+      but as a narrow front gate for "supprime X", "renomme X en Y", "deplace
+      X vers Y" it removes a network round trip from the single most common
+      class of instruction. This is the most direct answer available to the
+      latency complaints that recur across this project's whole history.
+
+### Queued, lower urgency (not started)
+
+- [ ] VAD gate in front of the always-on wake detector (`wyoming-satellite`'s
+      approach: only feed audio to the detector when a VAD says "this is
+      speech"). Cuts CPU spent scoring silence/room noise and likely reduces
+      false triggers from music or TV, but needs a new dependency (Silero
+      VAD) and real measurement before it's worth the added moving part.
+- [ ] A stage-boundary event/replay log (raw audio in -> wake decision,
+      transcript -> verifier verdict, transcript -> LLM JSON), so wake-word
+      and prompt regressions can be tested against captured real audio
+      instead of a human speaking into the mic every time. Directly serves the
+      same goal as this project's own rule of verifying prompt changes against
+      the live endpoint rather than mocks - most useful once
+      the fast path above exists and there is more than one thing worth
+      replaying.
+- [ ] Synthetic-data augmentation for the wake-word model (TTS-generate many
+      phrasings of "Hey Peer" as extra negatives/positives). Complements the
+      current real-voice fine-tune rather than replacing it, but it's a
+      training-pipeline exercise the user runs themselves, not app code -
+      noted, not scheduled.
+
+### Needs your eyes, not just code
+
+- [ ] **Blob "3D depth toward the viewer."** Already attempted once (sphere-
+      normal shading + Blinn-Phong specular + Fresnel rim + AO, round 25) and
+      still reported as reading 2D. I can't see the actual render from here
+      (Linux sandbox) and "does this look three-dimensional" isn't something
+      a pixel-measurement test can answer even where I can render - it needs
+      your eyes. Candidate techniques to try next, cheapest first: a slow
+      light-direction sweep (a static key light gives no parallax cue even
+      on a correctly-shaded sphere), a sharper/higher-contrast specular
+      highlight, and a highlight position that drifts slightly with voice
+      energy rather than staying screen-fixed.
+
 ## Next session (2026-08-30) — planning only, nothing started yet
 
 Requested by the user before signing off for the night on 2026-08-29:

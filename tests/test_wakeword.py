@@ -2,6 +2,7 @@ import sys
 import threading
 import types
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -10,6 +11,7 @@ import soundfile as sf
 
 from heypeer.wakeword.listener import (
     CHUNK_SAMPLES,
+    PRIMING_CHUNKS,
     INSTRUCTION_SILENCE_CHUNKS,
     SPEECH_THRESHOLD_MAX_DBFS,
     SPEECH_THRESHOLD_MIN_DBFS,
@@ -307,14 +309,21 @@ def test_play_activation_chime_does_not_block_the_caller(
 
 def _fake_mic(monkeypatch: pytest.MonkeyPatch, listener: WakeWordListener, chunks: list, stop_after: int):
     """Wires a fake pyaudio whose stream replays `chunks` and stops the
-    listener after `stop_after` reads. Returns the stream."""
+    listener after `stop_after` reads *of the real detection loop*.
+
+    `start()` now reads `PRIMING_CHUNKS` of real audio to prime the feature
+    buffer (round 32, see `_prime_feature_buffer`) before that loop begins,
+    and those reads go through this same fake stream - so the threshold is
+    offset by `PRIMING_CHUNKS` to keep every existing caller's `stop_after`
+    meaning what it always meant, without editing each one.
+    """
     fake_stream = _FakeStream(chunks)
     reads = {"n": 0}
     real_read = fake_stream.read
 
     def counting_read(n, exception_on_overflow=False):
         reads["n"] += 1
-        if reads["n"] >= stop_after:
+        if reads["n"] >= PRIMING_CHUNKS + stop_after:
             listener.stop()
         return real_read(n, exception_on_overflow)
 
@@ -648,3 +657,81 @@ def test_play_activation_chime_can_block(monkeypatch: pytest.MonkeyPatch) -> Non
     play_activation_chime(blocking=True)
 
     assert calls == ["played"]  # already done by the time it returns
+
+
+# --- Cold-start feature buffer priming (round 32) -------------------------
+#
+# Distinct from round 25's "the first Hey Peer was answered several seconds
+# late" (that was Whisper's *verifier* model still loading). This is the
+# detector itself scoring low on the very first utterance, because
+# openWakeWord seeds its feature buffer from ten seconds of synthetic
+# silence at construction time - see `_prime_feature_buffer`'s docstring for
+# the exact mechanism, quoted straight from openwakeword's own source.
+
+
+def test_priming_reads_real_audio_and_never_scores_or_calls_back(
+    toy_model: Path,
+) -> None:
+    """`_prime_feature_buffer` must consume exactly `PRIMING_CHUNKS` of real
+    stream reads (not fewer - that would leave the seed unflushed - and not
+    more, which would eat into audio a caller expects `start()` to still
+    process) and must never fire a detection: at this point the buffer is
+    not trustworthy yet, so nothing scored against it should be acted on.
+    """
+    listener = WakeWordListener(str(toy_model), threshold=0.0)  # would trigger on anything scored
+    listener._running = True  # normally set by start(); priming checks it to stay stoppable
+    tone_chunk = (
+        0.3 * np.sin(2 * np.pi * 310 * np.linspace(0, 0.08, CHUNK_SAMPLES)) * 32767
+    ).astype(np.int16)
+    stream = _FakeStream([tone_chunk] * PRIMING_CHUNKS)
+
+    listener._prime_feature_buffer(stream)
+
+    assert stream._i == PRIMING_CHUNKS
+
+
+def test_start_calls_priming_on_the_real_stream_before_the_loop(
+    monkeypatch: pytest.MonkeyPatch, toy_model: Path
+) -> None:
+    """Wiring test: proves `start()` actually calls `_prime_feature_buffer`
+    on its real code path, not just that the helper exists somewhere unused
+    - this project has shipped that exact "wired up but never written" gap
+    before (round 27's `_on_ready_to_listen`).
+
+    Patching the method directly, rather than inferring the call from its
+    side effects, avoids a wrong assumption an earlier draft of this test
+    made: priming does not *suppress* detection of audio that happens to
+    fall inside its window, it only defers scoring it until the window
+    closes - a "Hey Peer" spoken the instant listening starts is still
+    caught, just up to `PRIMING_CHUNKS` chunks later, once real scoring
+    resumes and the (now real-audio-filled) buffer is looked at for the
+    first time. That is actually the fix working as intended, not a
+    loophole - but it makes on_detected the wrong signal for "was priming
+    called", since firing late still looks like firing.
+    """
+    listener = WakeWordListener(str(toy_model))
+    fake_stream = _FakeStream([_quiet_chunk()])
+    reads = {"n": 0}
+    real_read = fake_stream.read
+
+    def counting_read(n, exception_on_overflow=False):
+        reads["n"] += 1
+        if reads["n"] >= 3:
+            listener.stop()
+        return real_read(n, exception_on_overflow)
+
+    fake_stream.read = counting_read
+    fake_pa = MagicMock()
+    fake_pa.open.return_value = fake_stream
+    fake_pa.get_default_input_device_info.side_effect = Exception("no input device in this sandbox")
+    fake_pyaudio_module = types.ModuleType("pyaudio")
+    fake_pyaudio_module.PyAudio = MagicMock(return_value=fake_pa)
+    fake_pyaudio_module.paInt16 = 8
+    monkeypatch.setitem(sys.modules, "pyaudio", fake_pyaudio_module)
+
+    with mock.patch.object(
+        WakeWordListener, "_prime_feature_buffer", autospec=True
+    ) as prime:
+        listener.start(on_detected=MagicMock())
+
+    prime.assert_called_once_with(listener, fake_stream)
