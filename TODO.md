@@ -2304,6 +2304,76 @@ an overridable `roots` parameter specifically so its matching logic (exact,
 alias, nested subfolder, substring, a missing root) can be verified against
 a synthetic Start Menu tree without a real Windows install.
 
+### Round 34: answering in French no matter what language was spoken (2026-08-31)
+
+"des fois je parle an anglais, le resultat est bon mais la parole qui
+confirme est en francais donc pas de logique sur la reponse" - the action
+taken was correct, only the spoken confirmation ignored the language of the
+instruction. Reproduced live before touching anything: "how are you?" came
+back correctly in English, but "delete facture.pdf", "move 4.txt to
+Archives", "what's the weather in Paris?" and "open Spotify" all answered in
+French regardless.
+
+**Root cause, not a missing rule - a rule losing to eleven French examples.**
+The prompt already said "answer in the language the user spoke, normally
+French." Every single worked example of every action's JSON shape, though,
+is phrased in French ("deplace le fichier facture...", "Je deplace..."), and
+apparently that weight of example wins over one explicit sentence for
+anything that is not plain conversation - "reply" alone came back correctly
+because nothing anchors it to a fixed language.
+
+**Fix has two halves - the words, and the voice.**
+
+- The prompt now states the rule once, emphatically, right after the
+  persona intro (before any French example has had a chance to anchor
+  anything), restates it in "How to speak", and requires a new `"language"`
+  field ("fr" or "en") on every single JSON answer - stated once, centrally,
+  rather than duplicated across eleven blocks. Nemotron reports which
+  language it actually used instead of the caller guessing from short output
+  text afterwards (unreliable - langdetect-style heuristics are bad on a
+  handful of words), since the model already knows: it just wrote the
+  sentence.
+- `heypeer/tray/tts.py` picks the Piper voice from that field -
+  `en_US-lessac-medium`, already downloaded alongside the wake-word training
+  voices, so nothing new to fetch. `pronounce.for_speech`'s anglicism
+  respelling is skipped for English text - that layer exists to fix a French
+  voice mangling English words, which is not a problem English text read by
+  an English voice has.
+- Every one of Hey Peer's own *fixed* fallback strings (an unknown app, "rien
+  a annuler", a failed launch, ~15 of them across `main.py`) got an English
+  counterpart, selected by a small `_bilingual(language, french, english)`
+  helper - answering "I don't know the application Machin" in French when
+  asked in English would have been the same inconsistency in a different
+  place.
+
+**Measured, and one edit reverted after making things worse in one
+direction.** A first pass added a concrete worked example to the delete_file
+and move_file blocks ("in English, answer 'Deleting notes.txt.', not
+French"). It fixed the English side but dragged the *French* side down hard
+- "supprime facture.pdf" dropped from a clean 6/6 to 4/12 correct across two
+samples, a real, reproduced overcorrection, not noise. Lightened to a plain
+alternate trigger phrase with no prescribed answer sentence, leaning on the
+already-strengthened top-level rule instead - both directions landed
+reasonably balanced after that (English ~83-92%, French ~92-100% across the
+cases measured). Stopped there rather than keep tuning single sentences
+against a small sample, the same discipline round 31 used for the weather
+routing fix.
+
+**Known, accepted gap:** an undo entry's own description ("le deplacement de
+facture.pdf") is written in French at the moment the *original* action ran
+and stays that way regardless of what language "annule"/"undo" is later said
+in - fixing that needs the original action's language stored alongside the
+entry, which nothing does yet. `_run_undo`'s own fixed sentences around it
+("J'annule .../Undoing ...") do match the current turn's language; only the
+embedded description does not. Left as a known limitation rather than a
+deeper `UndoEntry` rewrite for a comparatively rare case (an English "undo"
+of a French-narrated action).
+
+`Track.spoken` (Spotify) became a method taking `language`, since "par" vs
+"by" needed to vary too - the property syntax could not take a parameter.
+
+365 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

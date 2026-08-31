@@ -35,6 +35,16 @@ def _peer(tmp_path: Path, nemotron: MagicMock) -> HeyPeer:
     return HeyPeer(nemotron=nemotron, get_instruction=lambda: "do it 4 more times")
 
 
+def _capture_speech(target: list) -> "Callable[..., None]":
+    """A `peer._speak`/`_speak_async` replacement that records what was
+    said, for tests that only care about the text - not `list.append`
+    directly, since `_speak` now also takes a `language` keyword argument
+    that a bare `list.append` cannot accept."""
+    def capture(text: str, language: str = "fr") -> None:
+        target.append(text)
+    return capture
+
+
 def test_successful_file_action_does_not_speak_a_confirmation(tmp_path: Path) -> None:
     watched_dir = tmp_path / "Downloads"
     watched_dir.mkdir()
@@ -50,8 +60,8 @@ def test_successful_file_action_does_not_speak_a_confirmation(tmp_path: Path) ->
     )
     peer = _peer_with_watched_dir(tmp_path, nemotron, watched_dir)
     spoken: list[str] = []
-    peer._speak = spoken.append
-    peer._speak_async = spoken.append
+    peer._speak = _capture_speech(spoken)
+    peer._speak_async = _capture_speech(spoken)
 
     peer.on_wake_word()
 
@@ -80,7 +90,7 @@ def test_file_action_does_not_wait_for_narration_to_finish(tmp_path: Path) -> No
     speaking = threading.Event()
     release = threading.Event()
 
-    def slow_speech(_text: str) -> None:
+    def slow_speech(_text: str, language: str = "fr") -> None:
         speaking.set()
         release.wait(timeout=5)
 
@@ -469,7 +479,7 @@ def test_undo_with_nothing_to_undo_says_so(tmp_path: Path) -> None:
         get_instruction=lambda: "annule",
     )
     spoken: list[str] = []
-    peer._speak = spoken.append
+    peer._speak = _capture_speech(spoken)
 
     peer.on_wake_word()  # must not raise
 
@@ -491,7 +501,7 @@ def test_ask_speaks_the_question_instead_of_failing_silently(tmp_path: Path) -> 
         get_instruction=lambda: "déplace facture",
     )
     spoken: list[str] = []
-    peer._speak = spoken.append
+    peer._speak = _capture_speech(spoken)
 
     peer.on_wake_word()
 
@@ -604,7 +614,7 @@ def test_asking_a_question_keeps_the_indicator_on_screen(tmp_path: Path) -> None
     )
     peer.debug_window = MagicMock()
     peer._wake_listener = MagicMock()
-    peer._speak = lambda _text: None
+    peer._speak = lambda _text, language="fr": None
 
     peer.on_wake_word()
 
@@ -623,7 +633,7 @@ def test_a_turn_with_no_followup_hides_the_indicator(tmp_path: Path) -> None:
         get_instruction=lambda: "quelque chose",
     )
     peer.debug_window = MagicMock()
-    peer._speak = lambda _text: None
+    peer._speak = lambda _text, language="fr": None
 
     peer.on_wake_word()
 
@@ -685,7 +695,7 @@ def _conversational(peer: HeyPeer) -> list:
     """Silences speech and gives the peer a listener to arm, returning what
     it says. Speaking for real would load a Piper voice per test."""
     said: list = []
-    peer._speak = said.append
+    peer._speak = _capture_speech(said)
     peer._wake_listener = MagicMock()
     return said
 
@@ -829,7 +839,7 @@ def test_a_file_action_is_narrated_in_the_models_own_words(tmp_path: Path) -> No
     )
     peer = HeyPeer(nemotron=nemotron, watched_dir=watched, get_instruction=lambda: "range la facture")
     said = _conversational(peer)
-    peer._speak_async = said.append
+    peer._speak_async = _capture_speech(said)
 
     peer.on_wake_word()
 
@@ -990,7 +1000,7 @@ def test_a_resolved_track_is_played_and_named(tmp_path: Path) -> None:
     peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets Alright de Kendrick Lamar")
     _conversational(peer)
     narrated: list = []
-    peer._speak_async = narrated.append
+    peer._speak_async = _capture_speech(narrated)
 
     from heypeer.executor.spotify import Track
 
@@ -1026,7 +1036,7 @@ def test_the_track_name_comes_from_the_search_not_from_the_model(tmp_path: Path)
     peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets starman de bowie")
     _conversational(peer)
     narrated: list = []
-    peer._speak_async = narrated.append
+    peer._speak_async = _capture_speech(narrated)
 
     with (
         patch("heypeer.executor.spotify.credentials_missing", return_value=False),
@@ -1058,7 +1068,7 @@ def test_without_credentials_it_opens_the_search_and_says_so(tmp_path: Path) -> 
     peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets Alright")
     _conversational(peer)
     narrated: list = []
-    peer._speak_async = narrated.append
+    peer._speak_async = _capture_speech(narrated)
 
     with (
         patch("heypeer.executor.spotify.credentials_missing", return_value=True),
@@ -1345,3 +1355,115 @@ def test_the_fast_path_also_applies_to_the_manual_prompt_path(tmp_path: Path) ->
 
     nemotron.interpret_text.assert_not_called()
     trash.assert_called_once_with(str(watched_dir / "facture.pdf"))
+
+
+# --- Language matching (round 34) ------------------------------------------
+#
+# "des fois je parle an anglais, le resultat est bon mais la parole qui
+# confirme est en francais donc pas de logique sur la reponse" - the action
+# taken was correct, but Hey Peer answered in French regardless of what
+# language the instruction was actually in. Nemotron now reports which
+# language it wrote in (`intent.language`); these tests are about the wiring
+# from that field to the voice `tts.speak` actually uses - the routing logic
+# for the field itself lives in the live-verified system prompt, not here.
+
+
+def test_an_english_reply_is_spoken_in_english(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1,
+        speech="I'm doing well, thanks.", language="en",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "how are you?")
+
+    peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("I'm doing well, thanks.", language="en")
+
+
+def test_a_french_reply_is_spoken_in_french(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1,
+        speech="Tres bien, et toi ?", language="fr",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "comment ca va ?")
+
+    peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Tres bien, et toi ?", language="fr")
+
+
+def test_an_intent_with_no_language_reported_defaults_to_french(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """An older mock, a malformed answer, or the fast path (which is French-
+    only by construction and never sets this field) must not go silent or
+    crash - French is the existing, safe default."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1, speech="Tres bien.",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "comment ca va ?")
+
+    peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Tres bien.", language="fr")
+
+
+def test_an_english_file_action_is_narrated_in_english(tmp_path: Path, fake_tts: MagicMock) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="delete_file", skill_id=None, n_repetitions=1,
+        src_filename="facture.pdf", speech="Deleting facture.pdf.", language="en",
+    )
+    peer = HeyPeer(
+        nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "delete facture.pdf",
+    )
+
+    with patch("send2trash.send2trash"):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Deleting facture.pdf.", language="en")
+
+
+def test_an_unknown_app_in_english_declines_in_english(tmp_path: Path, fake_tts: MagicMock) -> None:
+    """Hey Peer's own fixed fallback strings, not just Nemotron's text, must
+    also match - answering "Machin" in French after being asked in English
+    is exactly the inconsistency that was reported."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="open_app", skill_id=None, n_repetitions=1,
+        target_name="Machin", language="en",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "open Machin")
+
+    peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("I don't know the application Machin.", language="en")
+
+
+def test_a_music_track_is_named_with_by_not_par_in_english(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    from heypeer.executor.spotify import Track
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="play_music", skill_id=None, n_repetitions=1,
+        query="starman bowie", language="en",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "play starman by bowie")
+
+    with (
+        patch("heypeer.executor.spotify.credentials_missing", return_value=False),
+        patch("heypeer.executor.spotify.find_track",
+              return_value=Track("spotify:track:abc", "Starman", "David Bowie")),
+        patch("heypeer.executor.spotify.play_track"),
+    ):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Playing Starman by David Bowie.", language="en")

@@ -109,6 +109,18 @@ def _default_get_instruction() -> str:
 _PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
 
 
+def _bilingual(language: str, french: str, english: str) -> str:
+    """`french` or `english`, matching what Nemotron reported it wrote its
+    own narration in for this turn (`intent.language`).
+
+    Only for Hey Peer's own *fixed* fallback strings — an unknown app, a
+    failed launch, "nothing to undo". Nemotron's own `speech`/`question`
+    text is never touched here; it already comes back in the right
+    language (see `client.py`'s system prompt) and is spoken with
+    `intent.language` picking the voice, not translated after the fact."""
+    return english if language == "en" else french
+
+
 def _has_placeholder_name(intent: Intent) -> bool:
     """Whether any name field on `intent` is a stand-in for "not determined"
     rather than a real name the user asked for."""
@@ -236,30 +248,37 @@ class HeyPeer:
         except Exception as exc:
             print(f"[tts] Piper voice preload failed (will retry on first use): {exc}")
 
-    def _speak(self, text: str) -> None:
+    def _speak(self, text: str, language: "str | None" = "fr") -> None:
         """Speaks `text` aloud (Piper TTS) — best-effort: a TTS failure
         (missing audio output device, voice download failure, ...) must
         never block the actual execution flow. Muting the wake-word listener
         happens for the whole turn now (see `_on_wake_detected`/
         `on_wake_word`), not just here, so this no longer needs to touch it
-        itself — kept as a no-op-safe method regardless."""
+        itself — kept as a no-op-safe method regardless.
+
+        `language` picks the voice - "en" for an English one, anything else
+        (including the default) the existing French one. Nemotron reports
+        which language it just wrote in on every answer (see `nemotron/
+        intent.py`); callers pass that straight through so what gets *said*
+        matches what got *written* - answering in English text but reading
+        it with the French voice would still sound wrong, just differently."""
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
         try:
             from heypeer.tray.tts import speak
 
-            speak(text)
+            speak(text, language=language)
         except Exception as exc:
             print(f"[tts] Speak failed: {exc}")
         finally:
             if self.debug_window is not None:
                 self.debug_window.set_state("listening")
 
-    def _speak_async(self, text: str) -> None:
+    def _speak_async(self, text: str, language: "str | None" = "fr") -> None:
         """Speaks without blocking the caller. Used for narration that
         precedes an action: the action shouldn't wait for a whole sentence
         of speech to play before it happens."""
-        threading.Thread(target=self._speak, args=(text,), daemon=True).start()
+        threading.Thread(target=self._speak, args=(text, language), daemon=True).start()
 
     def _on_audio_level(self, level: float, recording: bool) -> None:
         """Forwards the live mic level to the indicator's audio-reactive blob.
@@ -657,6 +676,7 @@ class HeyPeer:
         `instruction_text` is what the user said, recorded into the history
         alongside whatever Hey Peer says back so the *next* turn can refer to
         this one."""
+        language = intent.language or "fr"
         if intent.action in SPOKEN_ACTIONS:
             # Nothing to do to the computer: this turn is an answer. Covers
             # both ordinary conversation ("comment ca va ?") and a missing
@@ -665,12 +685,13 @@ class HeyPeer:
             if not message:
                 # It chose to speak and then said nothing. Better to admit
                 # that than to stand silent.
-                message = "Je n'ai pas bien compris, peux-tu reformuler ?"
+                message = _bilingual(language, "Je n'ai pas bien compris, peux-tu reformuler ?",
+                                     "I didn't quite understand, could you rephrase?")
             self._log(f"Hey Peer: {message}")
             # Spoken synchronously, and only then is the follow-up window
             # opened: opening it first would have the microphone listening
             # while Hey Peer is still talking, and it would answer itself.
-            self._speak(message)
+            self._speak(message, language=language)
             self._remember(instruction_text, message)
             # "ask" is a request for an answer by construction, so it holds
             # the exchange open whatever `end_turn` says. Leaving that to the
@@ -691,61 +712,78 @@ class HeyPeer:
             # placeholder is Nemotron saying it doesn't know - treat it that
             # way instead of taking it literally as a name.
             self._log("Hey Peer didn't get a clear enough target for that instruction.")
-            self._speak("Je n'ai pas bien compris, peux-tu répéter ?")
+            self._speak(_bilingual(language, "Je n'ai pas bien compris, peux-tu répéter ?",
+                                   "I didn't quite understand, could you repeat that?"), language=language)
             # A rephrasing is expected, so this is not the end of anything.
             self._arm_followup(CONVERSATION_WINDOW_SECONDS)
             return
         self._remember(instruction_text, intent.speech or "")
         if intent.action == "undo":
-            self._run_undo()
+            self._run_undo(language)
         elif intent.action == "open_app" and intent.target_name:
-            self._run_open_app(intent.target_name, intent.speech)
+            self._run_open_app(intent.target_name, intent.speech, language)
         elif intent.action == "play_music" and intent.query:
-            self._run_play_music(intent.query)
+            self._run_play_music(intent.query, language)
         elif intent.action == "search_web" and intent.query:
-            self._run_search_web(intent.query, intent.speech)
+            self._run_search_web(intent.query, intent.speech, language)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
-                narration=intent.speech or f"Je déplace {intent.src_filename} vers {intent.dest_folder}.",
+                narration=intent.speech or _bilingual(
+                    language, f"Je déplace {intent.src_filename} vers {intent.dest_folder}.",
+                    f"Moving {intent.src_filename} to {intent.dest_folder}."),
                 run=lambda: move_single_file(self.watched_dir, intent.src_filename, intent.dest_folder),
                 done=lambda path: f"Done: moved to {path}.",
                 undo_factory=(lambda path: undo.moved(source, path)) if source else None,
+                language=language,
             )
         elif intent.action == "rename_file" and intent.src_filename and intent.new_name:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
-                narration=intent.speech or f"Je renomme {intent.src_filename} en {intent.new_name}.",
+                narration=intent.speech or _bilingual(
+                    language, f"Je renomme {intent.src_filename} en {intent.new_name}.",
+                    f"Renaming {intent.src_filename} to {intent.new_name}."),
                 run=lambda: rename_file(self.watched_dir, intent.src_filename, intent.new_name),
                 done=lambda path: f"Done: renamed to {path}.",
                 undo_factory=(lambda path: undo.renamed(source, path)) if source else None,
+                language=language,
             )
         elif intent.action == "create_file" and intent.target_name:
             self._run_file_action(
-                narration=intent.speech or f"Je crée le fichier {intent.target_name}.",
+                narration=intent.speech or _bilingual(
+                    language, f"Je crée le fichier {intent.target_name}.",
+                    f"Creating the file {intent.target_name}."),
                 run=lambda: create_file(self.watched_dir, intent.target_name),
                 done=lambda path: f"Done: created {path}.",
                 undo_factory=undo.created_file,
+                language=language,
             )
         elif intent.action == "create_folder" and intent.target_name:
             self._run_file_action(
-                narration=intent.speech or f"Je crée le dossier {intent.target_name}.",
+                narration=intent.speech or _bilingual(
+                    language, f"Je crée le dossier {intent.target_name}.",
+                    f"Creating the folder {intent.target_name}."),
                 run=lambda: create_folder(self.watched_dir, intent.target_name),
                 done=lambda path: f"Done: created {path}.",
                 undo_factory=undo.created_folder,
+                language=language,
             )
         elif intent.action == "delete_file" and intent.src_filename:
             self._run_file_action(
-                narration=intent.speech or f"Je supprime {intent.src_filename}.",
+                narration=intent.speech or _bilingual(
+                    language, f"Je supprime {intent.src_filename}.",
+                    f"Deleting {intent.src_filename}."),
                 run=lambda: delete_file(self.watched_dir, intent.src_filename),
                 done=lambda path: f"Done: moved {path} to the recycle bin.",
                 undo_factory=undo.deleted,
+                language=language,
             )
         else:
             self._log("Hey Peer didn't recognize a known skill or file action in that instruction.")
-            self._speak("Je n'ai pas compris cette instruction.")
+            self._speak(_bilingual(language, "Je n'ai pas compris cette instruction.",
+                                   "I didn't understand that instruction."), language=language)
 
-    def _run_open_app(self, spoken_name: str, narration: "str | None") -> None:
+    def _run_open_app(self, spoken_name: str, narration: "str | None", language: str = "fr") -> None:
         """Starts an application the user named.
 
         Refuses names it does not recognise rather than handing them to the
@@ -761,11 +799,15 @@ class HeyPeer:
         app = resolve_app(spoken_name)
         if app is None:
             self._log(f"Unknown application: {spoken_name!r}")
-            self._speak(f"Je ne connais pas l'application {spoken_name}.")
+            self._speak(_bilingual(language, f"Je ne connais pas l'application {spoken_name}.",
+                                   f"I don't know the application {spoken_name}."), language=language)
             self._arm_followup(CONVERSATION_WINDOW_SECONDS)
             return
 
-        self._speak_async(narration or f"J'ouvre {app.name}.")
+        self._speak_async(
+            narration or _bilingual(language, f"J'ouvre {app.name}.", f"Opening {app.name}."),
+            language=language,
+        )
         try:
             if app.name == "Spotify":
                 from heypeer.executor.spotify import launch_and_play
@@ -776,12 +818,13 @@ class HeyPeer:
             self._log(f"Launched {app.name}.")
         except LaunchFailed as exc:
             self._log(f"Launch failed: {exc}")
-            self._speak(f"Je n'ai pas réussi à ouvrir {app.name}.")
+            self._speak(_bilingual(language, f"Je n'ai pas réussi à ouvrir {app.name}.",
+                                   f"I couldn't open {app.name}."), language=language)
         # No follow-up window: opening an app finishes the request. `on_wake_word`
         # closes the exchange and hides the blob for any turn that armed nothing,
         # so "end the turn" is spelled by not arming one.
 
-    def _run_play_music(self, query: str) -> None:
+    def _run_play_music(self, query: str, language: str = "fr") -> None:
         """Plays what the user asked for on Spotify.
 
         Three outcomes, deliberately said differently, because they send the
@@ -814,23 +857,30 @@ class HeyPeer:
         if credentials_missing(settings.spotify_client_id, settings.spotify_client_secret):
             self._log(f"Spotify search is not configured - opening the search for {query!r}.")
             self._print_spotify_setup_hint()
-            self._speak_async(
+            self._speak_async(_bilingual(
+                language,
                 "Je ne peux pas encore lancer un titre précis, il me manque la "
-                f"configuration Spotify. J'ouvre la recherche pour {query}."
-            )
+                f"configuration Spotify. J'ouvre la recherche pour {query}.",
+                "I can't play a specific track yet, Spotify isn't configured. "
+                f"Opening the search for {query} instead.",
+            ), language=language)
             play_uri(search_uri(query))
             return
 
         track = find_track(query, settings.spotify_client_id, settings.spotify_client_secret)
         if track is None:
             self._log(f"Nothing on Spotify matched {query!r} - opening the search instead.")
-            self._speak_async(f"Je n'ai pas trouvé {query} sur Spotify, j'ouvre la recherche.")
+            self._speak_async(_bilingual(
+                language, f"Je n'ai pas trouvé {query} sur Spotify, j'ouvre la recherche.",
+                f"I couldn't find {query} on Spotify, opening the search instead.",
+            ), language=language)
             play_uri(search_uri(query))
             return
 
-        self._speak_async(f"Je lance {track.spoken}.")
+        spoken = track.spoken(language)
+        self._speak_async(_bilingual(language, f"Je lance {spoken}.", f"Playing {spoken}."), language=language)
         play_track(track.uri)
-        self._log(f"Playing {track.spoken} ({track.uri}).")
+        self._log(f"Playing {spoken} ({track.uri}).")
 
     def _print_spotify_setup_hint(self) -> None:
         """Says once per run how to make "lance Starman de David Bowie"
@@ -848,7 +898,7 @@ class HeyPeer:
             "   connexion, pas de Premium, aucun acces a ton compte.)\n"
         )
 
-    def _run_search_web(self, query: str, narration: "str | None") -> None:
+    def _run_search_web(self, query: str, narration: "str | None", language: str = "fr") -> None:
         """Opens a web search for `query`.
 
         The query is percent-encoded into a fixed search URL rather than the
@@ -857,13 +907,17 @@ class HeyPeer:
         """
         from heypeer.executor.apps import open_url, search_url
 
-        self._speak_async(narration or f"Je cherche {query}.")
+        self._speak_async(
+            narration or _bilingual(language, f"Je cherche {query}.", f"Searching for {query}."),
+            language=language,
+        )
         try:
             open_url(search_url(query))
             self._log(f"Searching the web for {query!r}.")
         except Exception as exc:
             self._log(f"Web search failed: {exc}")
-            self._speak("Je n'ai pas réussi à ouvrir le navigateur.")
+            self._speak(_bilingual(language, "Je n'ai pas réussi à ouvrir le navigateur.",
+                                   "I couldn't open the browser."), language=language)
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":
         """Where a spoken filename actually points, resolved *before* the
@@ -874,25 +928,40 @@ class HeyPeer:
         resolved = resolve_existing_filename(self.watched_dir, spoken_name)
         return self.watched_dir / resolved if resolved else None
 
-    def _run_undo(self) -> None:
+    def _run_undo(self, language: str = "fr") -> None:
+        """`entry.description` (and `not_undoable_reason`) are always
+        written in French - see `executor/undo.py` - regardless of which
+        language the *original* action or this "annule"/"undo" request used.
+        Fixing that needs the original action's language stored alongside
+        the description at the time it was pushed, which nothing does yet;
+        this narrates Hey Peer's own fixed half of the sentence in
+        `language` and leaves the embedded description as-is rather than
+        pretending to a precision this does not have.
+        """
         entry = self._undo_stack.pop()
         if entry is None:
             self._log("Nothing to undo.")
-            self._speak("Il n'y a rien à annuler.")
+            self._speak(_bilingual(language, "Il n'y a rien à annuler.", "There's nothing to undo."),
+                       language=language)
             return
         if entry.undo is None:
             self._log(f"Not undoable: {entry.description} ({entry.not_undoable_reason})")
-            self._speak(f"Je ne peux pas annuler ça : {entry.not_undoable_reason}.")
+            self._speak(_bilingual(
+                language, f"Je ne peux pas annuler ça : {entry.not_undoable_reason}.",
+                f"I can't undo that: {entry.not_undoable_reason}.",
+            ), language=language)
             return
 
-        self._speak_async(f"J'annule {entry.description}.")
+        self._speak_async(_bilingual(language, f"J'annule {entry.description}.",
+                                     f"Undoing {entry.description}."), language=language)
         try:
             entry.undo()
             self._log(f"Undone: {entry.description}.")
             self._arm_followup()
         except Exception as exc:
             self._log(f"Undo failed: {exc}")
-            self._speak("Je n'ai pas réussi à annuler.")
+            self._speak(_bilingual(language, "Je n'ai pas réussi à annuler.",
+                                   "I couldn't undo that."), language=language)
 
     def _run_file_action(
         self,
@@ -900,6 +969,7 @@ class HeyPeer:
         run: "Callable[[], Path]",
         done: "Callable[[Path], str]",
         undo_factory: "Callable[[Path], undo.UndoEntry] | None" = None,
+        language: str = "fr",
     ) -> None:
         """Shared body for every direct, one-off file action (move/rename/
         create file/create folder/delete) - Nemotron resolves which one and
@@ -919,7 +989,7 @@ class HeyPeer:
             self._log("No watched directory configured - can't resolve a direct file action.")
             return
 
-        self._speak_async(narration)
+        self._speak_async(narration, language=language)
         self.tray.set_status(Status.EXECUTING)
         try:
             result_path = run()
@@ -932,7 +1002,8 @@ class HeyPeer:
             self._arm_followup()
         except ExecutionAborted as exc:
             self._log(f"Stopped: {exc}")
-            self._speak("Je n'ai pas pu faire ça, quelque chose semblait anormal.")
+            self._speak(_bilingual(language, "Je n'ai pas pu faire ça, quelque chose semblait anormal.",
+                                   "I couldn't do that - something looked wrong."), language=language)
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 

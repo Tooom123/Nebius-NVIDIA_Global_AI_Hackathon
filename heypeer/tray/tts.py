@@ -5,11 +5,16 @@ chosen here for being local, fast on CPU, and reasonably natural-sounding
 ("léger" was an explicit requirement) rather than adding a second, heavier
 TTS engine.
 
-Defaults to a French voice since the user speaks French natively and all of
-Hey Peer's own spoken confirmations (`heypeer/main.py`) are phrased in
-French; Whisper transcription of the user's *own* instructions still
-auto-detects English just fine (see `heypeer/wakeword/stt.py`), so English
-input still works even though Hey Peer's spoken replies are French-first.
+Bilingual: French is the default voice, since the user speaks French most of
+the time, but `speak(text, language="en")` switches to an English voice
+instead. This exists because Nemotron itself now reports which language it
+just wrote `speech`/`question` in (see `nemotron/intent.py`'s `language`
+field) - occasionally speaking English was always understood correctly (see
+`heypeer/wakeword/stt.py`), but the *reply* used to come back in French
+regardless, which read as nonsensical rather than merely accented. Piper's
+respelling layer (`pronounce.for_speech`) is French-specific and is skipped
+entirely for English text - there is no anglicism to fix when the voice
+already is English.
 
 Auto-downloads the voice if it isn't present yet, mirroring
 `heypeer/wakeword/listener.py`'s `_ensure_openwakeword_models()`.
@@ -43,7 +48,23 @@ from heypeer.tray.pronounce import for_speech
 
 DEFAULT_VOICE_NAME = os.environ.get("HEYPEER_TTS_VOICE") or "fr_FR-upmc-medium"
 DEFAULT_SPEAKER_ID = int(os.environ.get("HEYPEER_TTS_SPEAKER") or 0)
+# en_US-lessac-medium: already present in every environment this project has
+# run in (downloaded alongside amy/ryan as wake-word training voices, see
+# TODO.md), so English replies work with nothing new to fetch. Not chosen
+# for any acoustic reason - like the French default, this has never been
+# heard, see `--demo` above for how to actually pick one by ear.
+ENGLISH_VOICE_NAME = os.environ.get("HEYPEER_TTS_VOICE_EN") or "en_US-lessac-medium"
+ENGLISH_SPEAKER_ID = int(os.environ.get("HEYPEER_TTS_SPEAKER_EN") or 0)
 VOICES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "wakeword" / "piper_voices"
+
+
+def _voice_for(language: "str | None") -> "tuple[str, int]":
+    """(voice name, speaker id) for `language` - "en" gets the English
+    voice, anything else (None included: an older or malformed answer with
+    no language reported) falls back to French, today's existing default."""
+    if language == "en":
+        return ENGLISH_VOICE_NAME, ENGLISH_SPEAKER_ID
+    return DEFAULT_VOICE_NAME, DEFAULT_SPEAKER_ID
 
 # Piper's defaults are length_scale=1.0, noise_scale=0.667, noise_w=0.8, which
 # come out clipped and monotone. More variation in phoneme duration is the
@@ -114,16 +135,19 @@ def preload() -> None:
         pass  # a warm-up failure must not stop the real thing from working
 
 
-def speak(text: str) -> None:
+def speak(text: str, language: "str | None" = "fr") -> None:
     """Synthesizes `text` and plays it back through the default output
     device. Blocks until playback finishes — callers that don't want to wait
     should run this in their own thread.
 
-    The text is put through `pronounce.for_speech` first, which respells
-    anglicisms and spells out file extensions. Without it a French voice
-    reads "Spotify" with English phonemes it was never trained on, and
-    "script.py" as "pi" — see that module for why respelling the input is
-    the only lever available."""
+    `language` ("fr", "en", or None meaning "unknown, assume fr") picks the
+    voice - see `_voice_for`. Only French text goes through
+    `pronounce.for_speech`, which respells anglicisms and spells out file
+    extensions: that fixes a French voice reading "Spotify" with English
+    phonemes it was never trained on, which is not a problem an English
+    voice reading English text has - respelling it anyway would mangle
+    ordinary English words for no reason.
+    """
     import io
     import wave
 
@@ -131,16 +155,18 @@ def speak(text: str) -> None:
 
     from heypeer.tray import audio_out
 
-    voice = _get_voice()
+    voice_name, speaker_id = _voice_for(language)
+    voice = _get_voice(voice_name)
     config = SynthesisConfig(
-        speaker_id=DEFAULT_SPEAKER_ID,
+        speaker_id=speaker_id,
         length_scale=SYNTHESIS_LENGTH_SCALE,
         noise_scale=SYNTHESIS_NOISE_SCALE,
         noise_w_scale=SYNTHESIS_NOISE_W_SCALE,
     )
+    spoken_text = for_speech(text) if language != "en" else text
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
-        voice.synthesize_wav(for_speech(text), wav_file, syn_config=config)
+        voice.synthesize_wav(spoken_text, wav_file, syn_config=config)
     buffer.seek(0)
 
     with wave.open(buffer, "rb") as wav_file:
