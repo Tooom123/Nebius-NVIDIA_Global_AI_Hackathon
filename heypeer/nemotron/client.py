@@ -189,6 +189,61 @@ notes.txt"):
   "Je cherche la meteo a Paris." is right, "Voici la meteo a Paris." is a
   promise the browser has to keep.
 
+- Change the system volume (e.g. "baisse le son", "monte le son", "coupe le
+  son", "remets le son"):
+  {"action": "adjust_volume", "target_name": "<exactly \"up\", \"down\", or \
+\"mute\">", "speech": "<one short sentence>", "end_turn": true}
+  "coupe"/"mute"/"remets le son" is always "mute" - it is a toggle, not a
+  direction, so the same value un-mutes it again.
+
+- Change the screen brightness (e.g. "baisse la luminosite", "augmente la \
+luminosite de l'ecran"):
+  {"action": "adjust_brightness", "target_name": "<exactly \"up\" or \
+\"down\">", "speech": "<one short sentence>", "end_turn": true}
+
+- Maximize an application's window (e.g. "mets Chrome en plein ecran"):
+  {"action": "maximize_window", "target_name": "<the application name>", \
+"speech": "<one short sentence>", "end_turn": true}
+
+- Minimize an application's window (e.g. "minimise Chrome", "reduis Chrome"):
+  {"action": "minimize_window", "target_name": "<the application name>", \
+"speech": "<one short sentence>", "end_turn": true}
+
+- Close an application's window (e.g. "ferme Chrome"). This closes the \
+window; it does not force-kill the process:
+  {"action": "close_window", "target_name": "<the application name>", \
+"speech": "<one short sentence>", "end_turn": true}
+
+- Minimize every window (e.g. "montre le bureau", "minimise tout", \
+"degage tout"):
+  {"action": "minimize_all", "speech": "<one short sentence>", \
+"end_turn": true}
+
+- Copy whatever is currently selected, in whichever application has focus \
+(e.g. "copie ca", "copie ce texte", "copie cette selection", "copie ce \
+paragraphe"). This is a keypress (Ctrl+C), sent no matter what - always use \
+this action for "copie X" where X is not a real, named file. Never ask \
+whether something is selected, never refuse for "nothing is selected" or \
+"I don't know what to copy" - you cannot see the screen and are not \
+expected to; sending the keypress is the entire action, whether or not \
+anything happens to be selected is not yours to determine or worry about:
+  {"action": "clipboard_copy", "speech": "<one short sentence, e.g. \
+\"Copie.\" - never claim to know what was copied, never mention whether \
+something was selected>", "end_turn": true}
+  Only "copie le fichier X" (naming a real file) is different - that is a
+  file copy, which is not something you can do; use "reply" and say so.
+
+- Read or summarize the clipboard's current text content (e.g. "qu'est-ce \
+qu'il y a dans mon presse-papier ?", "resume ce que j'ai copie", "lis mon \
+presse-papier"):
+  {"action": "clipboard_read", "speech": "<one short sentence introducing \
+what you are about to read or summarize, e.g. \"Voici ce qu'il y a dans \
+le presse-papier :\" - not the content itself, which you do not have yet \
+when you write this>", "end_turn": true}
+  The actual clipboard text is read and, if the user asked for a summary,
+  summarized *after* this - you never see it when producing this JSON, so
+  do not invent or guess at its content.
+
 - Ask for the one piece you are missing, when the action itself is clear:
   {"action": "ask", \
 "question": "<one short question asking for exactly the missing piece, in \
@@ -271,6 +326,31 @@ hyphens, apostrophes and quotes. No em dashes, non-breaking hyphens or smart
 quotes. Accented letters are fine and expected in French - it is only the
 typographic punctuation a Windows console cannot encode. These strings are
 printed to a terminal and spoken aloud.
+"""
+
+# A second, narrower prompt for "clipboard_read" - once the clipboard's own
+# text is actually available (never seen by the classifier prompt above,
+# which only produces intent JSON before anything has been read), this turns
+# it into something worth saying out loud rather than reading it verbatim -
+# see `NemotronClient.summarize_for_speech`.
+SUMMARIZE_SYSTEM_PROMPT = """\
+You turn a block of text into something worth saying out loud. The text is
+whatever the user had on their clipboard; you were not told what it is or
+where it came from.
+
+Write two or three short sentences, in the given language, that either
+summarize the text (if it is long enough that reading it verbatim would be
+tedious) or read it back plainly (if it is already short - a phone number, a
+short note, a single sentence). Do not add commentary, do not describe the
+text ("this appears to be..."), do not mention the clipboard - the caller
+already introduces it out loud before you are asked. Just say what it says.
+
+If the text is not really speakable (a wall of code, a URL, garbage) say so
+briefly instead of reading nonsense aloud.
+
+Plain ASCII punctuation only - ordinary hyphens, apostrophes and quotes, no
+em dashes or smart quotes; accented letters are fine and expected in French.
+Respond with ONLY a JSON object: {"summary": "<what to say>"}.
 """
 
 
@@ -441,6 +521,42 @@ class NemotronClient:
             response_format={"type": "json_object"},
         )
         return _parse_intent(response.choices[0].message.content)
+
+    # Kept small: this is read aloud, not analysed, and a long clipboard
+    # capture (someone copied an entire document) would otherwise cost a
+    # slow, expensive round trip to produce three spoken sentences.
+    SUMMARIZE_MAX_CHARS = 4000
+
+    def summarize_for_speech(self, text: str, language: str = "fr") -> str:
+        """Turns `text` (clipboard content - see `clipboard_read` in
+        `main.py`) into two or three sentences worth saying out loud, in
+        `language`.
+
+        A separate, narrower call from `interpret_text` on purpose: the
+        classifier prompt produces `clipboard_read`'s JSON *before* the
+        clipboard has actually been read (nothing hands it that content),
+        so summarizing has to happen afterwards, once there is real text to
+        work with - the same reason Spotify's track search is its own call
+        rather than something folded into the classifier prompt.
+        """
+        truncated = text[: self.SUMMARIZE_MAX_CHARS]
+        content = f"Language: {'English' if language == 'en' else 'French'}\n\nText:\n{truncated}"
+        response = self._client.chat.completions.create(
+            model=self.settings.nemotron_model_id,
+            messages=[
+                {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+        return _plain_punctuation(data.get("summary")) or ""
 
     def verify_screen(self, screenshot_png: bytes, expected_context: str) -> bool:
         """Visual verification hook used by SkillRunner between replay steps."""

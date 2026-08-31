@@ -726,6 +726,22 @@ class HeyPeer:
             self._run_play_music(intent.query, language)
         elif intent.action == "search_web" and intent.query:
             self._run_search_web(intent.query, intent.speech, language)
+        elif intent.action == "adjust_volume" and intent.target_name:
+            self._run_adjust_volume(intent.target_name, intent.speech, language)
+        elif intent.action == "adjust_brightness" and intent.target_name:
+            self._run_adjust_brightness(intent.target_name, intent.speech, language)
+        elif intent.action == "maximize_window" and intent.target_name:
+            self._run_window_control("maximize", intent.target_name, intent.speech, language)
+        elif intent.action == "minimize_window" and intent.target_name:
+            self._run_window_control("minimize", intent.target_name, intent.speech, language)
+        elif intent.action == "close_window" and intent.target_name:
+            self._run_window_control("close", intent.target_name, intent.speech, language)
+        elif intent.action == "minimize_all":
+            self._run_minimize_all(intent.speech, language)
+        elif intent.action == "clipboard_copy":
+            self._run_clipboard_copy(intent.speech, language)
+        elif intent.action == "clipboard_read":
+            self._run_clipboard_read(intent.speech, language)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
@@ -918,6 +934,127 @@ class HeyPeer:
             self._log(f"Web search failed: {exc}")
             self._speak(_bilingual(language, "Je n'ai pas réussi à ouvrir le navigateur.",
                                    "I couldn't open the browser."), language=language)
+
+    def _run_adjust_volume(self, target: str, narration: "str | None", language: str = "fr") -> None:
+        """`target` is "up", "down", or "mute" (a toggle, not a direction -
+        see `system.volume_mute_toggle`). Always "succeeds" from here: the
+        multimedia keys this sends exist on every Windows machine, there is
+        nothing to fail open the way launching an app or a browser can."""
+        from heypeer.executor import system
+
+        self._speak_async(narration or _bilingual(
+            language,
+            {"up": "Je monte le son.", "down": "Je baisse le son.", "mute": "Je coupe le son."}[target],
+            {"up": "Turning the volume up.", "down": "Turning the volume down.",
+             "mute": "Muting."}[target],
+        ), language=language)
+        if target == "mute":
+            system.volume_mute_toggle()
+        elif target == "up":
+            system.volume_up()
+        else:
+            system.volume_down()
+
+    def _run_adjust_brightness(self, target: str, narration: "str | None", language: str = "fr") -> None:
+        """Unlike volume, this can genuinely fail on correctly-working
+        hardware - most external desktop monitors have no software
+        brightness control at all (see `system.py`'s module docstring) -
+        so the narration is spoken only once the attempt is known to have
+        worked, not optimistically beforehand like the other handlers here."""
+        from heypeer.executor import system
+
+        ok = system.adjust_brightness(target)
+        if ok:
+            self._speak_async(narration or _bilingual(
+                language,
+                "Je monte la luminosité." if target == "up" else "Je baisse la luminosité.",
+                "Turning the brightness up." if target == "up" else "Turning the brightness down.",
+            ), language=language)
+        else:
+            self._log(f"Brightness adjustment ({target}) not supported on this display.")
+            self._speak(_bilingual(
+                language,
+                "Je ne peux pas régler la luminosité sur cet écran.",
+                "I can't adjust the brightness on this display.",
+            ), language=language)
+
+    def _run_window_control(
+        self, operation: str, app_name: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """`operation` is "maximize", "minimize", or "close". A window not
+        being found covers two different things from here - an app Hey Peer
+        does not know (see `apps.resolve_app`), and a known app with no
+        window currently open - and both get the same honest decline: either
+        way, there is nothing to act on right now."""
+        from heypeer.executor import system
+
+        action = {"maximize": system.maximize_window, "minimize": system.minimize_window,
+                  "close": system.close_window}[operation]
+        ok = action(app_name)
+        if ok:
+            default = {
+                "maximize": _bilingual(language, f"Je mets {app_name} en plein écran.",
+                                       f"Maximizing {app_name}."),
+                "minimize": _bilingual(language, f"Je minimise {app_name}.", f"Minimizing {app_name}."),
+                "close": _bilingual(language, f"Je ferme {app_name}.", f"Closing {app_name}."),
+            }[operation]
+            self._speak_async(narration or default, language=language)
+        else:
+            self._log(f"No window found matching {app_name!r} to {operation}.")
+            self._speak(_bilingual(
+                language, f"Je ne vois pas de fenêtre ouverte pour {app_name}.",
+                f"I can't find a window for {app_name}.",
+            ), language=language)
+
+    def _run_minimize_all(self, narration: "str | None", language: str = "fr") -> None:
+        from heypeer.executor import system
+
+        self._speak_async(narration or _bilingual(
+            language, "Je minimise tout.", "Minimizing everything."), language=language)
+        system.minimize_all()
+
+    def _run_clipboard_copy(self, narration: "str | None", language: str = "fr") -> None:
+        """There is no way to know from here whether anything was actually
+        selected when Ctrl+C was sent - see `clipboard.copy_selection` -
+        so the narration must never claim to know what got copied."""
+        from heypeer.executor import clipboard
+
+        self._speak_async(narration or _bilingual(language, "Copié.", "Copied."), language=language)
+        clipboard.copy_selection()
+
+    def _run_clipboard_read(self, narration: "str | None", language: str = "fr") -> None:
+        """Two spoken parts, not one: an immediate intro (spoken while
+        nothing has been read yet - Nemotron wrote it before the clipboard
+        was available to it, see `clipboard_read`'s prompt block), then the
+        actual content, summarized for speech *after* it's actually read.
+        The intro is spoken synchronously so it lands before the summary,
+        which needs a network round trip and would otherwise arrive first
+        if both were fired async."""
+        from heypeer.executor import clipboard
+
+        content = clipboard.read()
+        if not content:
+            self._speak(_bilingual(
+                language, "Le presse-papier est vide.", "The clipboard is empty.",
+            ), language=language)
+            return
+
+        self._speak(narration or _bilingual(
+            language, "Voici ce qu'il y a dans le presse-papier :",
+            "Here's what's in the clipboard:",
+        ), language=language)
+        try:
+            summary = self.nemotron.summarize_for_speech(content, language)
+        except Exception as exc:
+            self._log(f"Clipboard summarization failed: {exc}")
+            summary = ""
+        if summary:
+            self._speak(summary, language=language)
+        else:
+            self._speak(_bilingual(
+                language, "Je n'ai pas réussi à lire le presse-papier.",
+                "I couldn't read the clipboard.",
+            ), language=language)
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":
         """Where a spoken filename actually points, resolved *before* the

@@ -2374,6 +2374,82 @@ of a French-narrated action).
 
 365 tests.
 
+### Round 35: system control and clipboard - beyond files and apps (2026-08-31)
+
+Requested directly, from a wider brainstorm of "make Hey Peer a complete
+product": volume, screen brightness, window management, and the clipboard -
+eight new actions (`adjust_volume`, `adjust_brightness`, `maximize_window`,
+`minimize_window`, `close_window`, `minimize_all`, `clipboard_copy`,
+`clipboard_read`), none of them about a specific file or app any more.
+
+**Volume and window control: the OS's own mechanisms, no new library for
+either.** Volume up/down/mute are the same three multimedia keys a physical
+keyboard sends, pressed via `keybd_event` - exactly `executor/spotify.py`'s
+`press_play` mechanism, already established. Window control is plain
+`user32.dll`: `EnumWindows` to find a window, `ShowWindow` to maximize or
+minimize it, `PostMessageW(WM_CLOSE)` to close one without blocking on
+whatever the app does in response. `pywin32` was deliberately not added -
+this project already talks to `user32`/`gdi32` directly via `ctypes` for the
+layered-window overlay, so this follows that established pattern rather than
+introducing a second one. A window is found by matching its title against an
+app's name/aliases - going through the *same* `apps.resolve_app` registry
+`open_app` uses, so "minimise Chrome" and "ouvre Chrome" agree on what
+"Chrome" means, and an app Hey Peer does not know gets the same honest
+decline either way. The matching logic itself (`_match_window`) is factored
+out to take a plain list of `(hwnd, title)` pairs rather than calling
+`EnumWindows` directly - independently testable from this Linux sandbox, the
+same split `apps._find_start_menu_shortcut` uses for the Start Menu search.
+
+**Brightness is the one genuinely uncertain piece here**, flagged as such
+rather than glossed over: `WmiMonitorBrightnessMethods` only exists for a
+laptop's own integrated panel (ACPI backlight). Most **external desktop
+monitors have no software brightness control at all** - they need DDC/CI, a
+different, hardware-dependent protocol most Windows installs have no driver
+for. This code cannot tell which situation it is in from here, so it does
+not pretend to: `adjust_brightness` returns whether it actually worked, and
+a `False` becomes an honest spoken "je ne peux pas régler la luminosité sur
+cet écran", never a silent no-op reported as success.
+
+**Clipboard**: `pyperclip` (new dependency - small, no transitive deps,
+already solves the `GlobalLock`/format-negotiation retry logic that hand-
+rolled `ctypes` clipboard access is a known source of subtle bugs in)
+handles read/write; "copie ça" is a simulated Ctrl+C via the same keybd_event
+mechanism, since there is no OS API to ask an arbitrary application what its
+current selection is - the keystroke is the only thing every application
+already understands.
+
+"Résume ce que j'ai copié" needed a genuinely new piece of architecture:
+`clipboard_read`'s classifier JSON is produced *before* the clipboard has
+been read (nothing hands the classifier that content), so summarizing it
+has to be a **second, narrower Nemotron call**, made only once the actual
+text is available - `NemotronClient.summarize_for_speech`, with its own
+short `SUMMARIZE_SYSTEM_PROMPT` ("what is this text worth saying out loud"),
+not the big action-classifying one. The same reasoning `verify_screen` and
+Spotify's track search already established: some things cannot be decided
+until data only available *after* the classifier has run is actually in
+hand. Truncated to 4000 characters before sending - someone copying an
+entire document must not turn three spoken sentences into a slow, expensive
+request over the whole thing.
+
+**A real routing bug, found live, not assumed.** "Copie ça" was ambiguous
+enough that the model split roughly 50/50 between correctly triggering
+`clipboard_copy` and inventing a "reply" declining because "no file is
+selected" - it was reasoning about `clipboard_copy` as if it needed to
+verify a selection exists before acting, which it never can and was never
+meant to. Measured across several phrasings and repeats before touching
+anything, then again after: the fix states outright that this is a keypress
+sent regardless of outcome, never a thing to refuse or ask about, and
+explicitly separates it from "copie le fichier X" (naming a real file, which
+Hey Peer genuinely cannot do - no `copy_file` action exists - and should
+decline via "reply", not silently reinterpret as a clipboard copy). Went
+from roughly half-broken to correct on every phrasing tried across three
+repeats each, with one residual flake on the single most context-free
+phrasing ("copie ça" alone) - the same kind of small, accepted residual
+round 31 and round 34 both stopped at rather than keep tuning single
+sentences against a handful of samples.
+
+404 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

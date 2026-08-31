@@ -290,9 +290,9 @@ def test_system_prompt_is_pure_ascii() -> None:
     printed to a terminal and spoken aloud. A non-breaking hyphen in a
     clarifying question crashed the app on a cp1252 console, so the prompt
     itself must not demonstrate characters we don't want back."""
-    from heypeer.nemotron.client import SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT
+    from heypeer.nemotron.client import SUMMARIZE_SYSTEM_PROMPT, SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT
 
-    for prompt in (SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT):
+    for prompt in (SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT, SUMMARIZE_SYSTEM_PROMPT):
         offending = sorted({c for c in prompt if ord(c) > 127})
         assert offending == [], f"non-ASCII in prompt: {offending}"
 
@@ -535,3 +535,102 @@ def test_the_prompt_forbids_promising_an_answer_a_browser_has_to_keep() -> None:
     from heypeer.nemotron.client import SYSTEM_PROMPT
 
     assert "promise the browser has to keep" in " ".join(SYSTEM_PROMPT.split())
+
+
+# --- summarize_for_speech (round 35: clipboard read/summarize) -------------
+
+
+def _settings() -> Settings:
+    return Settings(
+        nebius_api_key="test-key",
+        nebius_base_url="https://api.studio.nebius.ai/v1",
+        nemotron_model_id="nvidia/nemotron-3-nano-omni",
+    )
+
+
+def test_summarize_for_speech_returns_the_summary() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"summary": "Une facture de 42 euros pour mars."}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        summary = client.summarize_for_speech("Facture #1234, montant: 42 EUR, mars 2026")
+
+    assert summary == "Une facture de 42 euros pour mars."
+
+
+def test_summarize_for_speech_uses_the_dedicated_prompt_not_the_classifier_one() -> None:
+    """A different, narrower prompt from SYSTEM_PROMPT - this call never
+    needs to choose an action, only describe text that's already known to
+    be a clipboard read."""
+    from heypeer.nemotron.client import SUMMARIZE_SYSTEM_PROMPT
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"summary": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.summarize_for_speech("some text")
+
+    messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    assert messages[0]["content"] == SUMMARIZE_SYSTEM_PROMPT
+
+
+def test_summarize_for_speech_passes_the_language_along() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"summary": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.summarize_for_speech("some text", language="en")
+
+    user_message = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "English" in user_message
+
+
+def test_summarize_for_speech_truncates_a_long_clipboard_capture() -> None:
+    """Someone copying an entire document must not turn three spoken
+    sentences into a slow, expensive request over the whole thing."""
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"summary": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.summarize_for_speech("a" * 50000)
+
+    user_message = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert len(user_message) < 4500
+
+
+def test_summarize_for_speech_returns_empty_string_on_no_answer() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=None))]
+        mock_client.chat.completions.create.return_value = response
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        summary = client.summarize_for_speech("some text")
+
+    assert summary == ""
+
+
+def test_summarize_for_speech_returns_empty_string_on_bad_json() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="not json"))]
+        mock_client.chat.completions.create.return_value = response
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        summary = client.summarize_for_speech("some text")
+
+    assert summary == ""

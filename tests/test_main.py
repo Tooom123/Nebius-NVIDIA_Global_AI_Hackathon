@@ -1467,3 +1467,202 @@ def test_a_music_track_is_named_with_by_not_par_in_english(
         peer.on_wake_word()
 
     fake_tts.assert_called_once_with("Playing Starman by David Bowie.", language="en")
+
+
+# --- System control and clipboard (round 35) --------------------------------
+#
+# Volume, brightness, window control, and the clipboard - the wiring from a
+# dispatched Intent to executor/system.py and executor/clipboard.py.
+# Everything Windows-specific inside those modules is already covered on its
+# own (tests/test_system.py, tests/test_clipboard.py); these are about
+# main.py's own logic: which function gets called for which target, and
+# what gets said when it does or doesn't work.
+
+
+def test_adjust_volume_mute_calls_the_toggle(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="adjust_volume", skill_id=None, n_repetitions=1, target_name="mute",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "coupe le son")
+
+    with patch("heypeer.executor.system.volume_mute_toggle") as toggle:
+        peer.on_wake_word()
+
+    toggle.assert_called_once()
+
+
+def test_adjust_volume_up_calls_volume_up(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="adjust_volume", skill_id=None, n_repetitions=1, target_name="up",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "monte le son")
+
+    with patch("heypeer.executor.system.volume_up") as up:
+        peer.on_wake_word()
+
+    up.assert_called_once()
+
+
+def test_adjust_brightness_success_is_narrated(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="adjust_brightness", skill_id=None, n_repetitions=1, target_name="up",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "monte la luminosite")
+
+    with patch("heypeer.executor.system.adjust_brightness", return_value=True):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Je monte la luminosité.", language="fr")
+
+
+def test_adjust_brightness_failure_is_reported_honestly(tmp_path: Path, fake_tts: MagicMock) -> None:
+    """The one action here that can genuinely fail on correctly-working
+    hardware (an external monitor) - must say so, not claim success."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="adjust_brightness", skill_id=None, n_repetitions=1, target_name="down",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "baisse la luminosite")
+
+    with patch("heypeer.executor.system.adjust_brightness", return_value=False):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with(
+        "Je ne peux pas régler la luminosité sur cet écran.", language="fr"
+    )
+
+
+def test_maximize_window_success_is_narrated(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="maximize_window", skill_id=None, n_repetitions=1, target_name="Chrome",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "mets Chrome en plein ecran")
+
+    with patch("heypeer.executor.system.maximize_window", return_value=True) as maximize:
+        peer.on_wake_word()
+
+    maximize.assert_called_once_with("Chrome")
+    fake_tts.assert_called_once_with("Je mets Chrome en plein écran.", language="fr")
+
+
+def test_close_window_not_found_declines_honestly(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="close_window", skill_id=None, n_repetitions=1, target_name="Chrome",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "ferme Chrome")
+
+    with patch("heypeer.executor.system.close_window", return_value=False):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with(
+        "Je ne vois pas de fenêtre ouverte pour Chrome.", language="fr"
+    )
+
+
+def test_minimize_all_calls_the_executor(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="minimize_all", skill_id=None, n_repetitions=1,
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "montre le bureau")
+
+    with patch("heypeer.executor.system.minimize_all") as minimize_all:
+        peer.on_wake_word()
+
+    minimize_all.assert_called_once()
+
+
+def test_clipboard_copy_sends_the_shortcut(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="clipboard_copy", skill_id=None, n_repetitions=1,
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "copie ca")
+
+    with patch("heypeer.executor.clipboard.copy_selection") as copy_selection:
+        peer.on_wake_word()
+
+    copy_selection.assert_called_once()
+
+
+def test_clipboard_read_speaks_the_intro_then_the_summary(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """Two spoken parts: the intro Nemotron wrote before the clipboard was
+    available to it, then the actual content, summarized after it's read -
+    see _run_clipboard_read's docstring for why this can't be a single
+    "speech" field the classifier fills in."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="clipboard_read", skill_id=None, n_repetitions=1,
+        speech="Voici ce qu'il y a dans le presse-papier :",
+    )
+    nemotron.summarize_for_speech.return_value = "Une facture de 42 euros."
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "qu'est-ce qu'il y a dans mon presse-papier")
+
+    with patch("heypeer.executor.clipboard.read", return_value="Facture #1, 42 EUR"):
+        peer.on_wake_word()
+
+    assert fake_tts.call_args_list[0].args == ("Voici ce qu'il y a dans le presse-papier :",)
+    assert fake_tts.call_args_list[1].args == ("Une facture de 42 euros.",)
+    nemotron.summarize_for_speech.assert_called_once_with("Facture #1, 42 EUR", "fr")
+
+
+def test_clipboard_read_on_an_empty_clipboard_says_so(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="clipboard_read", skill_id=None, n_repetitions=1,
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "lis mon presse-papier")
+
+    with patch("heypeer.executor.clipboard.read", return_value=None):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Le presse-papier est vide.", language="fr")
+    nemotron.summarize_for_speech.assert_not_called()
+
+
+def test_clipboard_read_summarization_failure_is_reported(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="clipboard_read", skill_id=None, n_repetitions=1, speech="Voici :",
+    )
+    nemotron.summarize_for_speech.side_effect = Exception("network down")
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "lis mon presse-papier")
+
+    with patch("heypeer.executor.clipboard.read", return_value="some text"):
+        peer.on_wake_word()
+
+    assert fake_tts.call_args_list[-1].args == ("Je n'ai pas réussi à lire le presse-papier.",)
+
+
+def test_none_of_the_new_system_actions_open_a_followup_window(tmp_path: Path) -> None:
+    """One-shot actions, same as opening an app or playing music - holding
+    the microphone open afterwards is not what any of these need."""
+    for action, target_name in [
+        ("adjust_volume", "up"), ("maximize_window", "Chrome"), ("minimize_all", None),
+        ("clipboard_copy", None),
+    ]:
+        nemotron = MagicMock()
+        nemotron.interpret_text.return_value = Intent(
+            action=action, skill_id=None, n_repetitions=1, target_name=target_name,
+        )
+        peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "instruction")
+        peer._wake_listener = MagicMock()
+
+        with (
+            patch("heypeer.executor.system.volume_up"),
+            patch("heypeer.executor.system.maximize_window", return_value=True),
+            patch("heypeer.executor.system.minimize_all"),
+            patch("heypeer.executor.clipboard.copy_selection"),
+        ):
+            peer.on_wake_word()
+
+        assert not peer._wake_listener.arm_followup.called, f"{action} armed a followup"
