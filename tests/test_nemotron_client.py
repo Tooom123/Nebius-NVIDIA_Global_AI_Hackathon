@@ -788,3 +788,77 @@ def test_diagnose_code_returns_empty_string_on_no_answer() -> None:
         diagnosis = client.diagnose_code("some code", "why?")
 
     assert diagnosis == ""
+
+
+# --- memory injection (round 38: persistent memory) -------------------------
+
+
+def test_interpret_text_includes_memory_in_context() -> None:
+    settings = _settings()
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "reply", "speech": "x"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        client.interpret_text(
+            "comment je prefere qu'on m'appelle ?",
+            skill_context=[],
+            memory=["Tom prefere qu'on l'appelle Tom, pas Thomas."],
+        )
+
+    user_message = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "Tom prefere qu'on l'appelle Tom, pas Thomas." in user_message
+
+
+def test_interpret_text_omits_memory_entirely_when_there_is_none() -> None:
+    """Matches watched_files/watched_folders' own convention: nothing
+    remembered yet should not print an empty list into every prompt."""
+    settings = _settings()
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "reply", "speech": "x"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        client.interpret_text("comment ca va ?", skill_context=[])
+
+    user_message = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "remember" not in user_message.lower()
+
+
+def test_interpret_text_parses_the_content_field() -> None:
+    """remember_fact and general_task carry their payload in "content",
+    a separate field from "query" (a search string is not the same shape
+    of text as a fact to remember or a task to hand off)."""
+    settings = _settings()
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"action": "remember_fact", "content": "Le projet doit etre livre vendredi"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(settings)
+        intent = client.interpret_text("retiens que...", skill_context=[])
+
+    assert intent.action == "remember_fact"
+    assert intent.content == "Le projet doit etre livre vendredi"
+
+
+def test_the_prompt_says_tu_never_vous_in_french() -> None:
+    """Found live: reading a stored memory fact back ("tu preferes..." vs
+    "vous preferez...") drifted to the formal register roughly two thirds
+    of the time before this rule was added explicitly - a stored fact reads
+    like a neutral, third-person note, which pulled the model that way."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    assert '"tu", never "vous"' in prompt

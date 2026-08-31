@@ -25,6 +25,8 @@ ACTIONS = (
     "read_screen",  # "qu'est-ce qu'il y a sur mon ecran ?" - no target
     "analyze_code",  # "pourquoi cette fonction plante ?" - target_name is the filename
     "fix_code",  # "corrige-le", "corrige ce fichier" - target_name is the filename
+    "remember_fact",  # "retiens que..." - content is the fact
+    "general_task",  # a multi-step task outside every action above - content is the task
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -71,6 +73,8 @@ ACTION_DESCRIPTIONS = {
     "read_screen": "see or read the screen",
     "analyze_code": "explain what is wrong with some code",
     "fix_code": "fix code",
+    "remember_fact": "remember something for later",
+    "general_task": "carry out a general, multi-step task",
 }
 
 
@@ -99,6 +103,12 @@ class Intent:
     # For music, "X par Y" is flattened to "X Y" - the preposition is French
     # grammar, not part of the title, and a music search expects neither.
     query: str | None = None
+    # "remember_fact" (the fact itself) / "general_task" (the task, verbatim
+    # enough for another agent to act on without the rest of this exchange).
+    # A separate field from "query" on purpose - a search string and a fact
+    # to remember or a task to hand off are not the same shape of text, and
+    # conflating them would blur what each action actually does with it.
+    content: str | None = None
     # "ask" only: the single short question to put to the user, in whichever
     # language they are speaking (see `language` below). Lets Hey Peer say
     # what's actually missing ("vers quel dossier ?") instead of a flat

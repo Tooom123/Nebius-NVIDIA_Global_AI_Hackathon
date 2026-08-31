@@ -1976,3 +1976,122 @@ def test_undo_after_fix_code_restores_the_file_via_annule(
         peer.on_wake_word()
 
     assert path.read_text() == original
+
+
+# --- Persistent memory and general tasks (round 38) -------------------------
+
+
+def test_remember_fact_saves_it_and_confirms(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="remember_fact", skill_id=None, n_repetitions=1,
+        content="Je préfère qu'on m'appelle Tom", speech="Je m'en souviendrai.",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "retiens que je prefere qu'on m'appelle Tom")
+
+    with patch("heypeer.memory.DEFAULT_PATH", tmp_path / "memory.json"):
+        peer.on_wake_word()
+
+    from heypeer import memory
+
+    assert memory.as_context(tmp_path / "memory.json") == ["Je préfère qu'on m'appelle Tom"]
+    fake_tts.assert_called_once_with("Je m'en souviendrai.", language="fr")
+
+
+def test_remembered_facts_are_passed_to_the_next_interpretation(tmp_path: Path) -> None:
+    """The whole point: a fact told once must reach Nemotron on a later,
+    entirely separate turn - not just be saved somewhere unread."""
+    from heypeer import memory
+
+    memory_path = tmp_path / "memory.json"
+    memory.remember("Tom prefere qu'on l'appelle Tom.", memory_path)
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="reply", skill_id=None, n_repetitions=1, speech="Tu preferes Tom.",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "comment je prefere qu'on m'appelle ?")
+
+    with patch("heypeer.memory.DEFAULT_PATH", memory_path):
+        peer.on_wake_word()
+
+    assert nemotron.interpret_text.call_args.kwargs["memory"] == ["Tom prefere qu'on l'appelle Tom."]
+
+
+def test_general_task_declines_when_the_agent_is_not_installed(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="general_task", skill_id=None, n_repetitions=1,
+        content="cherche des vols pour Paris",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "cherche des vols pour Paris")
+
+    with patch("heypeer.executor.general_agent.is_available", return_value=False):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with(
+        "Je ne peux pas faire de tâche générale pour l'instant, l'agent n'est pas installé.",
+        language="fr",
+    )
+
+
+def test_general_task_speaks_the_summarized_result(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="general_task", skill_id=None, n_repetitions=1,
+        content="cherche des vols pour Paris le mois prochain",
+        speech="Je m'en occupe...",
+    )
+    nemotron.summarize_for_speech.return_value = "Trois vols trouvés, le moins cher a 120 euros."
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "cherche des vols pour Paris")
+
+    with (
+        patch("heypeer.executor.general_agent.is_available", return_value=True),
+        patch("heypeer.executor.general_agent.run", return_value="Found three flights..."),
+    ):
+        peer.on_wake_word()
+
+    nemotron.summarize_for_speech.assert_called_once_with("Found three flights...", "fr")
+    assert fake_tts.call_args_list[-1].args == ("Trois vols trouvés, le moins cher a 120 euros.",)
+
+
+def test_general_task_timeout_is_reported_honestly(tmp_path: Path, fake_tts: MagicMock) -> None:
+    from heypeer.executor import general_agent
+
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="general_task", skill_id=None, n_repetitions=1, content="une tache longue",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "fais cette tache longue")
+
+    with (
+        patch("heypeer.executor.general_agent.is_available", return_value=True),
+        patch(
+            "heypeer.executor.general_agent.run",
+            side_effect=general_agent.GeneralAgentTimedOut("too slow"),
+        ),
+    ):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_with("Ça prend trop de temps, j'abandonne.", language="fr")
+
+
+def test_general_task_pushes_no_undo_entry(tmp_path: Path, fake_tts: MagicMock) -> None:
+    """Unlike fix_code: an open-ended task is not reliably one reversible
+    edit, so there is nothing honest to capture as "the" change to undo -
+    see general_agent.py's module docstring."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="general_task", skill_id=None, n_repetitions=1, content="une tache",
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "fais une tache")
+
+    with (
+        patch("heypeer.executor.general_agent.is_available", return_value=True),
+        patch("heypeer.executor.general_agent.run", return_value="done"),
+    ):
+        peer.on_wake_word()
+
+    assert len(peer._undo_stack) == 0

@@ -594,12 +594,15 @@ class HeyPeer:
                 self._log("Handled locally, without asking the model.")
                 return fast
 
+        from heypeer import memory as memory_store
+
         return self.nemotron.interpret_text(
             instruction_text,
             [],
             watched_files=self._watched_files(),
             watched_folders=self._watched_folders(),
             history=list(self._history),
+            memory=memory_store.as_context(),
         )
 
     def _interpret_audio(
@@ -750,6 +753,10 @@ class HeyPeer:
             self._run_analyze_code(intent.target_name, instruction_text, intent.speech, language)
         elif intent.action == "fix_code" and intent.target_name:
             self._run_fix_code(intent.target_name, instruction_text, intent.speech, language)
+        elif intent.action == "remember_fact" and intent.content:
+            self._run_remember_fact(intent.content, intent.speech, language)
+        elif intent.action == "general_task" and intent.content:
+            self._run_general_task(intent.content, intent.speech, language)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
@@ -1286,6 +1293,86 @@ class HeyPeer:
             summary = ""
         self._speak(summary or _bilingual(
             language, f"J'ai corrigé {resolved}.", f"I fixed {resolved}.",
+        ), language=language)
+
+    def _run_remember_fact(
+        self, fact: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Stores `fact` in `heypeer/memory.py`'s persistent store - true
+        next week, on a fresh launch, not just for the rest of this
+        exchange (see that module's docstring for why this is a separate
+        store from `self._history`). A write failure (disk full, a
+        permissions problem) must degrade to an honest spoken message
+        rather than silently claiming to remember something it did not."""
+        from heypeer import memory as memory_store
+
+        try:
+            memory_store.remember(fact)
+        except OSError as exc:
+            self._log(f"Could not save memory: {exc}")
+            self._speak(_bilingual(
+                language, "Je n'ai pas réussi à enregistrer ça.",
+                "I couldn't save that.",
+            ), language=language)
+            return
+        self._speak(narration or _bilingual(
+            language, "Je m'en souviendrai.", "I'll remember that.",
+        ), language=language)
+
+    def _run_general_task(
+        self, task: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Dispatches `task` to Hermes Agent (`executor/general_agent.py`)
+        for anything with no action of its own - open-ended web research,
+        scheduling, and the like. See that module's docstring for why this
+        has no undo entry the way `fix_code` does: an open-ended task is
+        not reliably one reversible edit, so there is nothing honest to
+        capture as "the" change to restore.
+        """
+        from heypeer.executor import general_agent
+
+        if not general_agent.is_available():
+            self._log("General agent unavailable: 'hermes' not found on PATH.")
+            self._speak(_bilingual(
+                language,
+                "Je ne peux pas faire de tâche générale pour l'instant, l'agent "
+                "n'est pas installé.",
+                "I can't handle general tasks right now, the agent isn't installed.",
+            ), language=language)
+            return
+
+        self._speak(narration or _bilingual(
+            language, "Je m'en occupe, ça peut prendre un moment...",
+            "I'm on it, this might take a moment...",
+        ), language=language)
+
+        self.tray.set_status(Status.EXECUTING)
+        try:
+            output = general_agent.run(task, self.watched_dir or Path.home())
+        except general_agent.GeneralAgentTimedOut:
+            self._log("General agent timed out.")
+            self._speak(_bilingual(
+                language, "Ça prend trop de temps, j'abandonne.",
+                "That's taking too long, I'm giving up.",
+            ), language=language)
+            return
+        except Exception as exc:
+            self._log(f"General agent failed: {exc}")
+            self._speak(_bilingual(
+                language, "Je n'ai pas réussi à faire cette tâche.",
+                "I couldn't complete that task.",
+            ), language=language)
+            return
+        finally:
+            self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
+
+        try:
+            summary = self.nemotron.summarize_for_speech(output, language) if output else ""
+        except Exception as exc:
+            self._log(f"Summarizing the task result failed: {exc}")
+            summary = ""
+        self._speak(summary or _bilingual(
+            language, "C'est fait.", "Done.",
         ), language=language)
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":
