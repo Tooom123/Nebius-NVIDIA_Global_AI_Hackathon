@@ -133,3 +133,69 @@ def test_press_play_is_a_no_op_off_windows() -> None:
     on, and that is not an error."""
     with patch("sys.platform", "linux"):
         spotify.press_play()  # must not raise
+
+
+# --- play_track -------------------------------------------------------------
+#
+# Found live: "lance un titre" would land on the track but not always start
+# playing it. Reproduced as a cold-start-only gap: an already-running
+# Spotify plays a track URI unaided, a cold-started one comes up paused - the
+# same distinction launch_and_play already exists to handle for "lance
+# Spotify" itself, one level down.
+
+
+def test_an_already_running_spotify_is_left_alone() -> None:
+    """The important direction: pressing play here would TOGGLE an
+    already-playing track OFF. Correctness, not just a wasted step."""
+    order: list = []
+    with (
+        patch("heypeer.executor.apps.is_running", return_value=True),
+        patch("heypeer.executor.spotify.play_uri", side_effect=lambda u: order.append(f"open:{u}")),
+        patch("heypeer.executor.spotify.press_play", side_effect=lambda: order.append("play")),
+        patch("time.sleep", side_effect=lambda s: order.append(f"wait:{s}")),
+    ):
+        spotify.play_track("spotify:track:abc")
+
+    assert order == ["open:spotify:track:abc"]
+
+
+def test_a_cold_started_spotify_gets_a_settle_then_a_press() -> None:
+    """The actual fix: mirrors launch_and_play's settle-then-press, applied
+    to a track URI instead of the bare app."""
+    order: list = []
+    with (
+        patch("heypeer.executor.apps.is_running", return_value=False),
+        patch("heypeer.executor.spotify.play_uri", side_effect=lambda u: order.append(f"open:{u}")),
+        patch("heypeer.executor.spotify.press_play", side_effect=lambda: order.append("play")),
+        patch("time.sleep", side_effect=lambda s: order.append(f"wait:{s}")),
+    ):
+        spotify.play_track("spotify:track:abc", settle_seconds=2.5)
+
+    assert order == ["open:spotify:track:abc", "wait:2.5", "play"]
+
+
+def test_play_track_checks_for_spotify_specifically() -> None:
+    """Checking any process named "Spotify.exe" and nothing else - the
+    wrong process name would silently disable the whole fix."""
+    with (
+        patch("heypeer.executor.apps.is_running", return_value=True) as is_running,
+        patch("heypeer.executor.spotify.play_uri"),
+    ):
+        spotify.play_track("spotify:track:abc")
+
+    is_running.assert_called_once_with("Spotify.exe")
+
+
+def test_the_search_fallback_never_presses_play() -> None:
+    """play_uri (used for the two search-fallback branches in main.py) must
+    stay a pure "open this" - there is nothing to press play on for a page of
+    search results, and doing so would be a no-op at best and a stray pause
+    at worst if something else happened to be playing."""
+    with (
+        patch("heypeer.executor.apps._open_target") as open_target,
+        patch("heypeer.executor.spotify.press_play") as press_play,
+    ):
+        spotify.play_uri(spotify.search_uri("Starman"))
+
+    open_target.assert_called_once()
+    press_play.assert_not_called()

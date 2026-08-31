@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from heypeer.executor.apps import KNOWN_APPS, App, LaunchFailed, launch, resolve_app
+from heypeer.executor.apps import KNOWN_APPS, App, LaunchFailed, is_running, launch, resolve_app
 
 
 def test_an_exact_name_resolves() -> None:
@@ -82,3 +82,42 @@ def test_an_app_that_will_not_start_raises_rather_than_pretending() -> None:
 def test_every_registered_app_has_some_way_to_start() -> None:
     for app in KNOWN_APPS:
         assert app.uri_scheme or app.executable, f"{app.name} has no launch route"
+
+
+# --- is_running -----------------------------------------------------------
+#
+# Whether an app is already open, used to decide whether starting a track
+# needs a follow-up press-play. Windows-only by construction; a wrong answer
+# elsewhere costs one harmless extra step, never a missing one.
+
+
+def test_is_running_is_false_off_windows() -> None:
+    """The dev sandbox for this project is Linux; the only caller
+    (spotify.play_track) must degrade to its safe default there rather than
+    calling a Windows-only tool."""
+    with patch("sys.platform", "linux"):
+        assert is_running("Spotify.exe") is False
+
+
+def test_is_running_true_when_tasklist_lists_the_process() -> None:
+    output = (
+        "Image Name                     PID Session Name        Session#\r\n"
+        "Spotify.exe                  12345 Console                 1\r\n"
+    )
+    with patch("sys.platform", "win32"), patch("subprocess.check_output", return_value=output):
+        assert is_running("Spotify.exe") is True
+
+
+def test_is_running_false_when_tasklist_finds_nothing() -> None:
+    """tasklist with a /FI filter that matches nothing still exits 0 and
+    prints an "INFO: No tasks..." line - there is no process row to find."""
+    output = 'INFO: No tasks are running which match the specified criteria.\r\n'
+    with patch("sys.platform", "win32"), patch("subprocess.check_output", return_value=output):
+        assert is_running("Spotify.exe") is False
+
+
+def test_is_running_false_when_tasklist_itself_fails() -> None:
+    """Must degrade rather than raise: this runs before every track playback,
+    and a shell quirk on the user's machine must not block music over it."""
+    with patch("sys.platform", "win32"), patch("subprocess.check_output", side_effect=OSError("no")):
+        assert is_running("Spotify.exe") is False

@@ -1000,11 +1000,15 @@ def test_a_resolved_track_is_played_and_named(tmp_path: Path) -> None:
             "heypeer.executor.spotify.find_track",
             return_value=Track("spotify:track:abc", "Starman", "David Bowie"),
         ),
-        patch("heypeer.executor.spotify.play_uri") as play_uri,
+        patch("heypeer.executor.spotify.play_track") as play_track,
     ):
         peer.on_wake_word()
 
-    play_uri.assert_called_once_with("spotify:track:abc")
+    # play_track, not play_uri: it applies the cold-start-only "press play"
+    # fix (test_spotify.py covers that logic on its own), and patching it
+    # here rather than play_uri also keeps this test from paying its real
+    # settle-time sleep.
+    play_track.assert_called_once_with("spotify:track:abc")
     assert narrated == ["Je lance Starman par David Bowie."]
 
 
@@ -1028,7 +1032,7 @@ def test_the_track_name_comes_from_the_search_not_from_the_model(tmp_path: Path)
         patch("heypeer.executor.spotify.credentials_missing", return_value=False),
         patch("heypeer.executor.spotify.find_track",
               return_value=Track("spotify:track:abc", "Starman", "David Bowie")),
-        patch("heypeer.executor.spotify.play_uri"),
+        patch("heypeer.executor.spotify.play_track"),
     ):
         peer.on_wake_word()
 
@@ -1038,7 +1042,15 @@ def test_the_track_name_comes_from_the_search_not_from_the_model(tmp_path: Path)
 def test_without_credentials_it_opens_the_search_and_says_so(tmp_path: Path) -> None:
     """The state the user is in until they register a Spotify app. Opening
     the search is not playing the track, so claiming to have started the
-    music would be a lie the user hears immediately - silence."""
+    music would be a lie the user hears immediately - silence.
+
+    `credentials_missing` is mocked rather than relied on to fall out of an
+    empty environment: this test is about the app's behaviour when
+    unconfigured, not about what happens to be in the developer's own
+    `.env` at the moment it runs - which, once real Spotify credentials
+    exist there, would silently flip this test into exercising the wrong
+    branch.
+    """
     nemotron = MagicMock()
     nemotron.interpret_text.return_value = Intent(
         action="play_music", skill_id=None, n_repetitions=1, query="Alright Kendrick Lamar",
@@ -1049,6 +1061,7 @@ def test_without_credentials_it_opens_the_search_and_says_so(tmp_path: Path) -> 
     peer._speak_async = narrated.append
 
     with (
+        patch("heypeer.executor.spotify.credentials_missing", return_value=True),
         patch("heypeer.executor.spotify.find_track") as find_track,
         patch("heypeer.executor.spotify.play_uri") as play_uri,
     ):
@@ -1105,7 +1118,7 @@ def test_starting_music_ends_the_turn(tmp_path: Path) -> None:
         patch("heypeer.executor.spotify.credentials_missing", return_value=False),
         patch("heypeer.executor.spotify.find_track",
               return_value=Track("spotify:track:abc", "Starman", "David Bowie")),
-        patch("heypeer.executor.spotify.play_uri"),
+        patch("heypeer.executor.spotify.play_track"),
     ):
         peer.on_wake_word()
 

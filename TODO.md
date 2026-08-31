@@ -2081,6 +2081,50 @@ Also: three prompt tests asserted on exact line breaks and broke every time a
 paragraph was re-wrapped without its meaning changing. They normalise
 whitespace now.
 
+### Round 32: a track that landed without playing (2026-08-31)
+
+"par moment lorsque je dis de lancer un titre, heypeer se met bien dessus
+mais oublie de lancer la lecture" - intermittent, which was the clue.
+
+The same gap `launch_and_play` already exists to close for "lance Spotify"
+itself, one level down. Opening a `spotify:track:` URI in an *already-running*
+Spotify plays it immediately - the same as clicking a spotify: link while the
+app is open. Opening one while Spotify is *closed* cold-starts the app, which
+comes up showing the track paused, exactly like plain "lance Spotify" does not
+start music on its own. "Par moment" is "whenever Spotify happened not to
+already be open" - most requests land after an earlier "lance Spotify" or a
+previous track, which is why it looked occasional rather than constant.
+
+`apps.is_running()` (Windows `tasklist`, no new dependency) checks before
+opening the URI. `spotify.play_track()` presses play only on a cold start; an
+already-running Spotify is left alone, because pressing play there would
+TOGGLE an already-playing track *off* - the fix has to know which case it is
+in, not just fire unconditionally. `play_uri()` stays a pure "open this" for
+the two search-result fallbacks, where there is nothing to press play on.
+
+Confirmed the tests actually distinguish the two branches, not just record
+calls: `test_an_already_running_spotify_is_left_alone` asserts nothing but the
+open call happens (no press), `test_a_cold_started_spotify_gets_a_settle_
+then_a_press` asserts the full open-wait-press order.
+
+**Found while fixing it: three tests in `test_main.py` were coupled to
+whatever happens to be in the developer's own `.env`.** They asserted the
+"credentials missing" branch by relying on the real environment having no
+Spotify keys, rather than mocking `credentials_missing`. The moment real keys
+were added to test on real hardware, one of those tests started silently
+exercising the wrong branch - passing by observing the wrong thing rather than
+failing, since the resolved-track path also produces search-shaped assertions
+by coincidence in enough cases to not be obviously wrong. Fixed by mocking
+`credentials_missing` explicitly, so the test is about the app's behaviour,
+not about the tester's machine.
+
+The same detour also caught three tests genuinely sleeping 2.5 real seconds
+each - `play_track`'s settle wait, unpatched, running for real because they
+patched `play_uri` instead of `play_track`. Switched them to patch
+`play_track` directly, which is also the more accurate thing to assert: that
+is the function `main.py` actually calls, and `play_track`'s own cold-start
+logic is already covered on its own in `test_spotify.py`.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
