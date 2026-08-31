@@ -2250,6 +2250,60 @@ patched `play_uri` instead of `play_track`. Switched them to patch
 is the function `main.py` actually calls, and `play_track`'s own cold-start
 logic is already covered on its own in `test_spotify.py`.
 
+### Round 33: "ouvre discord" did not open Discord (2026-08-31)
+
+Reasoned from how Windows installers and `ShellExecute` actually behave -
+not observed, there is no real Windows box here - but the diagnosis holds
+together on three separate points, any one of which alone would explain it:
+
+1. `discord:` was tried as a URI scheme, the same mechanism that genuinely
+   works for Spotify. But Spotify's scheme is documented and used all over
+   the web ("Open in Spotify" links); Discord's was never verified to be a
+   real, registered system protocol the way Spotify's is - it was a guess
+   that looked plausible next to a working one.
+2. Discord installs to a per-user, versioned folder under `%LOCALAPPDATA%`
+   that is never added to PATH, so a bare `"discord"` executable name was
+   never going to resolve.
+3. The Windows-path fallback pointed at `Update.exe` (Squirrel's installer/
+   updater, which is what Discord and several other apps in the registry
+   actually use to self-update) and called it with no arguments. Squirrel
+   apps need `--processStart Discord.exe` to actually launch the app -
+   `os.startfile` cannot pass that - so even finding this file and running
+   it would have opened Squirrel's own updater UI, not Discord. Worse than
+   doing nothing: it would have looked like it "worked" while doing the
+   wrong thing.
+
+**Fix**: a Start Menu shortcut search, new in `apps.py`
+(`_find_start_menu_shortcut`), tried between the URI attempt and a resolved
+executable path. Every Windows installer, Squirrel included, drops a
+shortcut in the Start Menu specifically so the shell can find the app - a
+`.lnk` already encodes the right target, arguments and working directory,
+so nothing installer-specific needs to be known here. Searches both the
+per-user and all-users Start Menu, recursively (some shortcuts nest in a
+publisher subfolder - "Microsoft Office Tools\Word.lnk", not directly
+under Programs), matching an app's name or any alias, exact first then
+substring.
+
+Also fixed while auditing the rest of `launch()`: the executable-name
+attempt handed a bare string like `"discord"` straight to `os.startfile`,
+which wraps `ShellExecute` - not documented to search PATH for an
+extensionless name the way `subprocess`/`CreateProcess` is. It now resolves
+through `shutil.which` first (`_executable_candidates`, already used
+elsewhere in this file for `open_url`), so what actually reaches
+`os.startfile` is a real, resolved path.
+
+Discord's broken `Update.exe` windows_path entry is removed outright rather
+than left as a fallback that "succeeds" at the wrong thing - if the Start
+Menu search fails too, `launch` now fails honestly and Hey Peer says it
+could not open Discord, instead of silently popping an updater window and
+claiming success.
+
+Every mechanism here is independently testable except "does this actually
+launch Discord on the user's machine" - `_find_start_menu_shortcut` takes
+an overridable `roots` parameter specifically so its matching logic (exact,
+alias, nested subfolder, substring, a missing root) can be verified against
+a synthetic Start Menu tree without a real Windows install.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
