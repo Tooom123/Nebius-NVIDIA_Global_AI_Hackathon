@@ -294,7 +294,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 303 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 307 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.
@@ -317,7 +317,7 @@ app plays directly. That search needs only *application* credentials
 without them it opens the search results and says so rather than claiming to have
 started the music.
 
-"Cherche la météo sur internet" opens a web search; the query is percent-encoded
+"Quelle est la météo à Paris ?" opens a web search; the query is percent-encoded
 into a fixed search URL rather than the model being asked for an address, because
 a search string can say anything and a URL can *go* anywhere.
 

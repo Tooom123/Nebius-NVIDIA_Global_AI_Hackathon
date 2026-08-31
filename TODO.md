@@ -2015,6 +2015,72 @@ why there are two. Both were confirmed by putting the bad line back.
 That first test also caught "PowerPoint", which espeak reads half in each
 language - `pˈaʊə pwˈɛ̃`, English "power" glued to French "point".
 
+### Round 31: a prompt that refused what the app had just learned to do (2026-08-31)
+
+"pourquoi la question de la meteo ne fonctionne pas ?" - Hey Peer answered
+"Je ne peux pas consulter la meteo, je n'ai pas acces a cette information",
+one round after gaining a web search.
+
+The prompt said both things at once. Two paragraphs, written before
+`search_web` existed and never revisited when it shipped:
+
+    You cannot see the clock, the calendar, the weather, the web, the
+    screen [...] Asked for one of those, say you cannot check it.
+
+    When the user asks for anything else - open an application, send a
+    message, search the web, change a setting - [...] say plainly and
+    briefly that you cannot do that yet.
+
+So the prompt described `search_web` and `open_app` as supported near the
+top, and refused both further down. The older lines are the more specific
+ones, and they won.
+
+**This is the failure mode of a prompt that grows by appending**, and it is
+worth naming: every new capability gets described twice, once where it was
+added and once in whatever "here is what you cannot do" text predates it. The
+second description is invisible while writing the first.
+
+- [x] Replaced the refusal with an ordered decision: do I know this ->
+      answer; is it about this machine or this moment -> say I cannot check;
+      otherwise -> search. The anti-hallucination rule it was protecting is
+      intact - "Il est 14h" invented on the spot is still forbidden.
+- [x] `speech` for a search must say it is opening one. The model's first
+      draft was "Voici la meteo a Paris", which is a promise the browser has
+      to keep; the action opens a page and tells the user nothing.
+- [x] The stale "cannot do yet" list now names things Hey Peer genuinely
+      cannot do (send a message, change a setting, edit inside a file).
+
+**Measured rather than eyeballed.** Prompt changes are behavioural and the
+model is stochastic, so a single sample proves nothing - the first two
+rewrites both looked fine on one pass and scored identically at 45/50 over
+five. Ten instructions, eight runs each:
+
+    meteo a Paris          search_web  8/8
+    score du match         search_web  7/8   (1 "ask" - which match?)
+    heure de fermeture     search_web  8/8
+    cherche des recettes   search_web  8/8
+    quelle heure est-il    reply       5/8
+    comment ca va          reply       8/8
+    capitale du Perou      reply       4/8
+    supprime le fichier 4  delete_file 8/8
+    lance Starman          play_music  8/8
+    lance spotify          open_app    8/8
+
+The complaint is fixed at 8/8 and nothing regressed. The two that split are a
+genuinely fuzzy boundary - opening a browser for the time, or for a fact the
+model knows, is a worse answer but not a wrong one - and I stopped tuning
+rather than over-fit a small model to ten sentences.
+
+**The test found more than it was written for.** It slices the prompt's
+refusal section and asserts nothing reachable is named there; that is how
+"open an application" turned up, still refused two rounds after shipping. The
+guard now checks the whole capability list, so the next action cannot be
+added without the contradiction surfacing.
+
+Also: three prompt tests asserted on exact line breaks and broke every time a
+paragraph was re-wrapped without its meaning changing. They normalise
+whitespace now.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
