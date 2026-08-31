@@ -283,28 +283,49 @@ seen it yet when you write this>", "end_turn": true}
   screen when producing it, so never answer the question itself here, only
   announce that you are about to look.
 
-- Explain what is wrong with some code, without changing anything (e.g. \
-"pourquoi cette fonction plante ?", "analyse ce fichier", "qu'est-ce qui ne \
-va pas avec ce script ?"):
+- Explain what is wrong with a NAMED file, without changing anything (e.g. \
+"pourquoi facture.py plante ?", "analyse ce fichier", when a filename is \
+in the watched-folder listing, was already named earlier in this exchange, \
+or the user says one explicitly, e.g. "le fichier C:\\Projets\\calc.py"):
   {"action": "analyze_code", \
-"target_name": "<the exact filename from the watched-folder listing>", \
+"target_name": "<the filename or path - from the watched-folder listing, \
+already named earlier in this exchange, or exactly as the user said it>", \
 "speech": "<one short sentence, e.g. \"Je regarde le code...\" - you have \
 not seen the code yet when you write this, so never diagnose it here>", \
 "end_turn": true}
   The file is read and diagnosed *after* this JSON. This only explains -
   nothing is changed. Use "fix_code" instead if the user wants it corrected.
 
+- Diagnose code with NO filename known at all (e.g. "qu'est-ce qui ne va \
+pas dans cette fonction ?", "pourquoi ca plante ?" with nothing else to go \
+on - no filename in the watched-folder listing, nothing named earlier in \
+this exchange, nothing said explicitly). There is no way to know what code \
+this is without looking - use "debug_screen_code" instead of guessing at a \
+filename or asking which one:
+  {"action": "debug_screen_code", \
+"speech": "<one short sentence, e.g. \"Je regarde l'ecran...\" - you have \
+not looked yet when you write this, so never diagnose anything here>", \
+"end_turn": true}
+  A screenshot is taken and diagnosed *after* this JSON, the same as \
+"read_screen". If a file name becomes identifiable from the screen, the \
+diagnosis will say so and it can be referred to on a later turn.
+
 - Fix code (e.g. "corrige-le", "corrige ce fichier", "repare cette \
-fonction"). This actually changes the file - a real coding agent is \
-dispatched to edit it:
+fonction", "oui, corrige" after a diagnosis asked whether to). This \
+actually changes the file - a real coding agent is dispatched to edit it:
   {"action": "fix_code", \
-"target_name": "<the exact filename from the watched-folder listing>", \
+"target_name": "<the filename or path - from the watched-folder listing, \
+already named earlier in this exchange (including one identified from the \
+screen by a previous "debug_screen_code" turn), or exactly as the user \
+said it - never invent one>", \
 "speech": "<one short sentence, e.g. \"Je regarde le code...\" - you do \
 not know what the fix will be when you write this, so never describe it \
 here>", "end_turn": true}
   Only when the user clearly wants the code changed, not merely explained -
-  "corrige-le" after "analyze_code" already ran is exactly that; "pourquoi
-  ca plante ?" alone is "analyze_code", not this.
+  "corrige-le" after a diagnosis already ran is exactly that; "pourquoi ca
+  plante ?" alone is a diagnosis action, not this. If no filename is known
+  at all - not from the watched folder, not from earlier in this exchange,
+  not said explicitly - use "ask" for it rather than inventing one.
 
 - Remember something for later, beyond this exchange (e.g. "retiens que je \
 prefere qu'on m'appelle Tom", "note que le projet Facture-Mars doit etre \
@@ -477,6 +498,37 @@ vides ?"), answer that question specifically rather than a generic
 walkthrough of the whole function. If the code actually looks fine, say so -
 do not invent a problem to sound useful, the same rule as never inventing
 any other fact.
+
+Plain ASCII punctuation only. Respond with ONLY a JSON object:
+{"diagnosis": "<what to say>"}.
+"""
+
+# A fourth prompt, for "debug_screen_code" - the same diagnosis as
+# DIAGNOSE_CODE_SYSTEM_PROMPT, but from a screenshot rather than a named
+# file's text, for exactly the gap that prompted it: "analyze_code"/
+# "fix_code" only ever work on a file already in the watched folder
+# (~/Downloads by default) - useless for an actual coding project, which
+# lives nowhere near there. Looking at whatever is on screen (almost always
+# an editor with the file the user is actually asking about open) sidesteps
+# needing a filename at all - the same reasoning "read_screen" already
+# established for "what's on my screen", applied to code specifically.
+DIAGNOSE_SCREEN_CODE_SYSTEM_PROMPT = """\
+You are looking at a screenshot, most likely a code editor, that the user
+has a question about. In two to four short spoken sentences, in the given
+language:
+
+1. Explain what looks wrong with the code you can see and why - plainly,
+   the way you would explain it to someone standing next to you.
+2. If you can identify which file this is - a tab name, a window title bar
+   (editors usually show "filename - project - Editor Name" there), a path
+   visible in a terminal or breadcrumb - say the file name or path plainly
+   in your answer, so it can be referred to later. If you cannot tell,
+   say so rather than guessing one.
+3. Ask whether you should fix it - this is a question, not an action; you
+   are not fixing anything by answering this.
+
+If the code actually looks fine, say so plainly and do not invent a problem
+or offer to fix something that is not broken.
 
 Plain ASCII punctuation only. Respond with ONLY a JSON object:
 {"diagnosis": "<what to say>"}.
@@ -769,6 +821,41 @@ class NemotronClient:
         except json.JSONDecodeError:
             return ""
         return _plain_punctuation(data.get("answer")) or ""
+
+    def diagnose_screen_code(self, image_bytes: bytes, question: str, language: str = "fr") -> str:
+        """Diagnoses code visible in `image_bytes` (almost always an editor
+        screenshot) without needing a filename at all - see
+        `DIAGNOSE_SCREEN_CODE_SYSTEM_PROMPT` for why this exists and what it
+        asks for: a diagnosis, the file if it can be identified from what is
+        on screen, and a question asking whether to fix it - never the fix
+        itself, which stays a separate, explicit "fix_code" turn.
+        """
+        image_b64 = base64.b64encode(image_bytes).decode()
+        content = [
+            {
+                "type": "text",
+                "text": (
+                    f"Language: {'English' if language == 'en' else 'French'}\nQuestion: {question}"
+                ),
+            },
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+        ]
+        response = self._client.chat.completions.create(
+            model=self.settings.nemotron_model_id,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": DIAGNOSE_SCREEN_CODE_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+        return _plain_punctuation(data.get("diagnosis")) or ""
 
     def verify_screen(self, screenshot_png: bytes, expected_context: str) -> bool:
         """Visual verification hook used by SkillRunner between replay steps."""

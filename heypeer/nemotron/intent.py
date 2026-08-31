@@ -25,6 +25,7 @@ ACTIONS = (
     "read_screen",  # "qu'est-ce qu'il y a sur mon ecran ?" - no target
     "analyze_code",  # "pourquoi cette fonction plante ?" - target_name is the filename
     "fix_code",  # "corrige-le", "corrige ce fichier" - target_name is the filename
+    "debug_screen_code",  # "qu'est-ce qui ne va pas ici ?" with no filename - looks at the screen
     "remember_fact",  # "retiens que..." - content is the fact
     "general_task",  # a multi-step task outside every action above - content is the task
     "reply",  # nothing to do on the computer: just say `speech` back
@@ -73,6 +74,7 @@ ACTION_DESCRIPTIONS = {
     "read_screen": "see or read the screen",
     "analyze_code": "explain what is wrong with some code",
     "fix_code": "fix code",
+    "debug_screen_code": "diagnose code by looking at the screen",
     "remember_fact": "remember something for later",
     "general_task": "carry out a general, multi-step task",
 }

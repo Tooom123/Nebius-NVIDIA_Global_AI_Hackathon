@@ -878,3 +878,64 @@ def test_the_prompt_routes_website_interaction_to_general_task_not_open_app() ->
     prompt = " ".join(SYSTEM_PROMPT.split())
     assert "va sur Amazon et ajoute des piles AA au panier" in prompt
     assert "not a website or an online service" in prompt
+
+
+# --- diagnose_screen_code (round 40: debug_screen_code) ---------------------
+
+
+def test_diagnose_screen_code_returns_the_diagnosis() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"diagnosis": "Division par zero dans calc.py. Je corrige ?"}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        diagnosis = client.diagnose_screen_code(b"fake-png-bytes", "qu'est-ce qui ne va pas ?")
+
+    assert diagnosis == "Division par zero dans calc.py. Je corrige ?"
+
+
+def test_diagnose_screen_code_uses_its_own_dedicated_prompt() -> None:
+    from heypeer.nemotron.client import DIAGNOSE_SCREEN_CODE_SYSTEM_PROMPT
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"diagnosis": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.diagnose_screen_code(b"fake-png-bytes", "why?")
+
+    messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    assert messages[0]["content"] == DIAGNOSE_SCREEN_CODE_SYSTEM_PROMPT
+
+
+def test_diagnose_screen_code_sends_the_image_as_image_url_content() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"diagnosis": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.diagnose_screen_code(b"fake-png-bytes", "why?")
+
+    content = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    types = [part["type"] for part in content]
+    assert types == ["text", "image_url"]
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_diagnose_screen_code_returns_empty_string_on_no_answer() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=None))]
+        mock_client.chat.completions.create.return_value = response
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        diagnosis = client.diagnose_screen_code(b"fake-png-bytes", "why?")
+
+    assert diagnosis == ""
