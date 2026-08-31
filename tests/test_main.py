@@ -1666,3 +1666,120 @@ def test_none_of_the_new_system_actions_open_a_followup_window(tmp_path: Path) -
             peer.on_wake_word()
 
         assert not peer._wake_listener.arm_followup.called, f"{action} armed a followup"
+
+
+# --- Documents and screen (round 36) ----------------------------------------
+
+
+def test_summarize_document_reads_extracts_and_summarizes(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "facture.pdf").write_text("x")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="summarize_document", skill_id=None, n_repetitions=1,
+        target_name="facture.pdf", speech="Voici un résumé de facture.pdf :",
+    )
+    nemotron.summarize_for_speech.return_value = "Une facture de 42 euros."
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "resume facture.pdf")
+
+    with patch("heypeer.executor.documents.extract_text", return_value="Facture, 42 EUR"):
+        peer.on_wake_word()
+
+    nemotron.summarize_for_speech.assert_called_once_with("Facture, 42 EUR", "fr")
+    assert fake_tts.call_args_list[0].args == ("Voici un résumé de facture.pdf :",)
+    assert fake_tts.call_args_list[1].args == ("Une facture de 42 euros.",)
+
+
+def test_summarize_document_declines_for_an_unknown_file(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="summarize_document", skill_id=None, n_repetitions=1, target_name="introuvable.pdf",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "resume introuvable.pdf")
+
+    peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Je ne vois pas de fichier introuvable.pdf.", language="fr")
+    nemotron.summarize_for_speech.assert_not_called()
+
+
+def test_summarize_document_with_no_extractable_text_says_so(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """A scanned PDF with no text layer - see documents.py's module
+    docstring for why this and a genuinely empty file look the same from
+    here, and are reported the same honest way."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "scan.pdf").write_text("x")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="summarize_document", skill_id=None, n_repetitions=1, target_name="scan.pdf",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "resume scan.pdf")
+
+    with patch("heypeer.executor.documents.extract_text", return_value=""):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Je n'ai rien pu extraire de scan.pdf.", language="fr")
+    nemotron.summarize_for_speech.assert_not_called()
+
+
+def test_read_screen_speaks_intro_then_the_answer(tmp_path: Path, fake_tts: MagicMock) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="read_screen", skill_id=None, n_repetitions=1, speech="Je regarde l'écran...",
+    )
+    nemotron.describe_image.return_value = "Il y a un message d'erreur."
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "qu'est-ce qu'il y a sur mon ecran ?")
+
+    with patch("heypeer.executor.screen.capture", return_value=b"fake-png-bytes"):
+        peer.on_wake_word()
+
+    assert fake_tts.call_args_list[0].args == ("Je regarde l'écran...",)
+    assert fake_tts.call_args_list[1].args == ("Il y a un message d'erreur.",)
+    nemotron.describe_image.assert_called_once_with(
+        b"fake-png-bytes", "qu'est-ce qu'il y a sur mon ecran ?", "fr"
+    )
+
+
+def test_read_screen_passes_the_original_instruction_as_the_question(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """A specific question ("y a-t-il une erreur ?") must reach
+    describe_image as-is, not a generic "describe the screen" - that is
+    what makes the answer actually address what was asked."""
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="read_screen", skill_id=None, n_repetitions=1,
+    )
+    nemotron.describe_image.return_value = "Non, pas d'erreur visible."
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "y a-t-il une erreur affichee ?")
+
+    with patch("heypeer.executor.screen.capture", return_value=b"fake-png-bytes"):
+        peer.on_wake_word()
+
+    assert nemotron.describe_image.call_args.args[1] == "y a-t-il une erreur affichee ?"
+
+
+def test_read_screen_capture_failure_is_reported_honestly(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="read_screen", skill_id=None, n_repetitions=1,
+    )
+    peer = HeyPeer(nemotron=nemotron, get_instruction=lambda: "qu'est-ce qu'il y a sur mon ecran ?")
+
+    with patch("heypeer.executor.screen.capture", return_value=None):
+        peer.on_wake_word()
+
+    assert fake_tts.call_args_list[-1].args == ("Je n'ai pas pu capturer l'écran.",)
+    nemotron.describe_image.assert_not_called()

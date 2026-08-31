@@ -2450,6 +2450,67 @@ sentences against a handful of samples.
 
 404 tests.
 
+### Round 36: documents and the screen - and vision quietly started working (2026-08-31)
+
+The last two of the "complete product" brainstorm: `summarize_document`
+("resume facture.pdf") and `read_screen` ("qu'est-ce qu'il y a sur mon
+ecran ?", "y a-t-il un message d'erreur ?").
+
+**A real, live surprise that changed the shape of this round.** The prompt
+has said since round 25 that the model cannot see the screen, because the
+one time this was tried, sending an image alongside `response_format:
+json_object` 400'd outright on this Nebius deployment. Re-checked before
+assuming that still holds, since a hosted deployment can change without this
+project knowing - and it does not hold any more: a bare `[text, image_url]`
+call, and separately the exact `json_object` shape that used to fail, both
+now succeed, repeatedly, including correctly reading text drawn into a test
+image. `read_screen` exists because of that finding, not because it was
+planned before checking.
+
+**Document summarization needed no new prompt call at all.** `pypdf` (new
+dependency, pure Python) extracts a PDF's or plain text file's text, and
+that text goes straight into `NemotronClient.summarize_for_speech` - the
+exact method round 35 built for clipboard summarization. Clipboard text and
+document text are both just "some text worth condensing" to it; the method
+never needed to know which. `documents.py`'s only real judgement call: a
+scanned PDF with no text layer at all (no OCR here - a real, heavier
+dependency for a "resume ce PDF" feature that does not need it) extracts to
+"" the same as a genuinely empty file, and both get the same honest "rien a
+resumer" - this code cannot tell them apart, so it does not pretend to.
+
+**The screen needed one new thing**: `NemotronClient.describe_image`, a
+second, narrow vision call (not threaded through the classifier prompt on
+every turn - a screenshot is captured only when `read_screen` is actually
+dispatched). The user's own instruction text is passed straight through as
+the question, so "y a-t-il une erreur ?" gets answered specifically rather
+than both it and "qu'est-ce qu'il y a sur mon ecran ?" getting the same
+generic description. `executor/screen.py` captures via `PIL.ImageGrab`
+(already a dependency, no new one), resized to 1280px wide before sending -
+a 4K screenshot is several MB and does not obviously read text any better
+than a smaller one.
+
+**A real, recurring bug class, twice in one round.** Both new actions were
+initially misrouted live: "qu'est-ce qu'il y a sur mon ecran ?" answered
+"reply" with an *invented* description of the screen, because the prompt
+still explicitly said "you cannot see... the screen" from round 25, written
+before this action existed - the exact "prompt says both yes and no"
+pattern from rounds 29/31/32, recurring a fourth time. Separately, "control
+the volume" was still listed as something Hey Peer "cannot do yet", three
+rounds after `adjust_volume` shipped - missed by round 32's own
+`ACTION_DESCRIPTIONS`-driven guard, because the refusal used different
+wording ("control" vs the guard's "change") from an exact-substring check.
+Both fixed by rewriting the "cannot do yet"/"never invent a fact" sections
+to route screen questions to `read_screen` and stop naming things that are
+now supported at all - and by adding a second, narrower guard: a short,
+explicitly-curated keyword list (volume, screen, brightness, clipboard - the
+capabilities that have *actually* drifted this way, not a guess at what
+might) checked the same way, catching a reworded refusal an exact-phrase
+match cannot. Verified live afterward: every case that was wrong now routes
+correctly, and the previously-correct cases (the weather, the time, ordinary
+conversation, file actions) still do too.
+
+429 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

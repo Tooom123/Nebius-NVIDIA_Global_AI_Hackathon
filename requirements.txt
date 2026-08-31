@@ -32,3 +32,6 @@ send2trash>=1.8.0
 # small, dependency-free, extremely well-established library for exactly
 # this one job rather than reinventing it.
 pyperclip>=1.8.2
+
+# PDF text extraction, for "resume ce PDF" - pure Python, no C extension.
+pypdf>=4.0.0
