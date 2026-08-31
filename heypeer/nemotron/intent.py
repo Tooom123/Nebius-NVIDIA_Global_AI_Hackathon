@@ -13,6 +13,14 @@ ACTIONS = (
     "open_app",  # start an application by name ("lance Spotify")
     "play_music",  # play something specific ("mets Alright de Kendrick Lamar")
     "search_web",  # look something up in a browser ("cherche X sur internet")
+    "adjust_volume",  # "monte/baisse/coupe le son" - target_name is up/down/mute
+    "adjust_brightness",  # "monte/baisse la luminosite" - target_name is up/down
+    "maximize_window",  # "mets X en plein ecran" - target_name is the app
+    "minimize_window",  # "minimise X" - target_name is the app
+    "close_window",  # "ferme X" - target_name is the app
+    "minimize_all",  # "montre le bureau", "minimise tout" - no target
+    "clipboard_copy",  # "copie ca" - simulates Ctrl+C, no target
+    "clipboard_read",  # "qu'est-ce qu'il y a dans mon presse-papier ?" - no target
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -47,6 +55,14 @@ ACTION_DESCRIPTIONS = {
     "open_app": "open an application",
     "play_music": "play music",
     "search_web": "search the web",
+    "adjust_volume": "change the volume",
+    "adjust_brightness": "change the screen brightness",
+    "maximize_window": "maximize a window",
+    "minimize_window": "minimize a window",
+    "close_window": "close a window",
+    "minimize_all": "minimize every window",
+    "clipboard_copy": "copy the current selection",
+    "clipboard_read": "read the clipboard",
 }
 
 
@@ -63,15 +79,21 @@ class Intent:
     dest_folder: str | None = None
     # "rename_file" only: the file's new name (same folder).
     new_name: str | None = None
-    # "create_file"/"create_folder" only: the new file/folder's name.
+    # "create_file"/"create_folder"/"open_app" (the application name)/
+    # "maximize_window"/"minimize_window"/"close_window" (the application
+    # whose window it is): the name in question. "adjust_volume" and
+    # "adjust_brightness" reuse it too, for their direction - "up", "down",
+    # or (volume only) "mute" - since these actions have no other target of
+    # their own.
     target_name: str | None = None
     # "play_music" and "search_web": what to look for, as one search string.
     # For music, "X par Y" is flattened to "X Y" - the preposition is French
     # grammar, not part of the title, and a music search expects neither.
     query: str | None = None
-    # "ask" only: the single short question to put to the user, in French.
-    # Lets Hey Peer say what's actually missing ("vers quel dossier ?")
-    # instead of a flat "je n'ai pas compris" that leaves them guessing.
+    # "ask" only: the single short question to put to the user, in whichever
+    # language they are speaking (see `language` below). Lets Hey Peer say
+    # what's actually missing ("vers quel dossier ?") instead of a flat
+    # "je n'ai pas compris" that leaves them guessing.
     question: str | None = None
     # What to say out loud. Required for "reply", where it *is* the whole
     # response; optional on a file action, where it replaces the fixed

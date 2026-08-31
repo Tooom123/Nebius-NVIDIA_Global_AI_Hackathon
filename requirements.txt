@@ -26,3 +26,9 @@ numpy>=1.26.0
 
 # File actions (deletes go to the recycle bin, not a permanent unlink)
 send2trash>=1.8.0
+
+# Clipboard read/write. Hand-rolled ctypes clipboard access (format
+# negotiation, GlobalLock retry) is a known source of subtle bugs; this is a
+# small, dependency-free, extremely well-established library for exactly
+# this one job rather than reinventing it.
+pyperclip>=1.8.2
