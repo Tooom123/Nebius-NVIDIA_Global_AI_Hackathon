@@ -94,6 +94,23 @@ def created_folder(path: Path) -> UndoEntry:
     return UndoEntry(description=f"la création du dossier {path.name}", undo=undo)
 
 
+def code_fixed(path: Path, original_content: str) -> UndoEntry:
+    """Reverses an agent-applied code fix by restoring the file's exact
+    content from before the agent touched it.
+
+    This is the safety net for `fix_code` in place of a confirmation step,
+    same reasoning as every other action here - except a code edit has no
+    recycle bin to fall back on the way a delete does, so the *whole*
+    content is captured and restored outright rather than reasoned about
+    afterwards, which would mean re-deriving what changed from a diff.
+    """
+
+    def undo() -> None:
+        path.write_text(original_content, encoding="utf-8")
+
+    return UndoEntry(description=f"la modification de {path.name}", undo=undo)
+
+
 def deleted(path: Path) -> UndoEntry:
     return UndoEntry(
         description=f"la suppression de {path.name}",

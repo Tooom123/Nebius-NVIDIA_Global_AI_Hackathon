@@ -729,3 +729,62 @@ def test_describe_image_returns_empty_string_on_no_answer() -> None:
         answer = client.describe_image(b"fake-png-bytes", "what is this?")
 
     assert answer == ""
+
+
+# --- diagnose_code (round 37: analyze_code) ---------------------------------
+
+
+def test_diagnose_code_returns_the_diagnosis() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response(
+            {"diagnosis": "La division par zero se produit si la liste est vide."}
+        )
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        diagnosis = client.diagnose_code("def f(x): return 1/x", "pourquoi ca plante ?")
+
+    assert diagnosis == "La division par zero se produit si la liste est vide."
+
+
+def test_diagnose_code_uses_its_own_dedicated_prompt() -> None:
+    from heypeer.nemotron.client import DIAGNOSE_CODE_SYSTEM_PROMPT
+
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"diagnosis": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.diagnose_code("some code", "why?")
+
+    messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    assert messages[0]["content"] == DIAGNOSE_CODE_SYSTEM_PROMPT
+
+
+def test_diagnose_code_passes_the_users_question_through() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _fake_response({"diagnosis": "x"})
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        client.diagnose_code("some code", "pourquoi ca plante sur une liste vide ?")
+
+    user_message = mock_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "pourquoi ca plante sur une liste vide ?" in user_message
+
+
+def test_diagnose_code_returns_empty_string_on_no_answer() -> None:
+    with patch("heypeer.nemotron.client.OpenAI") as mock_openai_cls:
+        mock_client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=None))]
+        mock_client.chat.completions.create.return_value = response
+        mock_openai_cls.return_value = mock_client
+
+        client = NemotronClient(_settings())
+        diagnosis = client.diagnose_code("some code", "why?")
+
+    assert diagnosis == ""

@@ -276,6 +276,29 @@ seen it yet when you write this>", "end_turn": true}
   screen when producing it, so never answer the question itself here, only
   announce that you are about to look.
 
+- Explain what is wrong with some code, without changing anything (e.g. \
+"pourquoi cette fonction plante ?", "analyse ce fichier", "qu'est-ce qui ne \
+va pas avec ce script ?"):
+  {"action": "analyze_code", \
+"target_name": "<the exact filename from the watched-folder listing>", \
+"speech": "<one short sentence, e.g. \"Je regarde le code...\" - you have \
+not seen the code yet when you write this, so never diagnose it here>", \
+"end_turn": true}
+  The file is read and diagnosed *after* this JSON. This only explains -
+  nothing is changed. Use "fix_code" instead if the user wants it corrected.
+
+- Fix code (e.g. "corrige-le", "corrige ce fichier", "repare cette \
+fonction"). This actually changes the file - a real coding agent is \
+dispatched to edit it:
+  {"action": "fix_code", \
+"target_name": "<the exact filename from the watched-folder listing>", \
+"speech": "<one short sentence, e.g. \"Je regarde le code...\" - you do \
+not know what the fix will be when you write this, so never describe it \
+here>", "end_turn": true}
+  Only when the user clearly wants the code changed, not merely explained -
+  "corrige-le" after "analyze_code" already ran is exactly that; "pourquoi
+  ca plante ?" alone is "analyze_code", not this.
+
 - Ask for the one piece you are missing, when the action itself is clear:
   {"action": "ask", \
 "question": "<one short question asking for exactly the missing piece, in \
@@ -324,11 +347,12 @@ extension, keep the original file's.
 ## Things you cannot do yet
 
 This action list will grow. When the user asks for something with no action
-above for it - send a message or an email, edit what is *inside* a file
-(reading one is fine, writing into one is not), anything requiring a login -
-do NOT bend it into the nearest action you do have and do NOT invent an
-action name. Use "reply", say plainly and briefly that you cannot do that
-yet, and set "end_turn" as the conversation warrants. Guessing at an action
+above for it - send a message or an email, edit prose or data inside a
+document (code is different - see "fix_code" above), anything requiring a
+login - do NOT bend it into the nearest action you do have and do NOT
+invent an action name. Use "reply", say plainly and briefly that you cannot
+do that yet, and set "end_turn" as the conversation warrants. Guessing at an
+action
 the user did not ask for is the worst thing you can do here: it touches
 something real.
 
@@ -388,6 +412,30 @@ briefly instead of reading nonsense aloud.
 Plain ASCII punctuation only - ordinary hyphens, apostrophes and quotes, no
 em dashes or smart quotes; accented letters are fine and expected in French.
 Respond with ONLY a JSON object: {"summary": "<what to say>"}.
+"""
+
+# A third narrow prompt, for "analyze_code" - diagnosis only, no file
+# access, no agent loop. Deliberately not the same call that fixes code
+# ("fix_code" dispatches a real coding agent instead, see
+# executor/coding_agent.py's module docstring for why): a single completion
+# from a small model asked to explain a bug is a reasonable, cheap thing to
+# ask for; asked to *also* rewrite the function correctly in the same
+# breath, it is exactly the shape of task a real edit/run/verify loop
+# exists for and one completion does not replace.
+DIAGNOSE_CODE_SYSTEM_PROMPT = """\
+You are looking at a piece of code the user asked about. In two to four
+short spoken sentences, in the given language, explain what is wrong with
+it and why - plainly and concretely, the way you would explain it to
+someone standing next to you, not a code review with bullet points.
+
+If the user asked a specific question ("pourquoi ca plante avec les listes
+vides ?"), answer that question specifically rather than a generic
+walkthrough of the whole function. If the code actually looks fine, say so -
+do not invent a problem to sound useful, the same rule as never inventing
+any other fact.
+
+Plain ASCII punctuation only. Respond with ONLY a JSON object:
+{"diagnosis": "<what to say>"}.
 """
 
 
@@ -594,6 +642,40 @@ class NemotronClient:
         except json.JSONDecodeError:
             return ""
         return _plain_punctuation(data.get("summary")) or ""
+
+    def diagnose_code(self, code: str, question: str, language: str = "fr") -> str:
+        """A short, spoken diagnosis of `code` - what's wrong and why, or
+        that it looks fine. `question` is the user's own instruction text,
+        so a specific question ("pourquoi ca plante sur une liste vide ?")
+        gets answered specifically rather than a generic walkthrough - see
+        `DIAGNOSE_CODE_SYSTEM_PROMPT`.
+
+        Diagnosis only: this never edits anything, and is not the call
+        `fix_code` uses - see `executor/coding_agent.py`'s module docstring
+        for why fixing code is dispatched to a real agent instead of asked
+        for in one more completion here.
+        """
+        truncated = code[: self.SUMMARIZE_MAX_CHARS]
+        content = (
+            f"Language: {'English' if language == 'en' else 'French'}\n"
+            f"Question: {question}\n\nCode:\n{truncated}"
+        )
+        response = self._client.chat.completions.create(
+            model=self.settings.nemotron_model_id,
+            messages=[
+                {"role": "system", "content": DIAGNOSE_CODE_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+        return _plain_punctuation(data.get("diagnosis")) or ""
 
     def describe_image(self, image_bytes: bytes, question: str, language: str = "fr") -> str:
         """Answers `question` about `image_bytes` (a PNG screenshot) - the

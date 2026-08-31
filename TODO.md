@@ -2511,6 +2511,90 @@ conversation, file actions) still do too.
 
 429 tests.
 
+### Round 37: a real coding agent, dispatched by voice (2026-08-31)
+
+The flagship example from the original brainstorm: "Hey Peer analyse cette
+fonction python et dis moi pourquoi elle ne fonctionne pas, puis le corrige
+lui-meme dans VSCode." Two new actions - `analyze_code` (read-only,
+diagnosis) and `fix_code` (writes to disk) - deliberately kept separate
+rather than one action that always edits, so asking why something is broken
+never risks a change nobody asked for.
+
+**Why this dispatches to Claude Code's CLI instead of asking Nemotron to
+rewrite the function.** `interpret_text` produces one JSON object per turn -
+no tool access, no iteration, no way to run the code and see what actually
+happens. Asking a single completion to correctly rewrite a function in one
+shot is exactly the shape of task a real edit/run/verify loop exists for and
+one completion is not. `executor/coding_agent.py` runs `claude -p "<prompt>"`
+(Claude Code's own documented headless mode) with the watched directory as
+its working directory - the same relationship Hey Peer already has with
+Spotify: it does not reimplement a music player, it drives one that exists.
+`analyze_code` stays on Nemotron directly (a new focused prompt,
+`diagnose_code` - same shape as `summarize_for_speech`/`describe_image`):
+explaining a bug in a few sentences is a reasonable single-completion task
+in a way rewriting the function correctly is not.
+
+**Undo is the safety net here too, not a confirmation gate** - a new
+`undo.code_fixed(path, original_content)`, pushed only once the file is
+confirmed to have actually changed. Unlike a delete, there is no recycle bin
+for a code edit, so the entire original content is captured up front and
+restored outright on "annule", rather than reasoning about a diff
+afterwards. Verified end to end through the real "annule" path, not just
+the undo entry in isolation.
+
+**What is honestly unverified**: there is no `claude` binary in this
+project's own dev sandbox (`claude --version` here reports "command not
+found"), so the exact invocation - `--permission-mode acceptEdits`,
+deliberately the narrower choice over `--dangerously-skip-permissions` so
+file edits are auto-approved without also silently auto-approving arbitrary
+shell commands - is Claude Code's documented headless behaviour as best
+known when this was written, not something run and observed from here.
+`is_available()`'s PATH check is real; `run()`'s exact flags may need
+adjusting against `claude --help` on whichever machine this actually runs
+on. A hard `AGENT_TIMEOUT_SECONDS` (5 minutes, a guess, not a measured
+figure) exists specifically because this is the one action that blocks the
+turn-handling thread for longer than a moment - a stuck or slow agent
+degrades to an honest "ca prend trop de temps" rather than leaving Hey Peer
+unresponsive with no way to tell.
+
+**Review, not blind trust**: a successful fix opens VS Code's diff view
+(`code --diff <backup> <file>`) comparing the original content against the
+result, via a small new `open_diff_in_vscode` - `apps.launch()` has no way
+to pass `--diff`'s two paths, so this goes straight to a resolved `code`
+executable instead. Best-effort: VS Code not being on PATH does not fail the
+turn, since the fix (and its undo entry) already happened either way, only
+the review convenience is missing.
+
+**A fourth and fifth instance of the "prompt says both yes and no" bug,
+found live before shipping, not assumed fixed by adding the actions.**
+"qu'est-ce qu'il y a sur mon ecran ?" (round 36's own new action) answered
+"reply" with an *invented* screen description, because round 25's "you
+cannot see... the screen" was still there, written before `read_screen`
+existed. And "edit what is inside a file... writing into one is not" directly contradicted the `fix_code` this exact round was
+adding. Both fixed in the same sections rounds 31/32/36 already had to
+rewrite for the identical reason - restructured so screen questions route to
+`read_screen`, and the refusal list stopped naming file-editing as
+categorically impossible (code is different, prose/data inside a document
+still is not). Verified live afterward across every action type shipped
+this session, not just the two that had just broken - nothing else
+regressed.
+
+**One residual, measured rather than assumed away**: "analyse calc.py"
+produced the literal action name `"analyse_code"` (French-influenced
+spelling) instead of the real `"analyze_code"` in one single-sample check -
+a hallucinated action name that would silently fall through to "je n'ai pas
+compris" rather than dispatching. Re-measured at 10 repeats of the same
+phrase: 10/10 correct. Noted as a low-frequency, general risk shared by
+every action (any could in principle be misspelled the same way, this is
+not specific to this one), not something this round adds defensive matching
+for - the existing fallback already degrades to a safe "did not understand"
+rather than a wrong action, and building fuzzy action-name matching for a
+failure mode measured at roughly 1-in-10-or-rarer is exactly the kind of
+speculative hardening this project's own established discipline (rounds
+31/34/35) argues against chasing.
+
+449 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
