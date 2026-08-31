@@ -746,6 +746,10 @@ class HeyPeer:
             self._run_summarize_document(intent.target_name, intent.speech, language)
         elif intent.action == "read_screen":
             self._run_read_screen(instruction_text, intent.speech, language)
+        elif intent.action == "analyze_code" and intent.target_name:
+            self._run_analyze_code(intent.target_name, instruction_text, intent.speech, language)
+        elif intent.action == "fix_code" and intent.target_name:
+            self._run_fix_code(intent.target_name, instruction_text, intent.speech, language)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
@@ -1143,6 +1147,146 @@ class HeyPeer:
                 language, "Je n'ai pas réussi à analyser l'écran.",
                 "I couldn't analyze the screen.",
             ), language=language)
+
+    def _run_analyze_code(
+        self, filename: str, question: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Reads `filename` and asks Nemotron to diagnose it - nothing is
+        changed. `question` is the user's own instruction text, so "pourquoi
+        ca plante sur une liste vide ?" gets answered specifically rather
+        than a generic review - see `NemotronClient.diagnose_code`."""
+        resolved = self.watched_dir and resolve_existing_filename(self.watched_dir, filename)
+        if not resolved:
+            self._speak(_bilingual(
+                language, f"Je ne vois pas de fichier {filename}.",
+                f"I can't find the file {filename}.",
+            ), language=language)
+            return
+
+        try:
+            code = (self.watched_dir / resolved).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            self._log(f"Could not read {resolved}: {exc}")
+            self._speak(_bilingual(
+                language, f"Je n'ai pas pu lire {resolved}.", f"I couldn't read {resolved}.",
+            ), language=language)
+            return
+
+        self._speak(narration or _bilingual(
+            language, "Je regarde le code...", "Let me look at the code...",
+        ), language=language)
+        try:
+            diagnosis = self.nemotron.diagnose_code(code, question, language)
+        except Exception as exc:
+            self._log(f"Code diagnosis failed: {exc}")
+            diagnosis = ""
+        if diagnosis:
+            self._speak(diagnosis, language=language)
+        else:
+            self._speak(_bilingual(
+                language, "Je n'ai pas réussi à analyser ce code.",
+                "I couldn't analyze that code.",
+            ), language=language)
+
+    def _run_fix_code(
+        self, filename: str, question: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Dispatches a real coding agent (`executor/coding_agent.py`) to
+        edit `filename` - the one action here with no confirmation gate that
+        genuinely writes code, not a filesystem move. The safety net is the
+        same shape as everywhere else in this project: the file's original
+        content is captured *before* the agent runs and pushed onto the
+        undo stack, so "annule" restores it exactly, whatever the agent did.
+
+        Only tracks the one file the user named - if the agent also touched
+        others while working in the watched directory, those are not
+        captured or undoable from here. Scoping the agent's own reach to
+        just this file is a larger change (`--add-dir`-style restriction,
+        or a fresh worktree per fix) not attempted in this round.
+        """
+        from heypeer.executor import coding_agent
+
+        resolved = self.watched_dir and resolve_existing_filename(self.watched_dir, filename)
+        if not resolved:
+            self._speak(_bilingual(
+                language, f"Je ne vois pas de fichier {filename}.",
+                f"I can't find the file {filename}.",
+            ), language=language)
+            return
+
+        if not coding_agent.is_available():
+            self._log("Coding agent unavailable: 'claude' not found on PATH.")
+            self._speak(_bilingual(
+                language,
+                "Je ne peux pas corriger de code pour l'instant, l'agent de code "
+                "n'est pas installé.",
+                "I can't fix code right now, the coding agent isn't installed.",
+            ), language=language)
+            return
+
+        path = self.watched_dir / resolved
+        try:
+            original_content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            self._log(f"Could not read {resolved}: {exc}")
+            self._speak(_bilingual(
+                language, f"Je n'ai pas pu lire {resolved}.", f"I couldn't read {resolved}.",
+            ), language=language)
+            return
+
+        self._speak(narration or _bilingual(
+            language, "Je regarde le code, ça peut prendre un moment...",
+            "Let me look at the code, this might take a moment...",
+        ), language=language)
+
+        prompt = (
+            f"In the file {resolved}: {question}\n\n"
+            "Explain briefly what was wrong, then fix it. Keep your final summary short."
+        )
+        self.tray.set_status(Status.EXECUTING)
+        try:
+            output = coding_agent.run(prompt, self.watched_dir)
+        except coding_agent.CodingAgentTimedOut:
+            self._log("Coding agent timed out.")
+            self._speak(_bilingual(
+                language, "Ça prend trop de temps, j'abandonne.",
+                "That's taking too long, I'm giving up.",
+            ), language=language)
+            return
+        except Exception as exc:
+            self._log(f"Coding agent failed: {exc}")
+            self._speak(_bilingual(
+                language, "Je n'ai pas réussi à corriger le code.",
+                "I couldn't fix the code.",
+            ), language=language)
+            return
+        finally:
+            self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
+
+        new_content = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None
+        if new_content is None or new_content == original_content:
+            self._speak(_bilingual(
+                language, f"Je n'ai rien changé dans {resolved}.",
+                f"I didn't change anything in {resolved}.",
+            ), language=language)
+            return
+
+        self._undo_stack.push(undo.code_fixed(path, original_content))
+
+        import tempfile
+
+        backup_path = Path(tempfile.gettempdir()) / f"heypeer_before_{resolved}"
+        backup_path.write_text(original_content, encoding="utf-8")
+        coding_agent.open_diff_in_vscode(backup_path, path)
+
+        try:
+            summary = self.nemotron.summarize_for_speech(output, language) if output else ""
+        except Exception as exc:
+            self._log(f"Summarizing the fix failed: {exc}")
+            summary = ""
+        self._speak(summary or _bilingual(
+            language, f"J'ai corrigé {resolved}.", f"I fixed {resolved}.",
+        ), language=language)
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":
         """Where a spoken filename actually points, resolved *before* the

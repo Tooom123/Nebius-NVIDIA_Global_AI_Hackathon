@@ -1783,3 +1783,196 @@ def test_read_screen_capture_failure_is_reported_honestly(
 
     assert fake_tts.call_args_list[-1].args == ("Je n'ai pas pu capturer l'écran.",)
     nemotron.describe_image.assert_not_called()
+
+
+# --- Coding assistant (round 37) --------------------------------------------
+#
+# analyze_code is read-only and low-risk - it just wires diagnose_code, the
+# same shape as read_screen/summarize_document. fix_code is the highest-
+# stakes action in the project: it dispatches a real external agent that
+# writes to disk. These tests focus disproportionately on fix_code's safety
+# properties - the undo entry is pushed, the diff is only opened and the
+# summary only spoken when the file genuinely changed, and every one of the
+# ways the agent dispatch can fail (not installed, times out, silently does
+# nothing) degrades to an honest spoken message rather than a crash or a
+# false "done".
+
+
+def test_analyze_code_speaks_the_diagnosis(tmp_path: Path, fake_tts: MagicMock) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "calc.py").write_text("def f(x):\n    return 1 / x\n")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="analyze_code", skill_id=None, n_repetitions=1,
+        target_name="calc.py", speech="Je regarde le code...",
+    )
+    nemotron.diagnose_code.return_value = "Ca plante si x vaut zero."
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "pourquoi ca plante ?")
+
+    peer.on_wake_word()
+
+    nemotron.diagnose_code.assert_called_once_with(
+        "def f(x):\n    return 1 / x\n", "pourquoi ca plante ?", "fr"
+    )
+    assert fake_tts.call_args_list[-1].args == ("Ca plante si x vaut zero.",)
+
+
+def test_analyze_code_declines_for_an_unknown_file(tmp_path: Path, fake_tts: MagicMock) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="analyze_code", skill_id=None, n_repetitions=1, target_name="introuvable.py",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "analyse introuvable.py")
+
+    peer.on_wake_word()
+
+    fake_tts.assert_called_once_with("Je ne vois pas de fichier introuvable.py.", language="fr")
+    nemotron.diagnose_code.assert_not_called()
+
+
+def test_fix_code_declines_when_the_agent_is_not_installed(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """The realistic, common state for anyone without the Claude Code CLI -
+    must say so honestly, never attempt the dispatch or claim success."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "calc.py").write_text("def f(): return 1/0\n")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="fix_code", skill_id=None, n_repetitions=1, target_name="calc.py",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "corrige calc.py")
+
+    with patch("heypeer.executor.coding_agent.is_available", return_value=False):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_once_with(
+        "Je ne peux pas corriger de code pour l'instant, l'agent de code n'est pas installé.",
+        language="fr",
+    )
+    assert len(peer._undo_stack) == 0
+
+
+def test_fix_code_pushes_an_undo_entry_when_the_file_changes(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    path = watched_dir / "calc.py"
+    path.write_text("def f():\n    return 1 / 0\n")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="fix_code", skill_id=None, n_repetitions=1, target_name="calc.py",
+    )
+    nemotron.summarize_for_speech.return_value = "J'ai remplace 1/0 par 1."
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "corrige calc.py")
+
+    def fake_run(prompt, cwd):
+        path.write_text("def f():\n    return 1\n")  # the agent's edit
+        return "Explained and fixed the division by zero."
+
+    with (
+        patch("heypeer.executor.coding_agent.is_available", return_value=True),
+        patch("heypeer.executor.coding_agent.run", side_effect=fake_run),
+        patch("heypeer.executor.coding_agent.open_diff_in_vscode") as open_diff,
+    ):
+        peer.on_wake_word()
+
+    assert len(peer._undo_stack) == 1
+    entry = peer._undo_stack.pop()
+    entry.undo()
+    assert path.read_text() == "def f():\n    return 1 / 0\n"  # restored
+    open_diff.assert_called_once()
+    assert fake_tts.call_args_list[-1].args == ("J'ai remplace 1/0 par 1.",)
+
+
+def test_fix_code_reports_when_nothing_actually_changed(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """The agent ran but decided there was nothing to fix (or nothing it
+    could do) - no undo entry, no diff, and Hey Peer must not claim a fix
+    that didn't happen."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "calc.py").write_text("def f():\n    return 1\n")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="fix_code", skill_id=None, n_repetitions=1, target_name="calc.py",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "corrige calc.py")
+
+    with (
+        patch("heypeer.executor.coding_agent.is_available", return_value=True),
+        patch("heypeer.executor.coding_agent.run", return_value="Looks fine, no changes needed."),
+        patch("heypeer.executor.coding_agent.open_diff_in_vscode") as open_diff,
+    ):
+        peer.on_wake_word()
+
+    assert len(peer._undo_stack) == 0
+    open_diff.assert_not_called()
+    fake_tts.assert_called_with("Je n'ai rien changé dans calc.py.", language="fr")
+
+
+def test_fix_code_timeout_is_reported_and_does_not_hang(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    from heypeer.executor import coding_agent
+
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    (watched_dir / "calc.py").write_text("def f(): return 1/0\n")
+    nemotron = MagicMock()
+    nemotron.interpret_text.return_value = Intent(
+        action="fix_code", skill_id=None, n_repetitions=1, target_name="calc.py",
+    )
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "corrige calc.py")
+
+    with (
+        patch("heypeer.executor.coding_agent.is_available", return_value=True),
+        patch(
+            "heypeer.executor.coding_agent.run",
+            side_effect=coding_agent.CodingAgentTimedOut("too slow"),
+        ),
+    ):
+        peer.on_wake_word()
+
+    fake_tts.assert_called_with("Ça prend trop de temps, j'abandonne.", language="fr")
+    assert len(peer._undo_stack) == 0
+
+
+def test_undo_after_fix_code_restores_the_file_via_annule(
+    tmp_path: Path, fake_tts: MagicMock
+) -> None:
+    """End to end through the real "annule" path, not just the undo entry
+    in isolation - the same safety net every other action here has."""
+    watched_dir = tmp_path / "Downloads"
+    watched_dir.mkdir()
+    path = watched_dir / "calc.py"
+    original = "def f():\n    return 1 / 0\n"
+    path.write_text(original)
+    nemotron = MagicMock()
+    nemotron.interpret_text.side_effect = [
+        Intent(action="fix_code", skill_id=None, n_repetitions=1, target_name="calc.py"),
+        Intent(action="undo", skill_id=None, n_repetitions=1),
+    ]
+
+    def fake_run(prompt, cwd):
+        path.write_text("def f():\n    return 1\n")
+        return "Fixed."
+
+    it = iter(["corrige calc.py", "annule"])
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: next(it))
+
+    with (
+        patch("heypeer.executor.coding_agent.is_available", return_value=True),
+        patch("heypeer.executor.coding_agent.run", side_effect=fake_run),
+        patch("heypeer.executor.coding_agent.open_diff_in_vscode"),
+    ):
+        peer.on_wake_word()
+        peer.on_wake_word()
+
+    assert path.read_text() == original

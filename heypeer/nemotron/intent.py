@@ -23,6 +23,8 @@ ACTIONS = (
     "clipboard_read",  # "qu'est-ce qu'il y a dans mon presse-papier ?" - no target
     "summarize_document",  # "resume ce pdf" - target_name is the filename
     "read_screen",  # "qu'est-ce qu'il y a sur mon ecran ?" - no target
+    "analyze_code",  # "pourquoi cette fonction plante ?" - target_name is the filename
+    "fix_code",  # "corrige-le", "corrige ce fichier" - target_name is the filename
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -67,6 +69,8 @@ ACTION_DESCRIPTIONS = {
     "clipboard_read": "read the clipboard",
     "summarize_document": "summarize a document",
     "read_screen": "see or read the screen",
+    "analyze_code": "explain what is wrong with some code",
+    "fix_code": "fix code",
 }
 
 
@@ -85,10 +89,11 @@ class Intent:
     new_name: str | None = None
     # "create_file"/"create_folder"/"open_app" (the application name)/
     # "maximize_window"/"minimize_window"/"close_window" (the application
-    # whose window it is)/"summarize_document" (an existing file's name):
-    # the name in question. "adjust_volume" and "adjust_brightness" reuse it
-    # too, for their direction - "up", "down", or (volume only) "mute" -
-    # since these actions have no other target of their own.
+    # whose window it is)/"summarize_document"/"analyze_code"/"fix_code"
+    # (an existing file's name): the name in question. "adjust_volume" and
+    # "adjust_brightness" reuse it too, for their direction - "up", "down",
+    # or (volume only) "mute" - since these actions have no other target of
+    # their own.
     target_name: str | None = None
     # "play_music" and "search_web": what to look for, as one search string.
     # For music, "X par Y" is flattened to "X Y" - the preposition is French

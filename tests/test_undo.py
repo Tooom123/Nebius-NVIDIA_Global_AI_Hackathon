@@ -111,3 +111,23 @@ def test_delete_is_recorded_as_not_undoable_with_a_reason(tmp_path: Path) -> Non
 
     assert entry.undo is None
     assert "corbeille" in entry.not_undoable_reason
+
+
+def test_code_fixed_restores_the_original_content(tmp_path: Path) -> None:
+    """No recycle bin for a code edit the way a delete has one - the whole
+    original content is captured up front and written back outright."""
+    path = tmp_path / "facture.py"
+    path.write_text("def buggy():\n    return 1 / 0\n")
+
+    entry = undo.code_fixed(path, "def buggy():\n    return 1\n")
+    path.write_text("def fixed():\n    return 1\n")  # the agent's edit
+
+    entry.undo()
+
+    assert path.read_text() == "def buggy():\n    return 1\n"
+
+
+def test_code_fixed_description_names_the_file(tmp_path: Path) -> None:
+    entry = undo.code_fixed(tmp_path / "facture.py", "original")
+
+    assert "facture.py" in entry.description
