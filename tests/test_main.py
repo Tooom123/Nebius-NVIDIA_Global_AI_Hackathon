@@ -2268,3 +2268,449 @@ def test_debug_then_fix_is_one_continuous_exchange(tmp_path: Path, fake_tts: Mag
         peer.on_wake_word(followup=True)
 
     assert project_file.read_text() == "def f():\n    return 1\n"
+
+
+def test_speak_arms_barge_in_for_the_duration_of_playback(tmp_path: Path) -> None:
+    """While Hey Peer talks, the wake word must stay live so it can be
+    interrupted - and go back to fully muted once the answer is out."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    listener = MagicMock()
+    peer._wake_listener = listener
+    calls = []
+    listener.mute_except_barge_in.side_effect = lambda: calls.append("barge_in_on")
+    listener.mute.side_effect = lambda: calls.append("muted")
+
+    with patch("heypeer.tray.tts.speak") as speak:
+        speak.side_effect = lambda *a, **k: calls.append("spoke")
+        peer._speak("bonjour")
+
+    assert calls == ["barge_in_on", "spoke", "muted"]
+
+
+def test_speak_hands_the_listener_a_way_to_interrupt(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    listener = MagicMock()
+    peer._wake_listener = listener
+    seen = []
+    with patch("heypeer.tray.tts.speak") as speak:
+        speak.side_effect = lambda *a, **k: seen.append(listener.on_barge_in)
+        peer._speak("bonjour")
+
+    assert seen == [peer._on_barge_in]
+    # ...and it is cleared afterwards, so a later detection can't stop audio
+    # that no longer belongs to this turn.
+    assert listener.on_barge_in is None
+
+
+def test_barge_in_stops_playback(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.tray.audio_out.stop") as stop:
+        peer._on_barge_in()
+    stop.assert_called_once()
+
+
+def test_speak_still_works_with_no_listener_attached(tmp_path: Path) -> None:
+    """The CLI path and tests construct a HeyPeer with no wake listener."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._wake_listener = None
+    with patch("heypeer.tray.tts.speak") as speak:
+        peer._speak("bonjour")
+    speak.assert_called_once()
+
+
+def test_speak_restores_mute_even_if_tts_raises(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    listener = MagicMock()
+    peer._wake_listener = listener
+    with patch("heypeer.tray.tts.speak", side_effect=RuntimeError("no audio device")):
+        peer._speak("bonjour")
+    listener.mute.assert_called_once()
+    assert listener.on_barge_in is None
+
+
+def _reminder_intent(**kwargs) -> Intent:
+    base = dict(action="set_reminder", skill_id=None, n_repetitions=1)
+    base.update(kwargs)
+    return Intent(**base)
+
+
+def test_set_reminder_schedules_and_confirms(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_ensure_countdown"):
+        peer._run_set_reminder("les pâtes", 600, None, "fr")
+    assert len(peer._reminders.active()) == 1
+    assert peer._reminders.active()[0].label == "les pâtes"
+    assert "10 minutes" in speak.call_args.args[0]
+    peer._reminders.clear()
+
+
+def test_set_reminder_refuses_without_a_duration(tmp_path: Path) -> None:
+    """Never silently schedule a guess - a timer with no length is a
+    misunderstanding, not a default."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_set_reminder("les pâtes", None, None, "fr")
+    assert peer._reminders.active() == []
+    assert "durée" in speak.call_args.args[0]
+
+
+def test_set_reminder_says_so_when_there_are_already_too_many(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    from heypeer.executor.reminders import MAX_ACTIVE
+
+    for i in range(MAX_ACTIVE):
+        peer._reminders.add(f"t{i}", 600)
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_ensure_countdown"):
+        peer._run_set_reminder("one too many", 600, None, "fr")
+    assert "trop de minuteurs" in speak.call_args.args[0]
+    peer._reminders.clear()
+
+
+def test_a_reminder_speaks_when_it_comes_due(tmp_path: Path) -> None:
+    """The whole point: it talks with no wake word and no exchange open."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    reminder = MagicMock(label="les pâtes", language="fr")
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_refresh_countdown"):
+        peer._on_reminder_due(reminder)
+    assert "les pâtes" in speak.call_args.args[0]
+
+
+def test_a_due_reminder_does_not_leave_the_microphone_open(tmp_path: Path) -> None:
+    """The user may not even be at the machine - a timer nobody answered
+    must not leave Hey Peer listening."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    reminder = MagicMock(label="", language="fr")
+    with patch.object(peer, "_speak"), patch.object(peer, "_refresh_countdown"), patch.object(
+        peer, "_arm_followup"
+    ) as arm:
+        peer._on_reminder_due(reminder)
+    arm.assert_not_called()
+
+
+def test_cancel_reminder_with_one_running_needs_no_label(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    with patch.object(peer, "_speak"), patch.object(peer, "_refresh_countdown"):
+        peer._run_cancel_reminder(None, None, "fr")
+    assert peer._reminders.active() == []
+
+
+def test_cancel_reminder_asks_which_when_several_are_running(tmp_path: Path) -> None:
+    """Cancelling the wrong timer silently is worse than asking."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    peer._reminders.add("la lessive", 900)
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_arm_followup") as arm:
+        peer._run_cancel_reminder(None, None, "fr")
+    assert len(peer._reminders.active()) == 2, "nothing should have been cancelled"
+    assert "Lequel" in speak.call_args.args[0]
+    arm.assert_called_once()
+    peer._reminders.clear()
+
+
+def test_cancel_reminder_matches_a_named_one_among_several(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    peer._reminders.add("la lessive", 900)
+    with patch.object(peer, "_speak"), patch.object(peer, "_refresh_countdown"):
+        peer._run_cancel_reminder("les pâtes", None, "fr")
+    assert [r.label for r in peer._reminders.active()] == ["la lessive"]
+    peer._reminders.clear()
+
+
+def test_cancel_reminder_with_nothing_running_says_so(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_cancel_reminder(None, None, "fr")
+    assert "aucun minuteur" in speak.call_args.args[0]
+
+
+def test_list_reminders_reads_back_what_is_left(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_list_reminders("fr")
+    spoken = speak.call_args.args[0]
+    assert "les pâtes" in spoken and "minutes" in spoken
+    peer._reminders.clear()
+
+
+def test_list_reminders_with_nothing_running(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_list_reminders("fr")
+    assert "aucun minuteur" in speak.call_args.args[0]
+
+
+def test_quitting_cancels_pending_timers(tmp_path: Path) -> None:
+    """A daemon timer firing into a half-shut-down app would try to speak
+    through an audio stack that is going away."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    peer._on_quit()
+    assert peer._reminders.active() == []
+
+
+def test_set_reminder_dispatches_from_an_intent(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    intent = _reminder_intent(content="les pâtes", duration_seconds=600, speech="C'est noté.")
+    with patch.object(peer, "_run_set_reminder") as run:
+        peer._dispatch_intent(intent, "mets un minuteur")
+    run.assert_called_once_with("les pâtes", 600, "C'est noté.", "fr")
+
+
+def test_running_a_routine_dispatches_each_step(tmp_path: Path) -> None:
+    """Steps are re-interpreted rather than replayed, so each one means what
+    it would mean if spoken directly."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(name="r", steps=["mets de la musique", "ouvre Slack"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret"
+    ) as interpret, patch.object(peer, "_dispatch_intent") as dispatch:
+        peer._run_run_routine("matin", "fr")
+    assert interpret.call_count == 2
+    assert [c.args[0] for c in interpret.call_args_list] == [
+        "mets de la musique",
+        "ouvre Slack",
+    ]
+    assert dispatch.call_count == 2
+
+
+def test_a_routine_cannot_run_another_routine(tmp_path: Path) -> None:
+    """Without the guard, a routine whose step is "lance ma routine du
+    matin" loops unboundedly, speaking and acting all the way down."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._in_routine = True
+    with patch("heypeer.executor.routines.find") as find, patch.object(peer, "_speak") as speak:
+        peer._run_run_routine("matin", "fr")
+    find.assert_not_called()
+    assert "routine" in speak.call_args.args[0].lower()
+
+
+def test_the_routine_guard_is_released_afterwards(tmp_path: Path) -> None:
+    """Otherwise the first routine of a session would be the only one."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(steps=["ouvre Slack"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret"
+    ), patch.object(peer, "_dispatch_intent"):
+        peer._run_run_routine("matin", "fr")
+    assert peer._in_routine is False
+
+
+def test_a_failing_step_does_not_abandon_the_rest(tmp_path: Path) -> None:
+    """A routine is several independent things; stopping at the first
+    problem would silently drop everything after it."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(steps=["step one", "step two", "step three"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret", side_effect=[RuntimeError("boom"), MagicMock(), MagicMock()]
+    ), patch.object(peer, "_dispatch_intent") as dispatch:
+        peer._run_run_routine("matin", "fr")
+    assert dispatch.call_count == 2, "later steps should still have run"
+
+
+def test_the_guard_is_released_even_if_a_step_explodes(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(steps=["boom"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret", side_effect=RuntimeError("boom")
+    ):
+        peer._run_run_routine("matin", "fr")
+    assert peer._in_routine is False
+
+
+def test_running_an_unknown_routine_says_so(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.find", return_value=None), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_run_routine("inconnue", "fr")
+    assert "inconnue" in speak.call_args.args[0]
+
+
+def test_creating_a_routine_needs_a_name_and_steps(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.remember") as remember, patch.object(
+        peer, "_speak"
+    ):
+        peer._run_create_routine("matin", None, None, "fr")
+        peer._run_create_routine(None, ["a"], None, "fr")
+    remember.assert_not_called()
+
+
+def test_creating_a_routine_confirms_with_its_size(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    saved = MagicMock(steps=["a", "b"])
+    saved.name = "matin"
+    with patch("heypeer.executor.routines.remember", return_value=saved), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_create_routine("matin", ["a", "b"], None, "fr")
+    assert "2" in speak.call_args.args[0]
+
+
+def test_listing_routines_when_there_are_none(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.names", return_value=[]), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_list_routines("fr")
+    assert "pas encore" in speak.call_args.args[0]
+
+
+def test_listing_routines_reads_the_names(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.names", return_value=["matin", "boulot"]), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_list_routines("fr")
+    assert "matin" in speak.call_args.args[0] and "boulot" in speak.call_args.args[0]
+
+
+def test_listen_to_screen_says_so_when_unsupported(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=False), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_listen_to_screen("qu'est-ce qu'ils disent ?", None, "fr")
+    assert "son de l'ordinateur" in speak.call_args.args[0]
+
+
+def test_listen_to_screen_transcribes_locally_then_asks_about_the_text(tmp_path: Path) -> None:
+    """The audio must never leave the machine just because the user asked
+    what was said - only the transcript goes to the model."""
+    nemotron = MagicMock()
+    nemotron.answer_about_text.return_value = "Ils parlent du budget."
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=True), patch(
+        "heypeer.executor.system_audio.capture", return_value=b"\x01\x00" * 100
+    ), patch("heypeer.wakeword.stt.transcribe", return_value="on parle du budget"), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_listen_to_screen("qu'est-ce qu'ils disent ?", None, "fr")
+    nemotron.answer_about_text.assert_called_once()
+    assert nemotron.answer_about_text.call_args.args[0] == "on parle du budget"
+    assert speak.call_args.args[0] == "Ils parlent du budget."
+
+
+def test_silence_is_reported_as_silence_not_as_a_failure(tmp_path: Path) -> None:
+    """Nothing playing is the likely case, and it is not an error."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=True), patch(
+        "heypeer.executor.system_audio.capture", return_value=b"\x00\x00" * 100
+    ), patch("heypeer.wakeword.stt.transcribe", return_value="   "), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_listen_to_screen("quoi ?", None, "fr")
+    assert "rien entendu" in speak.call_args.args[0]
+    nemotron.answer_about_text.assert_not_called()
+
+
+def test_a_capture_failure_is_reported_honestly(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=True), patch(
+        "heypeer.executor.system_audio.capture", side_effect=RuntimeError("no device")
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_listen_to_screen("quoi ?", None, "fr")
+    assert "capter le son" in speak.call_args.args[0]
+
+
+def test_acknowledgements_are_not_captioned() -> None:
+    """A panel repeating a word the user just heard, dozens of times a day,
+    is worse than no panel."""
+    from heypeer.main import _should_caption
+
+    assert _should_caption("C'est fait.") is False
+    assert _should_caption("J'ouvre Spotify.") is False
+    assert _should_caption("") is False
+
+
+def test_answers_with_content_are_captioned() -> None:
+    from heypeer.main import _should_caption
+
+    assert _should_caption(
+        "La fonction plante sur une liste vide, parce que la division "
+        "par zéro n'est pas gérée."
+    ) is True
+
+
+def test_questions_are_always_captioned_however_short() -> None:
+    """The one kind of line the user has to act on - and it is short
+    precisely because it is a prompt."""
+    from heypeer.main import _should_caption
+
+    assert _should_caption("Vers quel dossier ?") is True
+
+
+def test_speaking_a_long_answer_shows_a_caption(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_caption") as caption:
+        peer._speak("La fonction plante sur une liste vide parce que la division échoue.")
+    caption.assert_called_once()
+
+
+def test_speaking_an_acknowledgement_shows_no_caption(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_caption") as caption:
+        peer._speak("C'est fait.")
+    caption.assert_not_called()
+
+
+def test_a_caption_failure_never_stops_hey_peer_speaking(tmp_path: Path) -> None:
+    """The panel is a convenience; speech is the product."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch(
+        "heypeer.tray.caption_window.CaptionWindow", side_effect=RuntimeError("no display")
+    ), patch("heypeer.tray.tts.speak") as speak:
+        peer._speak("La fonction plante sur une liste vide parce que la division échoue.")
+    speak.assert_called_once()
+
+
+def test_a_failed_caption_window_is_not_retried_every_answer(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch(
+        "heypeer.tray.caption_window.CaptionWindow", side_effect=RuntimeError("no display")
+    ) as window:
+        peer._show_caption("une phrase assez longue pour être affichée à l'écran")
+        peer._show_caption("une autre phrase assez longue pour être affichée")
+    assert window.call_count == 1

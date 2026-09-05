@@ -134,6 +134,35 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in NEBIUS_API_KEY
 ```
 
+One capability is an opt-in extra rather than a default install: listening
+to what the computer is *playing* ("resume ce que dit cette video") needs
+WASAPI loopback, which is Windows-only and ships in a separate package.
+
+```bash
+pip install pyaudiowpatch   # Windows only; everything else works without it
+```
+
+Without it Hey Peer says it cannot listen to system audio, and nothing else
+changes. It is deliberately not in `requirements.txt`: the package has no
+macOS or Linux wheel, so requiring it would break `pip install` for
+everyone not on Windows.
+
+## Previewing the indicator without running the app
+
+Iterating on the blob used to mean launching Hey Peer on a real Windows
+machine and saying the wake word to see two seconds of animation. This
+renders the same frames straight to a video file:
+
+```bash
+python -m heypeer.tray.blob_preview --state speaking --seconds 3
+python -m heypeer.tray.blob_preview --all-states      # one file per state
+python -m heypeer.tray.blob_preview --state idle --level 0.0   # pin the mic level
+```
+
+MP4 when `ffmpeg` is on PATH, animated GIF otherwise. Every parameter comes
+from the live indicator's own constants, so the preview cannot drift from
+what the app actually draws.
+
 ## Running
 
 ```bash
@@ -294,7 +323,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 486 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 623 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.

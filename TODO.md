@@ -2769,6 +2769,48 @@ accepted in round 39, not a new regression - checked rather than assumed.
 
 486 tests.
 
+## Round 41+: closing the gap with mainstream voice assistants (2026-09-05)
+
+Researched what always-on desktop assistants and Siri-likes actually ship,
+and what users complain about, then checked each finding against this code
+rather than assuming. Chosen from that list by the user, in this order:
+
+- [x] **1. Barge-in** - interrupt Hey Peer while it is speaking. The most
+      cited voice-assistant complaint of 2026. `tts.speak` synthesises the
+      whole utterance then hands it to `audio_out.play`, which does a single
+      blocking `stream.write(samples)`: there is no way to stop it. Needs
+      chunked playback plus a stop signal.
+- [x] **2. Reminders, timers and alarms**, with a real on-screen countdown -
+      the single most-used voice-assistant feature in every comparison
+      found, and Hey Peer cannot do it at all. Needs a scheduler that
+      outlives the exchange and can *speak without a wake word*.
+- [x] **3. VAD / end-of-turn detection** - users report this as "it doesn't
+      know when I've finished talking", not as latency. Already listed far
+      above as an optional wake-word item; promoted here on that evidence.
+- [x] **4. Calendar and email** - Google Assistant's core strength and
+      Siri's "personal context". Table stakes, not a bonus.
+- [x] **5. Named routines** ("lance ma routine du matin") - Alexa's pillar
+      feature. Note: an *auto-learned* version was built and deliberately
+      deleted (see main.py's module docstring); this is the explicit,
+      user-named kind, which avoids all three reasons that one failed.
+- [x] **7. System audio capture (loopback)** - hear what the machine is
+      playing, not just the microphone. Unlocks "resume ce que dit cette
+      video" and meeting notes.
+- [x] **8. Visual overlay** - show the answer as well as speak it. The blob
+      is already an on-screen surface to build on.
+- [x] **Dev tool: render the blob to a video without launching the app**, so
+      its animation can be iterated on quickly in conversation instead of
+      requiring a full run on real hardware.
+
+Skipped deliberately: smart-home control (assumes the user owns devices).
+
+Worth recording from the research, because it cuts against copying these
+products wholesale: PyGPT, OpenHuman and Home Assistant are all either
+chat-with-voice-bolted-on or home automation. None of them drive the
+workstation itself - files, windows, clipboard, code diagnosis by vision -
+which is what Hey Peer already does. Items 7 and 8 were picked because they
+widen that gap rather than close someone else's.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

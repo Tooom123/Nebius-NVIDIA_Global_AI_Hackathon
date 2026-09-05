@@ -12,6 +12,7 @@ dist/
 data/skills/*.json
 data/skills/*.db
 data/memory.json
+data/routines.json
 # The trained "Hey Peer" classifier head is tiny (~16 KB) and is a real,
 # needed deliverable, so it's tracked despite the rule below — everything
 # else under data/wakeword/ (large Piper voice models, generated training

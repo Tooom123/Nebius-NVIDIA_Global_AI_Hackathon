@@ -60,7 +60,7 @@ from pathlib import Path
 import numpy as np
 
 from heypeer.config import load_settings
-from heypeer.executor import undo
+from heypeer.executor import reminders, undo
 from heypeer.executor.runner import (
     ExecutionAborted,
     create_file,
@@ -107,6 +107,34 @@ def _default_get_instruction() -> str:
 # Values Nemotron returns to mean "I couldn't determine this" — they must
 # never be taken literally as a file/folder name (see `_has_placeholder_name`).
 _PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
+
+
+# An answer shorter than this is an acknowledgement - "c'est fait", "j'ouvre
+# Spotify" - which the user just heard and does not need to re-read. Above
+# it there is content: a diagnosis, a summary, something read back. Measured
+# in words rather than characters so one long filename doesn't promote an
+# acknowledgement into a caption.
+CAPTION_MIN_WORDS = 7
+
+
+def _should_caption(text: str) -> bool:
+    """Whether a spoken line is worth also putting on screen.
+
+    Captioning everything would put a panel up dozens of times a day to
+    repeat a word the user already heard; captioning nothing loses the
+    answers that actually have content - a code diagnosis, a clipboard read
+    back, a summary - the moment they finish playing.
+
+    A question is always captioned regardless of length: it is the one kind
+    of line the user has to act on, and "vers quel dossier ?" is short
+    precisely because it is a prompt.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    if text.endswith("?"):
+        return True
+    return len(text.split()) >= CAPTION_MIN_WORDS
 
 
 def _bilingual(language: str, french: str, english: str) -> str:
@@ -186,6 +214,22 @@ class HeyPeer:
         # this run. It applies to every music request, and repeating it would
         # bury the line saying what actually happened.
         self._spotify_hint_shown = False
+        # Live timers. Owned here, not by the exchange: a reminder is the
+        # first thing in this app that outlives the turn that created it and
+        # then speaks on its own, with no wake word. See executor/reminders.py.
+        self._reminders = reminders.ReminderStore(on_fire=self._on_reminder_due)
+        # The countdown pill, and the thread that keeps it ticking. Both are
+        # created lazily, when a first timer is actually set: a user who
+        # never sets one should not pay for a window process at all.
+        self._countdown_window = None
+        self._countdown_stop: "threading.Event | None" = None
+        # True only while a routine's steps are being dispatched, so a
+        # routine cannot run another one - see `_run_run_routine`.
+        self._in_routine = False
+        # The on-screen caption panel, created on first use. `_caption_failed`
+        # stops a machine that cannot show one from retrying every answer.
+        self._caption_window = None
+        self._caption_failed = False
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -262,8 +306,17 @@ class HeyPeer:
         intent.py`); callers pass that straight through so what gets *said*
         matches what got *written* - answering in English text but reading
         it with the French voice would still sound wrong, just differently."""
+        if _should_caption(text):
+            self._show_caption(text)
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
+        listener = self._wake_listener
+        if listener is not None:
+            # Keep scoring the wake word for the duration of playback, so
+            # "Hey Peer" spoken over the answer cuts it off. Turn-taking
+            # stays muted throughout - see `mute_except_barge_in`.
+            listener.on_barge_in = self._on_barge_in
+            listener.mute_except_barge_in()
         try:
             from heypeer.tray.tts import speak
 
@@ -271,8 +324,406 @@ class HeyPeer:
         except Exception as exc:
             print(f"[tts] Speak failed: {exc}")
         finally:
+            if listener is not None:
+                listener.on_barge_in = None
+                listener.mute()  # back to fully muted for the rest of the turn
             if self.debug_window is not None:
                 self.debug_window.set_state("listening")
+
+    def _ensure_countdown(self) -> None:
+        """Starts the countdown window and its tick thread on first use.
+
+        Lazily, because most sessions never set a timer and a window process
+        that only ever draws nothing is pure cost. Cosmetic throughout: if
+        the window cannot be created (no display, not Windows), timers still
+        fire and still speak - they just do it invisibly."""
+        if self._countdown_window is not None:
+            return
+        try:
+            from heypeer.tray.countdown_window import CountdownDriver, CountdownWindow
+
+            self._countdown_window = CountdownWindow()
+            self._countdown_stop = threading.Event()
+            driver = CountdownDriver(self._reminders, self._countdown_window)
+            thread = threading.Thread(
+                target=driver.run_forever, args=(self._countdown_stop,), daemon=True
+            )
+            thread.start()
+        except Exception as exc:
+            self._log(f"Countdown display unavailable: {exc}")
+            self._countdown_window = None
+
+    def _refresh_countdown(self) -> None:
+        """Pushes the current timers to the pill straight away, rather than
+        waiting up to a tick - so it appears the moment one is set and
+        disappears the moment the last is cancelled."""
+        if self._countdown_window is None:
+            return
+        try:
+            from heypeer.tray.countdown_window import CountdownDriver
+
+            CountdownDriver(self._reminders, self._countdown_window).refresh()
+        except Exception:
+            pass
+
+    def _on_reminder_due(self, reminder) -> None:
+        """A timer came due. Runs on its own thread, with no exchange open
+        and nobody having said a wake word - the only place in this app that
+        speaks entirely unprompted.
+
+        Deliberately does not open a follow-up window. The user may well not
+        be at the machine, and leaving the microphone live on a timer nobody
+        answered is exactly the kind of always-listening behaviour this
+        project avoids elsewhere."""
+        language = reminder.language or "fr"
+        if reminder.label:
+            message = _bilingual(
+                language,
+                f"C'est l'heure : {reminder.label}.",
+                f"Time's up: {reminder.label}.",
+            )
+        else:
+            message = _bilingual(language, "C'est l'heure.", "Time's up.")
+        self._log(f"Reminder due: {reminder.label or '(no label)'}")
+        self._speak(message, language=language)
+        self._refresh_countdown()
+
+    def _run_set_reminder(
+        self,
+        label: "str | None",
+        duration_seconds: "float | None",
+        narration: "str | None",
+        language: str = "fr",
+    ) -> None:
+        from heypeer.executor.reminders import format_duration
+
+        if not duration_seconds or duration_seconds <= 0:
+            # Nemotron is told to "ask" when no duration was given, so this
+            # is the belt-and-braces case: never silently schedule a guess.
+            self._speak(
+                _bilingual(
+                    language,
+                    "Il me faut une durée pour le minuteur.",
+                    "I need a duration for that timer.",
+                ),
+                language=language,
+            )
+            return
+
+        reminder = self._reminders.add(label or "", duration_seconds, language)
+        if reminder is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    "Tu as déjà trop de minuteurs en cours.",
+                    "You already have too many timers running.",
+                ),
+                language=language,
+            )
+            return
+
+        self._ensure_countdown()
+        self._refresh_countdown()
+        spoken = format_duration(duration_seconds, language)
+        self._speak(
+            narration
+            or _bilingual(language, f"C'est noté, dans {spoken}.", f"Got it, in {spoken}."),
+            language=language,
+        )
+
+    def _run_cancel_reminder(
+        self, label: "str | None", narration: "str | None", language: str = "fr"
+    ) -> None:
+        active = self._reminders.active()
+        if not active:
+            self._speak(
+                _bilingual(language, "Tu n'as aucun minuteur en cours.", "You have no timers running."),
+                language=language,
+            )
+            return
+
+        if label:
+            cancelled = self._reminders.cancel_matching(label)
+        elif len(active) == 1:
+            # "annule le minuteur" with exactly one running is unambiguous.
+            cancelled = self._reminders.cancel(active[0].id)
+        else:
+            # Several running and nothing to tell them apart: say what there
+            # is rather than cancelling the wrong one.
+            names = ", ".join(r.label or "sans nom" for r in active)
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Tu en as plusieurs : {names}. Lequel ?",
+                    f"You have several: {names}. Which one?",
+                ),
+                language=language,
+            )
+            self._arm_followup(CONVERSATION_WINDOW_SECONDS)
+            return
+
+        self._refresh_countdown()
+        if cancelled is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Je n'ai pas de minuteur pour {label}.",
+                    f"I can't find a timer for {label}.",
+                ),
+                language=language,
+            )
+            return
+        self._speak(
+            narration or _bilingual(language, "C'est annulé.", "Cancelled."),
+            language=language,
+        )
+
+    def _run_list_reminders(self, language: str = "fr") -> None:
+        from heypeer.executor.reminders import format_duration
+
+        active = self._reminders.active()
+        if not active:
+            self._speak(
+                _bilingual(language, "Tu n'as aucun minuteur en cours.", "You have no timers running."),
+                language=language,
+            )
+            return
+
+        parts = []
+        for reminder in active:
+            left = format_duration(reminder.remaining(), language)
+            if reminder.label:
+                parts.append(
+                    _bilingual(language, f"{left} pour {reminder.label}", f"{left} for {reminder.label}")
+                )
+            else:
+                parts.append(left)
+        self._speak(", ".join(parts) + ".", language=language)
+
+    # How long to listen to system audio for. Long enough to catch a
+    # sentence or two of a video, short enough that the user is not left
+    # waiting wondering whether it heard them.
+    LISTEN_SECONDS = 12.0
+
+    def _run_listen_to_screen(
+        self, question: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Captures what the machine is playing, transcribes it locally, and
+        answers `question` about it.
+
+        Transcription is local (the same Whisper the microphone path uses),
+        so audio the user was merely listening to never leaves the machine
+        just because they asked what was said. Only the resulting text goes
+        to the model, exactly as with a document or the clipboard.
+        """
+        from heypeer.executor import system_audio
+
+        if not system_audio.is_available():
+            self._log("System audio capture unavailable.")
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je ne peux pas écouter le son de l'ordinateur sur cette machine.",
+                    "I can't listen to this computer's audio on this machine.",
+                ),
+                language=language,
+            )
+            return
+
+        self._speak(
+            narration or _bilingual(language, "J'écoute...", "Listening..."),
+            language=language,
+        )
+        try:
+            raw = system_audio.capture(self.LISTEN_SECONDS)
+        except Exception as exc:
+            self._log(f"System audio capture failed: {exc}")
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je n'ai pas réussi à capter le son.",
+                    "I couldn't capture the audio.",
+                ),
+                language=language,
+            )
+            return
+
+        text = ""
+        if raw:
+            try:
+                import numpy as np
+
+                from heypeer.wakeword.stt import transcribe
+
+                text = transcribe(np.frombuffer(raw, dtype=np.int16))
+            except Exception as exc:
+                self._log(f"Transcribing system audio failed: {exc}")
+
+        if not text.strip():
+            # Silence is the likely case when nothing is actually playing,
+            # and it must not be reported as a transcription failure.
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je n'ai rien entendu, il n'y a peut-être rien en cours de lecture.",
+                    "I didn't hear anything - maybe nothing is playing.",
+                ),
+                language=language,
+            )
+            return
+
+        self._log(f"Heard: {text[:200]}")
+        try:
+            answer = self.nemotron.answer_about_text(text, question, language)
+        except Exception as exc:
+            self._log(f"Answering about the captured audio failed: {exc}")
+            answer = ""
+        self._speak(
+            answer
+            or _bilingual(
+                language,
+                "Je n'ai pas réussi à analyser ce que j'ai entendu.",
+                "I couldn't make sense of what I heard.",
+            ),
+            language=language,
+        )
+
+    def _run_create_routine(
+        self,
+        name: "str | None",
+        steps: "list[str] | None",
+        narration: "str | None",
+        language: str = "fr",
+    ) -> None:
+        from heypeer.executor import routines as routine_store
+
+        if not name or not steps:
+            self._speak(
+                _bilingual(
+                    language,
+                    "Il me faut un nom et au moins une étape.",
+                    "I need a name and at least one step.",
+                ),
+                language=language,
+            )
+            return
+
+        routine = routine_store.remember(name, steps)
+        if routine is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je n'ai pas réussi à enregistrer cette routine.",
+                    "I couldn't save that routine.",
+                ),
+                language=language,
+            )
+            return
+        self._log(f"Routine saved: {routine.name} ({len(routine.steps)} steps)")
+        self._speak(
+            narration
+            or _bilingual(
+                language,
+                f"C'est enregistré, {len(routine.steps)} étapes.",
+                f"Saved, {len(routine.steps)} steps.",
+            ),
+            language=language,
+        )
+
+    def _run_run_routine(self, name: "str | None", language: str = "fr") -> None:
+        """Runs each step by feeding it back through the ordinary
+        interpret-and-dispatch path, so a step means the same thing it would
+        if spoken directly.
+
+        `_in_routine` guards against a routine whose step is "lance ma
+        routine du matin" - directly or through another routine. Without it
+        that is an unbounded loop that speaks and acts the whole way down.
+        """
+        from heypeer.executor import routines as routine_store
+
+        if getattr(self, "_in_routine", False):
+            self._log("Refusing to run a routine from inside a routine.")
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je ne peux pas lancer une routine depuis une routine.",
+                    "I can't run a routine from inside a routine.",
+                ),
+                language=language,
+            )
+            return
+
+        routine = routine_store.find(name or "")
+        if routine is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Je n'ai pas de routine qui s'appelle {name}.",
+                    f"I don't have a routine called {name}.",
+                ),
+                language=language,
+            )
+            return
+
+        self._log(f"Running routine: {routine.name}")
+        self._in_routine = True
+        try:
+            for step in routine.steps:
+                self._log(f"  step: {step}")
+                try:
+                    intent = self._interpret(step)
+                    self._dispatch_intent(intent, step)
+                except Exception as exc:
+                    # One failed step must not abandon the rest: a routine is
+                    # several independent things, and stopping at the first
+                    # problem would silently drop everything after it.
+                    self._log(f"  step failed: {exc}")
+        finally:
+            self._in_routine = False
+
+    def _run_list_routines(self, language: str = "fr") -> None:
+        from heypeer.executor import routines as routine_store
+
+        names = routine_store.names()
+        if not names:
+            self._speak(
+                _bilingual(language, "Tu n'as pas encore de routine.", "You have no routines yet."),
+                language=language,
+            )
+            return
+        self._speak(", ".join(names) + ".", language=language)
+
+    def _show_caption(self, text: str) -> None:
+        """Puts `text` on screen alongside speaking it. Created on first use
+        and never required: if the window cannot start, this logs once and
+        Hey Peer carries on speaking exactly as before."""
+        if self._caption_window is None:
+            if self._caption_failed:
+                return
+            try:
+                from heypeer.tray.caption_window import CaptionWindow
+
+                self._caption_window = CaptionWindow()
+            except Exception as exc:
+                self._caption_failed = True
+                self._log(f"Caption display unavailable: {exc}")
+                return
+        try:
+            self._caption_window.show(text)
+        except Exception:
+            pass
+
+    def _on_barge_in(self) -> None:
+        """The wake word fired while Hey Peer was talking: stop talking.
+
+        Only stops playback. The turn it belonged to carries on - an action
+        that was already narrated has usually already run - and the user's
+        actual next instruction arrives through the ordinary path once the
+        turn releases the listener, so there is nothing to queue here."""
+        from heypeer.tray import audio_out
+
+        self._log("Barge-in: stopping playback.")
+        audio_out.stop()
 
     def _speak_async(self, text: str, language: "str | None" = "fr") -> None:
         """Speaks without blocking the caller. Used for narration that
@@ -510,6 +961,18 @@ class HeyPeer:
 
     def _on_quit(self) -> None:
         self._stop_voice()
+        # Cancel pending timers before anything else is torn down: a daemon
+        # timer thread firing into a half-shut-down app would try to speak
+        # through an audio stack that is going away.
+        self._reminders.clear()
+        if self._countdown_stop is not None:
+            self._countdown_stop.set()
+        if self._countdown_window is not None:
+            self._countdown_window.close()
+            self._countdown_window = None
+        if self._caption_window is not None:
+            self._caption_window.close()
+            self._caption_window = None
         self._detections.put(_SHUTDOWN)  # unblocks a consumer loop waiting on detections
 
     def _watched_files(self) -> list[str] | None:
@@ -595,6 +1058,7 @@ class HeyPeer:
                 return fast
 
         from heypeer import memory as memory_store
+        from heypeer.executor import routines as routine_store
 
         return self.nemotron.interpret_text(
             instruction_text,
@@ -603,6 +1067,7 @@ class HeyPeer:
             watched_folders=self._watched_folders(),
             history=list(self._history),
             memory=memory_store.as_context(),
+            routines=routine_store.names(),
         )
 
     def _interpret_audio(
@@ -759,6 +1224,24 @@ class HeyPeer:
             self._run_remember_fact(intent.content, intent.speech, language)
         elif intent.action == "general_task" and intent.content:
             self._run_general_task(intent.content, intent.speech, language)
+        elif intent.action == "set_reminder":
+            self._run_set_reminder(
+                intent.content, intent.duration_seconds, intent.speech, language
+            )
+        elif intent.action == "cancel_reminder":
+            self._run_cancel_reminder(intent.content, intent.speech, language)
+        elif intent.action == "list_reminders":
+            self._run_list_reminders(language)
+        elif intent.action == "create_routine":
+            self._run_create_routine(intent.target_name, intent.steps, intent.speech, language)
+        elif intent.action == "run_routine":
+            self._run_run_routine(intent.target_name, language)
+        elif intent.action == "list_routines":
+            self._run_list_routines(language)
+        elif intent.action == "listen_to_screen":
+            self._run_listen_to_screen(
+                intent.question or instruction_text, intent.speech, language
+            )
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
@@ -1388,6 +1871,7 @@ class HeyPeer:
         permissions problem) must degrade to an honest spoken message
         rather than silently claiming to remember something it did not."""
         from heypeer import memory as memory_store
+        from heypeer.executor import routines as routine_store
 
         try:
             memory_store.remember(fact)

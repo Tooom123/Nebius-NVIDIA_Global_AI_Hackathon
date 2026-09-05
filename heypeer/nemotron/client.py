@@ -340,6 +340,78 @@ read back weeks from now with no other context - not \"vendredi\" alone, \
   a fresh launch of the app, in an exchange that has not started yet - not
   just for the rest of this conversation.
 
+- Set a timer or a reminder (e.g. "mets un minuteur de 10 minutes", \
+"rappelle-moi dans un quart d'heure", "previens-moi dans 2 minutes pour les \
+pates", "reveille-moi dans une heure"):
+  {"action": "set_reminder", \
+"duration_seconds": <how long from now, in seconds, as a number - you do \
+the arithmetic: "10 minutes" is 600, "un quart d'heure" is 900, "une heure \
+et demie" is 5400>, \
+"content": "<what it is for, if they said - \"les pates\" for \"previens-moi \
+dans 2 minutes pour les pates\". Empty string when they just asked for a \
+timer with no reason given - never invent one>", \
+"speech": "<one short sentence confirming it, e.g. \"C'est note, dans 10 \
+minutes.\">", "end_turn": true}
+  If they gave no duration at all ("mets un minuteur"), use "ask" for it -
+  a timer needs a length, and guessing one is worse than asking.
+  A time of day rather than a delay ("reveille-moi a 7h") is not this yet:
+  answer with "reply" that you only do delays from now for the moment.
+
+- Cancel a timer that is running (e.g. "annule le minuteur", "arrete le \
+minuteur des pates", "laisse tomber le rappel"):
+  {"action": "cancel_reminder", \
+"content": "<which one, in the user's own words - \"les pates\". Empty \
+string for \"annule le minuteur\" with nothing to distinguish it>", \
+"speech": "<one short sentence, e.g. \"C'est annule.\">", "end_turn": true}
+
+- Say what is left on a running timer (e.g. "il reste combien de temps ?", \
+"c'est quoi mes minuteurs ?", "ou en est le minuteur des pates ?"):
+  {"action": "list_reminders", "speech": null, "end_turn": true}
+  Leave "speech" null: the time left is read from the running timers after
+  this JSON, and any sentence written here would be a guess at a number you
+  do not have.
+
+- Create a named routine: one phrase the user wants to stand for several \
+things at once (e.g. "quand je dis routine du matin, mets de la musique et \
+dis-moi mes rendez-vous", "cree une routine boulot qui ouvre VS Code et \
+Slack"):
+  {"action": "create_routine", \
+"target_name": "<what they want to call it, as they said it - \"routine du \
+matin\", \"boulot\">", \
+"steps": ["<each thing to do, as a plain spoken instruction, exactly the \
+way the user would say it on its own - \"mets de la musique\", \"ouvre VS \
+Code\">"], \
+"speech": "<one short sentence, e.g. \"C'est enregistre.\">", \
+"end_turn": true}
+  Write each step so it would work as a standalone instruction to you, not
+  as a fragment: "ouvre Spotify", never "et puis Spotify". If they named a
+  routine but gave no steps, use "ask".
+
+- Run a routine they already have (e.g. "lance ma routine du matin", \
+"routine boulot"). The routines that exist are listed for you as "Routines \
+you know" - only ever use this action for a name in that list:
+  {"action": "run_routine", \
+"target_name": "<which one, matching a name from that list>", \
+"speech": null, "end_turn": true}
+  Leave "speech" null: each step announces itself as it runs, and a
+  sentence here would talk over the first one.
+
+- Say which routines exist (e.g. "c'est quoi mes routines ?", "qu'est-ce \
+que tu sais faire en routine ?"):
+  {"action": "list_routines", "speech": null, "end_turn": true}
+
+- Listen to what the computer is currently playing and answer about it \
+(e.g. "qu'est-ce qu'elle dit dans cette video ?", "resume ce qui se dit \
+la", "j'ai rate la derniere phrase, c'etait quoi ?"):
+  {"action": "listen_to_screen", \
+"question": "<what the user wants to know about it, in their own words>", \
+"speech": "<one short sentence, e.g. \"J'ecoute...\">", "end_turn": true}
+  This captures the sound the machine is playing, not the microphone - it
+  is for a video, a call or a track already running, never for something
+  said out loud in the room. You do not have the audio while writing this
+  JSON; it is captured and answered afterwards, so never guess at what was
+  said here.
+
 - Carry out a general, multi-step task with no action above for it, that a \
 capable assistant with broader tools (web research, scheduling, browsing \
 and interacting with a website - clicking, filling a form, navigating - or \
@@ -352,7 +424,10 @@ because they need to actually look at a page and act inside it, which \
 opening an application by name does not do. Also for anything else with no \
 more specific action: "cherche les meilleurs vols pour Paris le mois \
 prochain et fais-moi un resume", "programme un rappel chaque lundi pour \
-faire le point". Do not use this for anything an action above already \
+faire le point". Email and calendar live here too: "lis mes derniers \
+mails", "reponds a Marc que je serai en retard", "qu'est-ce que j'ai \
+demain", "ajoute un rendez-vous avec Sophie jeudi a 14h" - needing a login \
+does not make them refusals. Do not use this for anything an action above already \
 covers - moving a file, playing music, opening an app by itself, or a \
 plain web search with nothing to click, all have their own, more specific \
 action:
@@ -421,18 +496,28 @@ extension, keep the original file's.
 ## Things you cannot do yet
 
 This action list will grow. When the user asks for something with no action
-above for it - send a message or an email, edit prose or data inside a
-document (code is different - see "fix_code" above), anything requiring a
-login - do NOT bend it into the nearest action you do have and do NOT
-invent an action name. Use "reply", say plainly and briefly that you cannot
-do that yet, and set "end_turn" as the conversation warrants. Guessing at an
-action
-the user did not ask for is the worst thing you can do here: it touches
-something real.
+above for it - editing prose or data inside a document (code is different -
+see "fix_code" above), or anything you have no way to reach at all - do NOT
+bend it into the nearest action you do have and do NOT invent an action
+name. Use "reply", say plainly and briefly that you cannot do that yet, and
+set "end_turn" as the conversation warrants. Guessing at an action the user
+did not ask for is the worst thing you can do here: it touches something
+real.
 
-Never invent a fact. You do not know the current time, the calendar, or
-anything in a folder you were not shown - unlike the screen, nothing looks
-at those for you. Making one up is worse than saying so: "Il est 14h"
+Email and calendar are NOT in that category, despite needing a login:
+"general_task" reaches them. "lis mes derniers mails", "reponds a Marc que
+je serai en retard", "qu'est-ce que j'ai comme rendez-vous demain",
+"ajoute un point avec Sophie jeudi a 14h" are all "general_task" - never a
+refusal, and never "reply" claiming you cannot. What you must not do is
+answer them from nothing: you have not read the inbox or the calendar while
+writing this JSON, so any specific appointment, sender or subject in
+"speech" here would be invented. Say you are going to look, not what you
+found.
+
+Never invent a fact. You do not know the current time, and you have not
+read the calendar or the inbox at the moment you write this JSON - a
+"general_task" can go and look, but its result arrives afterwards, not
+here. You do not know what is in a folder you were not shown either. Making one up is worse than saying so: "Il est 14h"
 invented on the spot is indistinguishable, to the user, from a real answer.
 
 But not knowing something is not the end of the exchange. Ask yourself, in
@@ -468,6 +553,26 @@ printed to a terminal and spoken aloud.
 # above, which only produces intent JSON before anything has been read),
 # this turns it into something worth saying out loud rather than reading it
 # verbatim - see `NemotronClient.summarize_for_speech`.
+ANSWER_ABOUT_TEXT_SYSTEM_PROMPT = """\
+You are answering a spoken question about something the user was listening
+to. The text you are given is a transcript of audio their computer was
+playing - a video, a call, a track - transcribed automatically, so it may
+be imperfect, may start mid-sentence, and may end mid-sentence.
+
+Answer their question from that transcript and nothing else. If it does not
+contain the answer, say so plainly rather than filling the gap: "ils n'en
+parlent pas dans ce que j'ai entendu" is a good answer, an invented one is
+not. If the question is general ("qu'est-ce qu'ils disent ?"), summarize
+what was said instead.
+
+Two or three short sentences, in the given language, plain ASCII
+punctuation. This is read aloud: no bullet points, no headings, no
+"according to the transcript".
+
+Respond with ONLY a JSON object: {"answer": "<what to say out loud>"}.
+"""
+
+
 SUMMARIZE_SYSTEM_PROMPT = """\
 You turn a block of text into something worth saying out loud. The text
 came from the clipboard or a document Hey Peer read for the user; you were
@@ -561,6 +666,28 @@ _TYPOGRAPHIC = {
 }
 
 
+def _string_list(value) -> "list[str] | None":
+    """A list of step sentences from the model, or None. Non-strings and
+    blanks are dropped rather than rejecting the whole routine: one odd
+    element should not lose the four good ones next to it."""
+    if not isinstance(value, list):
+        return None
+    steps = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    return steps or None
+
+
+def _positive_number(value) -> "float | None":
+    """A duration from the model, or None if it isn't one.
+
+    Strict about zero and negatives as well as about types: a timer for
+    "0 seconds" or "-5" is a misunderstanding, and scheduling it would fire
+    instantly and look like a bug rather than surfacing the problem. The
+    caller treats None as "no duration given" and asks."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
 def _plain_punctuation(text: "str | None") -> "str | None":
     """Replaces typographic punctuation with ASCII equivalents.
 
@@ -617,6 +744,8 @@ def _parse_intent(raw_content: "str | None") -> Intent:
         question=_plain_punctuation(data.get("question")),
         speech=_plain_punctuation(data.get("speech")),
         language=data.get("language") if data.get("language") in ("fr", "en") else None,
+        duration_seconds=_positive_number(data.get("duration_seconds")),
+        steps=_string_list(data.get("steps")),
         # Absent or non-boolean means "over". An exchange that stays open
         # keeps the microphone live with no wake word to gate it, so that is
         # the state a malformed answer must not be able to fall into.
@@ -650,6 +779,7 @@ class NemotronClient:
         screenshot_path: str | None = None,
         history: "list[dict] | None" = None,
         memory: "list[str] | None" = None,
+        routines: "list[str] | None" = None,
     ) -> Intent:
         """The path actually used end to end: a transcribed instruction
         (locally, via `heypeer/wakeword/stt.py` — see module docstring for
@@ -702,6 +832,10 @@ class NemotronClient:
             text += f"\nFolders currently in the watched folder: {json.dumps(watched_folders)}"
         if memory:
             text += f"\nThings you remember about the user from earlier: {json.dumps(memory)}"
+        if routines:
+            # Names only, never the steps - see executor/routines.py for why
+            # that limit is the point rather than an optimisation.
+            text += f"\nRoutines you know: {json.dumps(routines)}"
 
         if screenshot_path is None:
             content = text
@@ -758,6 +892,38 @@ class NemotronClient:
         except json.JSONDecodeError:
             return ""
         return _plain_punctuation(data.get("summary")) or ""
+
+    def answer_about_text(self, text: str, question: str, language: str = "fr") -> str:
+        """Answers `question` about `text` - a transcript of what the
+        machine was playing (see `executor/system_audio.py`).
+
+        Distinct from `summarize_for_speech` because the user usually asked
+        something specific ("j'ai rate la derniere phrase, c'etait quoi ?"),
+        and a summary is the wrong answer to a question. The prompt handles
+        the general case by falling back to a summary, so this covers both
+        without a second call deciding which one to make.
+        """
+        truncated = text[: self.SUMMARIZE_MAX_CHARS]
+        content = (
+            f"Language: {'English' if language == 'en' else 'French'}\n"
+            f"Question: {question}\n\nTranscript:\n{truncated}"
+        )
+        response = self._client.chat.completions.create(
+            model=self.settings.nemotron_model_id,
+            messages=[
+                {"role": "system", "content": ANSWER_ABOUT_TEXT_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+        return _plain_punctuation(data.get("answer")) or ""
 
     def diagnose_code(self, code: str, question: str, language: str = "fr") -> str:
         """A short, spoken diagnosis of `code` - what's wrong and why, or
