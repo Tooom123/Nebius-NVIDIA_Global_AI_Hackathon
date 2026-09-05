@@ -2784,7 +2784,7 @@ rather than assuming. Chosen from that list by the user, in this order:
       the single most-used voice-assistant feature in every comparison
       found, and Hey Peer cannot do it at all. Needs a scheduler that
       outlives the exchange and can *speak without a wake word*.
-- [ ] **3. VAD / end-of-turn detection** - users report this as "it doesn't
+- [x] **3. VAD / end-of-turn detection** - users report this as "it doesn't
       know when I've finished talking", not as latency. Already listed far
       above as an optional wake-word item; promoted here on that evidence.
 - [ ] **4. Calendar and email** - Google Assistant's core strength and

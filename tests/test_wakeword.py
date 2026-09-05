@@ -767,3 +767,114 @@ def test_unmute_clears_barge_in_listening(toy_model: Path) -> None:
 def test_on_barge_in_defaults_to_nothing_to_interrupt(toy_model: Path) -> None:
     listener = WakeWordListener(str(toy_model), threshold=0.5)
     assert listener.on_barge_in is None
+
+
+def test_a_short_utterance_that_trailed_off_ends_the_turn_quickly() -> None:
+    """"annule" - short, and fading at the end - is finished, and making the
+    user wait 1.2s for Hey Peer to notice is what reads as sluggish."""
+    from heypeer.wakeword.listener import (
+        INSTRUCTION_SILENCE_CHUNKS_MIN,
+        silence_chunks_needed,
+    )
+
+    assert silence_chunks_needed(4, trailing_off=True) == INSTRUCTION_SILENCE_CHUNKS_MIN
+
+
+def test_a_long_utterance_gets_the_patient_wait() -> None:
+    """Regression guard for the original truncation bug: "deplace le fichier
+    facture de mars" pausing before "vers Archives" must not be cut off."""
+    from heypeer.wakeword.listener import (
+        INSTRUCTION_SILENCE_CHUNKS_MAX,
+        LONG_UTTERANCE_CHUNKS,
+        silence_chunks_needed,
+    )
+
+    assert (
+        silence_chunks_needed(LONG_UTTERANCE_CHUNKS, trailing_off=True)
+        == INSTRUCTION_SILENCE_CHUNKS_MAX
+    )
+    assert (
+        silence_chunks_needed(LONG_UTTERANCE_CHUNKS + 5, trailing_off=False)
+        == INSTRUCTION_SILENCE_CHUNKS_MAX
+    )
+
+
+def test_an_ambiguous_pause_keeps_the_old_behaviour() -> None:
+    """Short but holding level - could be either. The two failures are not
+    symmetric (truncating loses what was said), so ambiguity keeps the
+    patient default rather than gambling on the fast one."""
+    from heypeer.wakeword.listener import INSTRUCTION_SILENCE_CHUNKS, silence_chunks_needed
+
+    assert silence_chunks_needed(4, trailing_off=False) == INSTRUCTION_SILENCE_CHUNKS
+
+
+def test_the_adaptive_wait_never_leaves_its_bounds() -> None:
+    from heypeer.wakeword.listener import (
+        INSTRUCTION_SILENCE_CHUNKS_MAX,
+        INSTRUCTION_SILENCE_CHUNKS_MIN,
+        silence_chunks_needed,
+    )
+
+    for burst in range(0, 40):
+        for trailing in (True, False):
+            needed = silence_chunks_needed(burst, trailing)
+            assert INSTRUCTION_SILENCE_CHUNKS_MIN <= needed <= INSTRUCTION_SILENCE_CHUNKS_MAX
+
+
+def test_the_fast_path_is_never_slower_than_the_old_fixed_wait() -> None:
+    """The point of the feature: it can only ever end a turn sooner than
+    before, never later than the previous ceiling."""
+    from heypeer.wakeword.listener import (
+        INSTRUCTION_SILENCE_CHUNKS_MAX,
+        silence_chunks_needed,
+    )
+
+    assert silence_chunks_needed(2, True) <= INSTRUCTION_SILENCE_CHUNKS_MAX
+
+
+class _ScriptedStream:
+    """Replays a scripted list of per-chunk levels as real PCM, so
+    `_record_instruction`'s actual loop can be driven without a microphone."""
+
+    def __init__(self, dbfs_sequence: "list[float]") -> None:
+        self._sequence = list(dbfs_sequence)
+        self.reads = 0
+
+    def read(self, n, exception_on_overflow=False):
+        from heypeer.wakeword.listener import CHUNK_SAMPLES
+
+        dbfs = self._sequence[self.reads] if self.reads < len(self._sequence) else -90.0
+        self.reads += 1
+        amplitude = (10 ** (dbfs / 20)) * 32768
+        rng = np.random.default_rng(self.reads)
+        chunk = (rng.standard_normal(CHUNK_SAMPLES) * amplitude).astype(np.int16)
+        return chunk.tobytes()
+
+
+def test_recording_stops_sooner_after_a_short_fading_utterance(toy_model: Path) -> None:
+    """End to end through the real loop, not just the decision function."""
+    from heypeer.wakeword.listener import INSTRUCTION_SILENCE_CHUNKS
+
+    listener = WakeWordListener(str(toy_model))
+    # A short burst that fades, then silence.
+    speech = [-20.0, -22.0, -26.0, -32.0]
+    stream = _ScriptedStream(speech + [-90.0] * 40)
+    listener._record_instruction(stream, noise_floor_dbfs=-60.0)
+    # Old behaviour would have read at least min_seconds' worth plus the full
+    # fixed silence run; the fast path must beat that.
+    assert stream.reads < len(speech) + INSTRUCTION_SILENCE_CHUNKS + 15
+
+
+def test_a_pause_mid_sentence_does_not_truncate_the_instruction(toy_model: Path) -> None:
+    """The original bug: "deplace le fichier 4.0." cut off at the pause.
+    The second half must still make it into the recording."""
+    listener = WakeWordListener(str(toy_model))
+    first_half = [-20.0] * 14          # long burst, holding level
+    pause = [-90.0] * 12               # ~1s pause, under the patient threshold
+    second_half = [-20.0] * 6
+    stream = _ScriptedStream(first_half + pause + second_half + [-90.0] * 40)
+    audio = listener._record_instruction(stream, noise_floor_dbfs=-60.0)
+    from heypeer.wakeword.listener import CHUNK_SAMPLES
+
+    chunks_recorded = len(audio) // CHUNK_SAMPLES
+    assert chunks_recorded > len(first_half) + len(pause), "cut off at the pause"

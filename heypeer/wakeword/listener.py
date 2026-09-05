@@ -49,6 +49,28 @@ INSTRUCTION_MAX_SECONDS = 8.0
 # filename and a destination, and that pause was being read as "done".
 INSTRUCTION_SILENCE_CHUNKS = 15
 INSTRUCTION_MIN_SPEECH_CHUNKS = 3
+
+# End-pointing is adaptive from here on, between these two bounds, instead
+# of always waiting the full `INSTRUCTION_SILENCE_CHUNKS`.
+#
+# The fixed wait is what users describe as an assistant that "doesn't know
+# when I've finished talking" - reported as sluggishness, though it is
+# really a turn-taking problem. It cannot be fixed by lowering the constant:
+# the reason it is 15 and not 10 is a real bug where "deplace le fichier
+# 4.0." was cut off mid-sentence, because people pause between a filename
+# and a destination. Both failures are real and they pull opposite ways.
+#
+# What separates them is not how long the pause is but where it happens. A
+# pause after a short, complete-sounding burst is usually the end of the
+# turn; a pause after a long or still-rising one is usually mid-sentence.
+# So the wait is short by default and stretched when the audio just before
+# the pause looks like someone still going.
+INSTRUCTION_SILENCE_CHUNKS_MIN = 9   # ~0.7s, when the turn sounds finished
+INSTRUCTION_SILENCE_CHUNKS_MAX = 19  # ~1.5s, when it sounds mid-sentence
+# A burst longer than this suggests a sentence still in progress rather
+# than a short command - "deplace le fichier facture de mars" pausing
+# before "vers Archives", as opposed to "annule" being simply done.
+LONG_UTTERANCE_CHUNKS = 12  # ~1s of speech before the pause
 # Never end-point before this much audio, regardless of silence — protects
 # against a slow start (a breath, a pause for thought) truncating the whole
 # instruction to nothing.
@@ -76,6 +98,30 @@ def speech_threshold_dbfs(noise_floor_dbfs: float) -> float:
         SPEECH_THRESHOLD_MIN_DBFS,
         min(SPEECH_THRESHOLD_MAX_DBFS, noise_floor_dbfs + SPEECH_MARGIN_DB),
     )
+
+
+def silence_chunks_needed(speech_chunks_before_pause: int, trailing_off: bool) -> int:
+    """How much trailing silence should end the turn, given what the user
+    was doing right before it went quiet.
+
+    `speech_chunks_before_pause` is the length of the burst that just
+    ended; `trailing_off` says whether it was getting quieter, the way a
+    sentence closes, rather than holding level the way a mid-sentence
+    breath does.
+
+    Returns a number of chunks between `INSTRUCTION_SILENCE_CHUNKS_MIN` and
+    `INSTRUCTION_SILENCE_CHUNKS_MAX`. Being wrong in the two directions is
+    not symmetric: waiting too long makes Hey Peer feel slow, waiting too
+    little truncates the instruction and loses what the user said. So the
+    short wait is only used when the evidence for "finished" is positive -
+    a short burst that trailed off - and anything ambiguous keeps the
+    patient behaviour that fixed the original truncation bug.
+    """
+    if speech_chunks_before_pause >= LONG_UTTERANCE_CHUNKS:
+        return INSTRUCTION_SILENCE_CHUNKS_MAX
+    if trailing_off:
+        return INSTRUCTION_SILENCE_CHUNKS_MIN
+    return INSTRUCTION_SILENCE_CHUNKS
 
 
 def estimate_noise_floor(chunks: "list[np.ndarray]") -> float:
@@ -394,6 +440,13 @@ class WakeWordListener:
         speech_started = False
         speech_chunks = 0
         quiet_run = 0
+        # Length of the run of speech that the current pause interrupted,
+        # and the levels of its last chunks - together these are what the
+        # adaptive wait is decided from. See `silence_chunks_needed`.
+        current_burst = 0
+        burst_at_pause = 0
+        recent_levels: "list[float]" = []
+        levels_at_pause: "list[float]" = []
         max_chunks = int(INSTRUCTION_MAX_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
         min_chunks = int(INSTRUCTION_MIN_SECONDS * SAMPLE_RATE / CHUNK_SAMPLES)
         for i in range(max_chunks):
@@ -406,14 +459,28 @@ class WakeWordListener:
             if dbfs > threshold:
                 speech_started = True
                 speech_chunks += 1
+                current_burst += 1
+                recent_levels.append(dbfs)
+                del recent_levels[:-4]  # only the tail of the burst matters
                 quiet_run = 0
             elif speech_started:
+                if quiet_run == 0:
+                    # First quiet chunk: freeze what the burst looked like,
+                    # before `current_burst` is reset for the next one.
+                    burst_at_pause = current_burst
+                    levels_at_pause = list(recent_levels)
+                    current_burst = 0
+                    recent_levels = []
                 quiet_run += 1
+            # A sentence closes by trailing off; a mid-sentence breath does
+            # not. Two chunks are enough to see which - more would need the
+            # burst to be long, which is already the other signal.
+            trailing_off = len(levels_at_pause) >= 2 and levels_at_pause[-1] < levels_at_pause[0]
             if (
                 i + 1 >= min_chunks
                 and speech_started
                 and speech_chunks >= INSTRUCTION_MIN_SPEECH_CHUNKS
-                and quiet_run >= INSTRUCTION_SILENCE_CHUNKS
+                and quiet_run >= silence_chunks_needed(burst_at_pause, trailing_off)
             ):
                 break
         # The trailing quiet is deliberately kept. Trimming it saved ~0.1s of
