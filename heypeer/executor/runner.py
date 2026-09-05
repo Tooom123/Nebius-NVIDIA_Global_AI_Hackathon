@@ -20,6 +20,8 @@ import difflib
 import shutil
 from pathlib import Path
 
+from heypeer.executor import safe_zones
+
 
 class ExecutionAborted(RuntimeError):
     """Raised when an action cannot be carried out safely."""
@@ -76,19 +78,53 @@ def resolve_existing_filename(watched_dir: Path, name: str) -> "str | None":
     return best[0] if best else None
 
 
+
+def resolve_across_roots(watched_dir: Path, name: str) -> "Path | None":
+    """Finds a spoken filename in the watched directory or any of the
+    user's ordinary document folders, most likely first.
+
+    File actions were confined to the watched directory until this; now
+    that they are not, "supprime la capture" has to be able to mean a file
+    on the Desktop. Search order is what disambiguates rather than a
+    cleverer matcher: the first root holding a match wins, and the watched
+    directory is always first, so nothing that worked before resolves
+    differently now.
+
+    An explicit path (absolute, or otherwise directly resolvable) is
+    honoured as-is - the same rule `_resolve_code_path` follows in main.py.
+    """
+    candidate = Path(name).expanduser()
+    if candidate.is_file():
+        return candidate
+    for root in safe_zones.search_roots(watched_dir):
+        resolved = resolve_existing_filename(root, name)
+        if resolved:
+            return root / resolved
+    return None
+
 def _ensure_within(base: Path, target: Path, what: str) -> Path:
-    """Resolves `target` and confirms it's actually inside `base` — the
-    safety perimeter for every direct file operation Nemotron can trigger
+    """Resolves `target` and confirms a file action may touch it - the
+    safety perimeter for every direct operation Nemotron can trigger
     (move/rename/create/delete), since none of these go through a
-    confirmation step any more. Guards against a hallucinated or
-    adversarial name escaping the watched directory via '..' segments or
-    an absolute path — `target` isn't required to exist yet (create_file/
-    create_folder), `Path.resolve()` handles that fine."""
-    base_resolved = base.resolve()
+    confirmation step any more.
+
+    The perimeter used to be `base` itself: everything had to resolve
+    inside the watched directory. That was too narrow to be useful - real
+    requests are about Documents, the Desktop, a project folder - so the
+    boundary is now `executor/safe_zones.py`: the user's own files yes, the
+    operating system's no. `base` is still accepted and still consulted
+    first, because a *relative* name must keep resolving against the
+    watched directory rather than the process's current directory, which
+    is not somewhere the user has ever heard of.
+
+    `target` isn't required to exist yet (create_file/create_folder);
+    `Path.resolve()` handles that fine.
+    """
     target_resolved = target.resolve()
-    if not target_resolved.is_relative_to(base_resolved):
-        raise ExecutionAborted(f"{what} would escape the watched directory: {target}")
-    return target_resolved
+    try:
+        return safe_zones.ensure_allowed(target_resolved, what, extra_roots=[base])
+    except safe_zones.OutsideSafeZone as exc:
+        raise ExecutionAborted(str(exc)) from exc
 
 
 def move_single_file(watched_dir: Path, src_filename: str, dest_folder: str) -> Path:
@@ -98,11 +134,17 @@ def move_single_file(watched_dir: Path, src_filename: str, dest_folder: str) -> 
     path. Both `src_filename` and `dest_folder` are Nemotron-provided
     strings — resolved and checked against `watched_dir` before anything
     touches the filesystem."""
-    resolved = resolve_existing_filename(watched_dir, src_filename)
-    if resolved is None:
-        raise ExecutionAborted(f"No file matching {src_filename!r} in {watched_dir}")
-    src_path = _ensure_within(watched_dir, watched_dir / resolved, "source file")
-    dest_dir = _ensure_within(watched_dir, watched_dir / dest_folder, "destination folder")
+    found = resolve_across_roots(watched_dir, src_filename)
+    if found is None:
+        raise ExecutionAborted(f"No file matching {src_filename!r}")
+    src_path = _ensure_within(watched_dir, found, "source file")
+    # A bare destination name resolves beside the file being moved, not in
+    # the watched directory: "range cette capture dans Archives" means an
+    # Archives next to the capture, wherever that turned out to be.
+    dest_candidate = Path(dest_folder).expanduser()
+    if not dest_candidate.is_absolute():
+        dest_candidate = src_path.parent / dest_folder
+    dest_dir = _ensure_within(watched_dir, dest_candidate, "destination folder")
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / src_path.name
     shutil.move(str(src_path), str(dest_path))
@@ -113,10 +155,10 @@ def rename_file(watched_dir: Path, src_filename: str, new_name: str) -> Path:
     """Renames a file in place (same folder) — the "extend Hey Peer beyond
     move" direct-action path. `new_name` is checked the same way as
     `move_single_file`'s `dest_folder`."""
-    resolved = resolve_existing_filename(watched_dir, src_filename)
-    if resolved is None:
-        raise ExecutionAborted(f"No file matching {src_filename!r} in {watched_dir}")
-    src_path = _ensure_within(watched_dir, watched_dir / resolved, "source file")
+    found = resolve_across_roots(watched_dir, src_filename)
+    if found is None:
+        raise ExecutionAborted(f"No file matching {src_filename!r}")
+    src_path = _ensure_within(watched_dir, found, "source file")
     # "renomme le fichier 4 en 15" means 4.txt -> 15.txt: people leave the
     # extension out when speaking, and silently dropping it would strip the
     # file's type.
@@ -155,9 +197,9 @@ def delete_file(watched_dir: Path, filename: str) -> Path:
     more, so keeping deletes reversible is the safety net that replaces it."""
     from send2trash import send2trash
 
-    resolved = resolve_existing_filename(watched_dir, filename)
-    if resolved is None:
-        raise ExecutionAborted(f"No file matching {filename!r} in {watched_dir}")
-    path = _ensure_within(watched_dir, watched_dir / resolved, "file to delete")
+    found = resolve_across_roots(watched_dir, filename)
+    if found is None:
+        raise ExecutionAborted(f"No file matching {filename!r}")
+    path = _ensure_within(watched_dir, found, "file to delete")
     send2trash(str(path))
     return path

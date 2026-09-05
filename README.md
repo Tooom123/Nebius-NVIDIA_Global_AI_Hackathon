@@ -44,7 +44,8 @@ Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
    more problems than it solved (a misheard "yes" over a noisy mic would silently
    default to "no" and block a legitimate action). The safety net that replaces it:
    deletes go to the recycle bin/trash rather than a permanent unlink, and every file
-   operation is confined to the watched directory (see Ethics & privacy notes below).
+   operation resolves inside a safe zone — your own files, never the operating
+   system's (see Ethics & privacy notes below).
 6. It's carried out — via direct filesystem operations for file-organizing skills
    and file actions, or mouse/keyboard automation with a visual check between steps
    for anything else. The tray icon turns blue while something is running, so the
@@ -75,7 +76,10 @@ with no repetition and no learned skill involved at all — move, rename, create
 delete ("déplace le fichier facture vers Archives", "renomme facture.pdf en
 facture_mars.pdf", "crée un dossier Factures", "supprime notes.txt") — pure Nemotron
 reasoning grounded against the real filenames in the watched folder. As a safety
-constraint, every one of these resolves to a path *inside the watched directory*
+constraint, every one of these resolves to a path *inside a safe zone* — your
+own files anywhere (the watched folder, Desktop, Documents, Pictures, a project
+folder, another drive), never system locations like `C:\Windows`, `Program
+Files`, `/etc`, or application state like `~/.ssh` and `~/.aws`
 (checked, not just assumed — see Ethics & privacy notes), so a misunderstood or
 ambiguous instruction can't write, rename, or delete outside it.
 
@@ -357,7 +361,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 628 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 654 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.
@@ -462,7 +466,8 @@ environment doesn't have:
 - **There is no confirmation prompt before an action runs** — removed after
   real-world testing showed it caused more problems than it solved. In its place:
   every direct file action (move/rename/create/delete) is checked to resolve to a
-  path *inside the watched directory* before touching the filesystem
+  path *inside a safe zone* before touching the filesystem — your own files
+  anywhere, never the operating system's (see `executor/safe_zones.py`)
   (`_ensure_within` in `heypeer/executor/runner.py`) — a hallucinated or ambiguous
   name can't escape it via `../` or an absolute path — and deletes go to the
   recycle bin/trash (`send2trash`), not a permanent unlink, so at least that

@@ -186,3 +186,71 @@ def test_rename_keeps_an_explicit_new_extension(tmp_path: Path) -> None:
     result = rename_file(tmp_path, "4.txt", "notes.md")
 
     assert result.name == "notes.md"
+
+
+def test_a_file_outside_the_watched_dir_can_be_deleted(tmp_path: Path, monkeypatch) -> None:
+    """File actions used to be confined to the watched folder; "supprime la
+    capture sur le bureau" has to work now."""
+    from heypeer.executor import runner, safe_zones
+
+    watched = tmp_path / "Downloads"
+    desktop = tmp_path / "Desktop"
+    watched.mkdir()
+    desktop.mkdir()
+    target = desktop / "capture.png"
+    target.write_bytes(b"x")
+    monkeypatch.setattr(safe_zones, "search_roots", lambda w: [watched, desktop])
+    monkeypatch.setattr(safe_zones, "home", lambda: tmp_path.resolve())
+
+    trashed = []
+    monkeypatch.setattr("send2trash.send2trash", lambda p: trashed.append(p))
+    got = runner.delete_file(watched, "capture.png")
+    assert got == target
+    assert trashed == [str(target)]
+
+
+def test_the_watched_dir_still_wins_when_a_name_exists_in_both(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Search order is what disambiguates - nothing that worked before may
+    resolve somewhere different now."""
+    from heypeer.executor import runner, safe_zones
+
+    watched = tmp_path / "Downloads"
+    desktop = tmp_path / "Desktop"
+    watched.mkdir()
+    desktop.mkdir()
+    (watched / "note.txt").write_text("watched", encoding="utf-8")
+    (desktop / "note.txt").write_text("desktop", encoding="utf-8")
+    monkeypatch.setattr(safe_zones, "search_roots", lambda w: [watched, desktop])
+
+    found = runner.resolve_across_roots(watched, "note.txt")
+    assert found == watched / "note.txt"
+
+
+def test_moving_a_file_outside_the_watched_dir_lands_beside_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"range cette capture dans Archives" means an Archives next to the
+    capture, not one back in Downloads."""
+    from heypeer.executor import runner, safe_zones
+
+    watched = tmp_path / "Downloads"
+    desktop = tmp_path / "Desktop"
+    watched.mkdir()
+    desktop.mkdir()
+    (desktop / "capture.png").write_bytes(b"x")
+    monkeypatch.setattr(safe_zones, "search_roots", lambda w: [watched, desktop])
+    monkeypatch.setattr(safe_zones, "home", lambda: tmp_path.resolve())
+
+    got = runner.move_single_file(watched, "capture.png", "Archives")
+    assert got == desktop / "Archives" / "capture.png"
+    assert got.is_file()
+
+
+def test_a_system_path_is_still_refused_outright(tmp_path: Path) -> None:
+    """The perimeter widened; it did not disappear."""
+    from heypeer.executor import runner
+
+    with pytest.raises(runner.ExecutionAborted):
+        runner.create_file(tmp_path, "/etc/heypeer-should-never-write-here.txt")

@@ -1945,11 +1945,28 @@ class HeyPeer:
     def _resolved_path(self, spoken_name: str) -> "Path | None":
         """Where a spoken filename actually points, resolved *before* the
         action runs — afterwards the file has moved or been renamed and the
-        original path can no longer be recovered, which is what undo needs."""
-        if self.watched_dir is None:
-            return None
-        resolved = resolve_existing_filename(self.watched_dir, spoken_name)
-        return self.watched_dir / resolved if resolved else None
+        original path can no longer be recovered, which is what undo needs.
+
+        Searches the watched directory first, then the user's ordinary
+        document folders (see `safe_zones.search_roots`). File actions used
+        to be confined to the watched directory entirely; they are not any
+        more, so a spoken name has to be findable wherever the user's files
+        actually are. An explicit path is honoured directly, the same way
+        `_resolve_code_path` handles one.
+        """
+        from heypeer.executor import safe_zones
+
+        candidate = Path(spoken_name).expanduser()
+        if candidate.is_file() and safe_zones.is_allowed(
+            candidate, extra_roots=[self.watched_dir] if self.watched_dir else None
+        ):
+            return candidate.resolve()
+
+        for root in safe_zones.search_roots(self.watched_dir):
+            resolved = resolve_existing_filename(root, spoken_name)
+            if resolved:
+                return root / resolved
+        return None
 
     def _run_undo(self, language: str = "fr") -> None:
         """`entry.description` (and `not_undoable_reason`) are always
