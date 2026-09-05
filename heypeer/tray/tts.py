@@ -44,6 +44,8 @@ never been trained on every time it said "Spotify".
 import os
 from pathlib import Path
 
+from heypeer.paths import user_data
+
 from heypeer.tray.pronounce import for_speech
 
 DEFAULT_VOICE_NAME = os.environ.get("HEYPEER_TTS_VOICE") or "fr_FR-upmc-medium"
@@ -55,7 +57,7 @@ DEFAULT_SPEAKER_ID = int(os.environ.get("HEYPEER_TTS_SPEAKER") or 0)
 # heard, see `--demo` above for how to actually pick one by ear.
 ENGLISH_VOICE_NAME = os.environ.get("HEYPEER_TTS_VOICE_EN") or "en_US-lessac-medium"
 ENGLISH_SPEAKER_ID = int(os.environ.get("HEYPEER_TTS_SPEAKER_EN") or 0)
-VOICES_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "wakeword" / "piper_voices"
+VOICES_DIR = user_data("wakeword", "piper_voices")  # downloaded at runtime, not bundled
 
 
 def _voice_for(language: "str | None") -> "tuple[str, int]":

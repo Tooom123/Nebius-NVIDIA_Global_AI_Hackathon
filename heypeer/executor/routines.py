@@ -39,7 +39,9 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-DEFAULT_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "routines.json"
+from heypeer.paths import user_data
+
+DEFAULT_PATH = user_data("routines.json")  # user data: must survive a frozen build
 
 # A routine is a handful of steps someone can hold in their head, not a
 # script. Past this it wants a file and an editor, not a voice assistant.

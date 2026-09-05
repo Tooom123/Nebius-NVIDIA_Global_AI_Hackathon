@@ -24,6 +24,8 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
+from heypeer.paths import resource, user_data
+
 import numpy as np
 import onnxruntime as ort
 import openwakeword
@@ -204,7 +206,7 @@ def save_wav(audio: np.ndarray, path) -> None:
     sf.write(str(path), audio, SAMPLE_RATE, subtype="PCM_16")
 
 
-CHIME_PATH = Path(__file__).resolve().parent.parent / "assets" / "activation_chime.wav"
+CHIME_PATH = resource("heypeer", "assets", "activation_chime.wav")  # ships with the app
 
 _chime_audio: "np.ndarray | None" = None
 
@@ -679,7 +681,7 @@ class WakeWordListener:
         self._running = False
 
 
-WAKEWORD_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "wakeword"
+WAKEWORD_DIR = user_data("wakeword")  # the user trains their own model here
 # A model trained on this machine's own voice. Gitignored, so it stays with
 # the person who recorded it.
 USER_MODEL_PATH = WAKEWORD_DIR / "hey_peer_user.onnx"

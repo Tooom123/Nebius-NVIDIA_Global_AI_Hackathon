@@ -153,6 +153,34 @@ changes. It is deliberately not in `requirements.txt`: the package has no
 macOS or Linux wheel, so requiring it would break `pip install` for
 everyone not on Windows.
 
+## Building a standalone Windows executable
+
+So a demo machine needs neither a git clone nor `pip install`:
+
+```bash
+pip install pyinstaller
+pyinstaller heypeer.spec     # produces dist/HeyPeer.exe
+```
+
+The wake-word model and the Piper voices are deliberately **not** bundled.
+The wake-word model is trained on your own voice, so shipping someone
+else's would be worse than shipping none; the voices are large and
+downloaded on first use. In a frozen build both live in
+`%LOCALAPPDATA%\HeyPeer` rather than beside the executable — see
+`heypeer/paths.py` for why user data and bundled resources resolve
+differently.
+
+## Starting automatically at login
+
+```bash
+python -m heypeer.startup enable    # or: disable, status
+```
+
+Creates a shortcut in your Startup folder (Windows only). A shortcut rather
+than a registry key or a service, so you can find and delete it yourself in
+`shell:startup` without regedit — and so it stays inside your desktop
+session, where the tray icon, the overlay and the microphone live.
+
 ## Previewing the indicator without running the app
 
 Iterating on the blob used to mean launching Hey Peer on a real Windows
@@ -329,7 +357,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 615 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 628 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.
