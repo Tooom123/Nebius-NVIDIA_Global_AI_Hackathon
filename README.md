@@ -147,6 +147,22 @@ changes. It is deliberately not in `requirements.txt`: the package has no
 macOS or Linux wheel, so requiring it would break `pip install` for
 everyone not on Windows.
 
+## Previewing the indicator without running the app
+
+Iterating on the blob used to mean launching Hey Peer on a real Windows
+machine and saying the wake word to see two seconds of animation. This
+renders the same frames straight to a video file:
+
+```bash
+python -m heypeer.tray.blob_preview --state speaking --seconds 3
+python -m heypeer.tray.blob_preview --all-states      # one file per state
+python -m heypeer.tray.blob_preview --state idle --level 0.0   # pin the mic level
+```
+
+MP4 when `ffmpeg` is on PATH, animated GIF otherwise. Every parameter comes
+from the live indicator's own constants, so the preview cannot drift from
+what the app actually draws.
+
 ## Running
 
 ```bash

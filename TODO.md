@@ -2798,7 +2798,7 @@ rather than assuming. Chosen from that list by the user, in this order:
       video" and meeting notes.
 - [x] **8. Visual overlay** - show the answer as well as speak it. The blob
       is already an on-screen surface to build on.
-- [ ] **Dev tool: render the blob to a video without launching the app**, so
+- [x] **Dev tool: render the blob to a video without launching the app**, so
       its animation can be iterated on quickly in conversation instead of
       requiring a full run on real hardware.
 
