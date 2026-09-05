@@ -120,8 +120,14 @@ heypeer/
 
 - Python 3.10+
 - A [Nebius AI Studio / Token Factory](https://studio.nebius.ai/) API key with access
-  to `nvidia/Nemotron-3-Nano-Omni` (verify the exact id in the platform's model
-  catalog — casing has changed before)
+  to two models (verify the exact ids in the platform's model catalog — casing
+  has changed before, and models get retired):
+  - `nvidia/Nemotron-3_5-Lightning` for interpreting turns (`NEMOTRON_MODEL_ID`)
+  - `google/gemma-3-27b-it` for the calls that send a screenshot (`VISION_MODEL_ID`)
+
+  Two, because no Nemotron currently on Nebius Serverless accepts image input.
+  The project ran on `nvidia/Nemotron-3-Nano-Omni`, which did both, until it was
+  removed from Serverless on 2026-08-31.
 - A microphone and display (for the wake-word listener and skill replay,
   respectively) — not required to run the test suite
 
@@ -323,7 +329,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 623 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 615 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.

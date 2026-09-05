@@ -18,6 +18,17 @@ class Settings:
     nebius_api_key: str
     nebius_base_url: str
     nemotron_model_id: str
+    # A second, vision-capable model, used only for the calls that send an
+    # image (see `nemotron/client.py`: describe_image, diagnose_screen_code).
+    #
+    # This is separate because the main model cannot see. Nemotron-3-Nano-Omni
+    # could, and was removed from Nebius Serverless on 2026-08-31; its
+    # recommended replacement, Nemotron-3_5-Lightning, answers
+    # "This model does not support image input" to every image request.
+    # Keeping one model id for both would mean choosing between a good
+    # classifier that is blind and a vision model doing work it is not the
+    # best at, so the two jobs get the two models they each want.
+    vision_model_id: str = "google/gemma-3-27b-it"
     watched_dir: Path = field(default_factory=lambda: Path.home() / "Downloads")
     # Off by default: "Hey Peer" has now been confirmed reliably triggering
     # on real hardware/voice (score 0.93-1.00 across multiple real
@@ -55,7 +66,10 @@ def load_settings() -> Settings:
             "NEBIUS_BASE_URL", "https://api.studio.nebius.ai/v1"
         ),
         nemotron_model_id=os.environ.get(
-            "NEMOTRON_MODEL_ID", "nvidia/Nemotron-3-Nano-Omni"
+            "NEMOTRON_MODEL_ID", "nvidia/Nemotron-3_5-Lightning"
+        ),
+        vision_model_id=os.environ.get(
+            "VISION_MODEL_ID", "google/gemma-3-27b-it"
         ),
         watched_dir=Path(os.environ.get("HEYPEER_WATCHED_DIR") or str(Path.home() / "Downloads")),
         wakeword_debug=(os.environ.get("HEYPEER_WAKEWORD_DEBUG") or "0") != "0",
