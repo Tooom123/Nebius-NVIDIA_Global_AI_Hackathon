@@ -2475,3 +2475,126 @@ def test_set_reminder_dispatches_from_an_intent(tmp_path: Path) -> None:
     with patch.object(peer, "_run_set_reminder") as run:
         peer._dispatch_intent(intent, "mets un minuteur")
     run.assert_called_once_with("les pâtes", 600, "C'est noté.", "fr")
+
+
+def test_running_a_routine_dispatches_each_step(tmp_path: Path) -> None:
+    """Steps are re-interpreted rather than replayed, so each one means what
+    it would mean if spoken directly."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(name="r", steps=["mets de la musique", "ouvre Slack"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret"
+    ) as interpret, patch.object(peer, "_dispatch_intent") as dispatch:
+        peer._run_run_routine("matin", "fr")
+    assert interpret.call_count == 2
+    assert [c.args[0] for c in interpret.call_args_list] == [
+        "mets de la musique",
+        "ouvre Slack",
+    ]
+    assert dispatch.call_count == 2
+
+
+def test_a_routine_cannot_run_another_routine(tmp_path: Path) -> None:
+    """Without the guard, a routine whose step is "lance ma routine du
+    matin" loops unboundedly, speaking and acting all the way down."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._in_routine = True
+    with patch("heypeer.executor.routines.find") as find, patch.object(peer, "_speak") as speak:
+        peer._run_run_routine("matin", "fr")
+    find.assert_not_called()
+    assert "routine" in speak.call_args.args[0].lower()
+
+
+def test_the_routine_guard_is_released_afterwards(tmp_path: Path) -> None:
+    """Otherwise the first routine of a session would be the only one."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(steps=["ouvre Slack"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret"
+    ), patch.object(peer, "_dispatch_intent"):
+        peer._run_run_routine("matin", "fr")
+    assert peer._in_routine is False
+
+
+def test_a_failing_step_does_not_abandon_the_rest(tmp_path: Path) -> None:
+    """A routine is several independent things; stopping at the first
+    problem would silently drop everything after it."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(steps=["step one", "step two", "step three"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret", side_effect=[RuntimeError("boom"), MagicMock(), MagicMock()]
+    ), patch.object(peer, "_dispatch_intent") as dispatch:
+        peer._run_run_routine("matin", "fr")
+    assert dispatch.call_count == 2, "later steps should still have run"
+
+
+def test_the_guard_is_released_even_if_a_step_explodes(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    routine = MagicMock(steps=["boom"])
+    routine.name = "matin"
+    with patch("heypeer.executor.routines.find", return_value=routine), patch.object(
+        peer, "_interpret", side_effect=RuntimeError("boom")
+    ):
+        peer._run_run_routine("matin", "fr")
+    assert peer._in_routine is False
+
+
+def test_running_an_unknown_routine_says_so(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.find", return_value=None), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_run_routine("inconnue", "fr")
+    assert "inconnue" in speak.call_args.args[0]
+
+
+def test_creating_a_routine_needs_a_name_and_steps(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.remember") as remember, patch.object(
+        peer, "_speak"
+    ):
+        peer._run_create_routine("matin", None, None, "fr")
+        peer._run_create_routine(None, ["a"], None, "fr")
+    remember.assert_not_called()
+
+
+def test_creating_a_routine_confirms_with_its_size(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    saved = MagicMock(steps=["a", "b"])
+    saved.name = "matin"
+    with patch("heypeer.executor.routines.remember", return_value=saved), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_create_routine("matin", ["a", "b"], None, "fr")
+    assert "2" in speak.call_args.args[0]
+
+
+def test_listing_routines_when_there_are_none(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.names", return_value=[]), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_list_routines("fr")
+    assert "pas encore" in speak.call_args.args[0]
+
+
+def test_listing_routines_reads_the_names(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.routines.names", return_value=["matin", "boulot"]), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_list_routines("fr")
+    assert "matin" in speak.call_args.args[0] and "boulot" in speak.call_args.args[0]

@@ -371,6 +371,35 @@ string for \"annule le minuteur\" with nothing to distinguish it>", \
   this JSON, and any sentence written here would be a guess at a number you
   do not have.
 
+- Create a named routine: one phrase the user wants to stand for several \
+things at once (e.g. "quand je dis routine du matin, mets de la musique et \
+dis-moi mes rendez-vous", "cree une routine boulot qui ouvre VS Code et \
+Slack"):
+  {"action": "create_routine", \
+"target_name": "<what they want to call it, as they said it - \"routine du \
+matin\", \"boulot\">", \
+"steps": ["<each thing to do, as a plain spoken instruction, exactly the \
+way the user would say it on its own - \"mets de la musique\", \"ouvre VS \
+Code\">"], \
+"speech": "<one short sentence, e.g. \"C'est enregistre.\">", \
+"end_turn": true}
+  Write each step so it would work as a standalone instruction to you, not
+  as a fragment: "ouvre Spotify", never "et puis Spotify". If they named a
+  routine but gave no steps, use "ask".
+
+- Run a routine they already have (e.g. "lance ma routine du matin", \
+"routine boulot"). The routines that exist are listed for you as "Routines \
+you know" - only ever use this action for a name in that list:
+  {"action": "run_routine", \
+"target_name": "<which one, matching a name from that list>", \
+"speech": null, "end_turn": true}
+  Leave "speech" null: each step announces itself as it runs, and a
+  sentence here would talk over the first one.
+
+- Say which routines exist (e.g. "c'est quoi mes routines ?", "qu'est-ce \
+que tu sais faire en routine ?"):
+  {"action": "list_routines", "speech": null, "end_turn": true}
+
 - Carry out a general, multi-step task with no action above for it, that a \
 capable assistant with broader tools (web research, scheduling, browsing \
 and interacting with a website - clicking, filling a form, navigating - or \
@@ -383,7 +412,10 @@ because they need to actually look at a page and act inside it, which \
 opening an application by name does not do. Also for anything else with no \
 more specific action: "cherche les meilleurs vols pour Paris le mois \
 prochain et fais-moi un resume", "programme un rappel chaque lundi pour \
-faire le point". Do not use this for anything an action above already \
+faire le point". Email and calendar live here too: "lis mes derniers \
+mails", "reponds a Marc que je serai en retard", "qu'est-ce que j'ai \
+demain", "ajoute un rendez-vous avec Sophie jeudi a 14h" - needing a login \
+does not make them refusals. Do not use this for anything an action above already \
 covers - moving a file, playing music, opening an app by itself, or a \
 plain web search with nothing to click, all have their own, more specific \
 action:
@@ -452,18 +484,28 @@ extension, keep the original file's.
 ## Things you cannot do yet
 
 This action list will grow. When the user asks for something with no action
-above for it - send a message or an email, edit prose or data inside a
-document (code is different - see "fix_code" above), anything requiring a
-login - do NOT bend it into the nearest action you do have and do NOT
-invent an action name. Use "reply", say plainly and briefly that you cannot
-do that yet, and set "end_turn" as the conversation warrants. Guessing at an
-action
-the user did not ask for is the worst thing you can do here: it touches
-something real.
+above for it - editing prose or data inside a document (code is different -
+see "fix_code" above), or anything you have no way to reach at all - do NOT
+bend it into the nearest action you do have and do NOT invent an action
+name. Use "reply", say plainly and briefly that you cannot do that yet, and
+set "end_turn" as the conversation warrants. Guessing at an action the user
+did not ask for is the worst thing you can do here: it touches something
+real.
 
-Never invent a fact. You do not know the current time, the calendar, or
-anything in a folder you were not shown - unlike the screen, nothing looks
-at those for you. Making one up is worse than saying so: "Il est 14h"
+Email and calendar are NOT in that category, despite needing a login:
+"general_task" reaches them. "lis mes derniers mails", "reponds a Marc que
+je serai en retard", "qu'est-ce que j'ai comme rendez-vous demain",
+"ajoute un point avec Sophie jeudi a 14h" are all "general_task" - never a
+refusal, and never "reply" claiming you cannot. What you must not do is
+answer them from nothing: you have not read the inbox or the calendar while
+writing this JSON, so any specific appointment, sender or subject in
+"speech" here would be invented. Say you are going to look, not what you
+found.
+
+Never invent a fact. You do not know the current time, and you have not
+read the calendar or the inbox at the moment you write this JSON - a
+"general_task" can go and look, but its result arrives afterwards, not
+here. You do not know what is in a folder you were not shown either. Making one up is worse than saying so: "Il est 14h"
 invented on the spot is indistinguishable, to the user, from a real answer.
 
 But not knowing something is not the end of the exchange. Ask yourself, in
@@ -592,6 +634,16 @@ _TYPOGRAPHIC = {
 }
 
 
+def _string_list(value) -> "list[str] | None":
+    """A list of step sentences from the model, or None. Non-strings and
+    blanks are dropped rather than rejecting the whole routine: one odd
+    element should not lose the four good ones next to it."""
+    if not isinstance(value, list):
+        return None
+    steps = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    return steps or None
+
+
 def _positive_number(value) -> "float | None":
     """A duration from the model, or None if it isn't one.
 
@@ -661,6 +713,7 @@ def _parse_intent(raw_content: "str | None") -> Intent:
         speech=_plain_punctuation(data.get("speech")),
         language=data.get("language") if data.get("language") in ("fr", "en") else None,
         duration_seconds=_positive_number(data.get("duration_seconds")),
+        steps=_string_list(data.get("steps")),
         # Absent or non-boolean means "over". An exchange that stays open
         # keeps the microphone live with no wake word to gate it, so that is
         # the state a malformed answer must not be able to fall into.
@@ -694,6 +747,7 @@ class NemotronClient:
         screenshot_path: str | None = None,
         history: "list[dict] | None" = None,
         memory: "list[str] | None" = None,
+        routines: "list[str] | None" = None,
     ) -> Intent:
         """The path actually used end to end: a transcribed instruction
         (locally, via `heypeer/wakeword/stt.py` — see module docstring for
@@ -746,6 +800,10 @@ class NemotronClient:
             text += f"\nFolders currently in the watched folder: {json.dumps(watched_folders)}"
         if memory:
             text += f"\nThings you remember about the user from earlier: {json.dumps(memory)}"
+        if routines:
+            # Names only, never the steps - see executor/routines.py for why
+            # that limit is the point rather than an optimisation.
+            text += f"\nRoutines you know: {json.dumps(routines)}"
 
         if screenshot_path is None:
             content = text

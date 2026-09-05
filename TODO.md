@@ -2787,9 +2787,9 @@ rather than assuming. Chosen from that list by the user, in this order:
 - [x] **3. VAD / end-of-turn detection** - users report this as "it doesn't
       know when I've finished talking", not as latency. Already listed far
       above as an optional wake-word item; promoted here on that evidence.
-- [ ] **4. Calendar and email** - Google Assistant's core strength and
+- [x] **4. Calendar and email** - Google Assistant's core strength and
       Siri's "personal context". Table stakes, not a bonus.
-- [ ] **5. Named routines** ("lance ma routine du matin") - Alexa's pillar
+- [x] **5. Named routines** ("lance ma routine du matin") - Alexa's pillar
       feature. Note: an *auto-learned* version was built and deliberately
       deleted (see main.py's module docstring); this is the explicit,
       user-named kind, which avoids all three reasons that one failed.

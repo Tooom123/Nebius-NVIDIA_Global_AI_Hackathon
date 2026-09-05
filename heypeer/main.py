@@ -195,6 +195,9 @@ class HeyPeer:
         # never sets one should not pay for a window process at all.
         self._countdown_window = None
         self._countdown_stop: "threading.Event | None" = None
+        # True only while a routine's steps are being dispatched, so a
+        # routine cannot run another one - see `_run_run_routine`.
+        self._in_routine = False
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -462,6 +465,111 @@ class HeyPeer:
             else:
                 parts.append(left)
         self._speak(", ".join(parts) + ".", language=language)
+
+    def _run_create_routine(
+        self,
+        name: "str | None",
+        steps: "list[str] | None",
+        narration: "str | None",
+        language: str = "fr",
+    ) -> None:
+        from heypeer.executor import routines as routine_store
+
+        if not name or not steps:
+            self._speak(
+                _bilingual(
+                    language,
+                    "Il me faut un nom et au moins une étape.",
+                    "I need a name and at least one step.",
+                ),
+                language=language,
+            )
+            return
+
+        routine = routine_store.remember(name, steps)
+        if routine is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je n'ai pas réussi à enregistrer cette routine.",
+                    "I couldn't save that routine.",
+                ),
+                language=language,
+            )
+            return
+        self._log(f"Routine saved: {routine.name} ({len(routine.steps)} steps)")
+        self._speak(
+            narration
+            or _bilingual(
+                language,
+                f"C'est enregistré, {len(routine.steps)} étapes.",
+                f"Saved, {len(routine.steps)} steps.",
+            ),
+            language=language,
+        )
+
+    def _run_run_routine(self, name: "str | None", language: str = "fr") -> None:
+        """Runs each step by feeding it back through the ordinary
+        interpret-and-dispatch path, so a step means the same thing it would
+        if spoken directly.
+
+        `_in_routine` guards against a routine whose step is "lance ma
+        routine du matin" - directly or through another routine. Without it
+        that is an unbounded loop that speaks and acts the whole way down.
+        """
+        from heypeer.executor import routines as routine_store
+
+        if getattr(self, "_in_routine", False):
+            self._log("Refusing to run a routine from inside a routine.")
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je ne peux pas lancer une routine depuis une routine.",
+                    "I can't run a routine from inside a routine.",
+                ),
+                language=language,
+            )
+            return
+
+        routine = routine_store.find(name or "")
+        if routine is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Je n'ai pas de routine qui s'appelle {name}.",
+                    f"I don't have a routine called {name}.",
+                ),
+                language=language,
+            )
+            return
+
+        self._log(f"Running routine: {routine.name}")
+        self._in_routine = True
+        try:
+            for step in routine.steps:
+                self._log(f"  step: {step}")
+                try:
+                    intent = self._interpret(step)
+                    self._dispatch_intent(intent, step)
+                except Exception as exc:
+                    # One failed step must not abandon the rest: a routine is
+                    # several independent things, and stopping at the first
+                    # problem would silently drop everything after it.
+                    self._log(f"  step failed: {exc}")
+        finally:
+            self._in_routine = False
+
+    def _run_list_routines(self, language: str = "fr") -> None:
+        from heypeer.executor import routines as routine_store
+
+        names = routine_store.names()
+        if not names:
+            self._speak(
+                _bilingual(language, "Tu n'as pas encore de routine.", "You have no routines yet."),
+                language=language,
+            )
+            return
+        self._speak(", ".join(names) + ".", language=language)
 
     def _on_barge_in(self) -> None:
         """The wake word fired while Hey Peer was talking: stop talking.
@@ -805,6 +913,7 @@ class HeyPeer:
                 return fast
 
         from heypeer import memory as memory_store
+        from heypeer.executor import routines as routine_store
 
         return self.nemotron.interpret_text(
             instruction_text,
@@ -813,6 +922,7 @@ class HeyPeer:
             watched_folders=self._watched_folders(),
             history=list(self._history),
             memory=memory_store.as_context(),
+            routines=routine_store.names(),
         )
 
     def _interpret_audio(
@@ -977,6 +1087,12 @@ class HeyPeer:
             self._run_cancel_reminder(intent.content, intent.speech, language)
         elif intent.action == "list_reminders":
             self._run_list_reminders(language)
+        elif intent.action == "create_routine":
+            self._run_create_routine(intent.target_name, intent.steps, intent.speech, language)
+        elif intent.action == "run_routine":
+            self._run_run_routine(intent.target_name, language)
+        elif intent.action == "list_routines":
+            self._run_list_routines(language)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(
@@ -1606,6 +1722,7 @@ class HeyPeer:
         permissions problem) must degrade to an honest spoken message
         rather than silently claiming to remember something it did not."""
         from heypeer import memory as memory_store
+        from heypeer.executor import routines as routine_store
 
         try:
             memory_store.remember(fact)

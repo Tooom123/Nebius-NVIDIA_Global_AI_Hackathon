@@ -545,6 +545,29 @@ def test_nothing_hey_peer_can_do_is_listed_as_something_it_cannot_by_keyword() -
         assert keyword not in section, f"the prompt still mentions {keyword!r} as unsupported"
 
 
+def test_email_and_calendar_are_not_refused_now_that_general_task_reaches_them() -> None:
+    """Round 41's instance of the same recurring bug, and the reason the
+    keyword list above exists at all. The refusal section named "send a
+    message or an email" and the fact section said "you do not know the
+    calendar" - both written before general_task could reach either, and
+    both still there afterwards, so "lis mes derniers mails" was declined by
+    a prompt that also documented an action able to do it.
+
+    Kept separate from the keyword test above because the assertion is
+    different: "email" and "calendar" *should* appear in the prompt now -
+    what must not appear is a refusal of them."""
+    from heypeer.nemotron.client import SYSTEM_PROMPT
+
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    section = prompt[
+        prompt.index("Things you cannot do yet") : prompt.rindex("Never invent a fact")
+    ]
+    assert "an email" not in section.lower() or "NOT in that category" in section
+    # And they are positively routed somewhere that can actually do them.
+    assert "general_task" in section
+    assert "mails" in prompt
+
+
 def test_the_prompt_routes_unknown_facts_to_a_search_rather_than_a_refusal() -> None:
     from heypeer.nemotron.client import SYSTEM_PROMPT
 
