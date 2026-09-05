@@ -38,7 +38,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "memory.json"
+from heypeer.paths import user_data
+
+DEFAULT_PATH = user_data("memory.json")  # user data: must survive a frozen build
 
 # Bounded so an old, no-longer-relevant fact eventually falls off rather
 # than accumulating forever and bloating every single prompt with things

@@ -32,9 +32,13 @@ each major implementation (per project convention).
         base64 audio + screenshot; unverified against the live API here
         (only `interpret_text()` has been exercised for real so far)
   - [x] Parse structured intent (`{action, skill_id, n_repetitions}`)
-- [ ] Confirmation UI
+- [~] ~~Confirmation UI~~ — OBSOLETE (see round 41 audit). The confirmation
+      gate was removed entirely: misheard yes/no replies blocked legitimate
+      work more often than they prevented mistakes, and undo replaced it as
+      the safety net. See `executor/undo.py`.
   - [x] Minimal CLI confirm gate
-  - [ ] (stretch) lightweight overlay if time allows
+  - [~] ~~(stretch) lightweight overlay~~ — superseded by the caption overlay
+        (`tray/caption_render.py`), built in round 41 for a different reason.
 - [x] Automated execution
   - [x] `SkillRunner.run` replay via pyautogui — extended `ActionEvent` with
         replay metadata (click coords, key name, scroll delta); still never
@@ -73,11 +77,13 @@ each major implementation (per project convention).
         "fais-en 2 de plus", got back a correctly-resolved Intent from the
         live Nemotron endpoint, confirmed, and watched SkillRunner actually
         move the next 2 matching files via shutil. First-try success.
-  - [ ] Wire real audio capture + screenshotting for `on_wake_word` (currently
-        takes typed text as an instruction stand-in, per the plan's
-        "text first" validation step) and swap in `NemotronClient.interpret`
-  - [ ] Rehearse the full flow on a real machine with a Downloads-like folder,
-        a real mic, and a real screen
+  - [x] Wire real audio capture for `on_wake_word` — done long ago; audio is
+        recorded and transcribed locally (`wakeword/stt.py`) rather than sent
+        to `interpret()`, because the endpoint has no audio input. Screenshots
+        go through the separate vision calls instead (see round 41's model
+        split), not through `interpret()`.
+  - [x] Rehearse the full flow on a real machine — done many times over by the
+        user; this is now continuous rather than a milestone.
 - [x] Background app / hidden-icons tray + auto-mode toggle + status
   - [x] `heypeer/tray/app.py` — `TrayApp` wraps `pystray.Icon`: a "Mode auto"
         menu toggle arms/disarms the whole capture+wake-word pipeline, and a
@@ -554,46 +560,60 @@ real UI" — an actual interaction design):
       the spoken-confirmation item above), (c) a settings/onboarding screen
       (watched dir, API key check, wake-word status) so the user isn't
       hand-editing `.env`.
-- [ ] **Skill log / inspection** — right now skills only live in
-      `data/skills/skills.json` with no way to list, inspect, rename, or
-      delete them short of hand-editing the JSON. After a few days of
-      testing this is already annoying (see 2026-08-29's "trop de skills
-      appris" comment). At minimum: a way to list current skills (tray menu
-      item or small window) and delete ones that shouldn't have been
-      learned. Consider also: a run history (what executed, when, success/
-      failure), not just the learned patterns themselves.
-- [ ] **Broaden the range of executable actions** — today only two paths are
-      real: file moves (robust, filesystem-based) and generic pyautogui
-      click/keypress replay (coded in `SkillRunner`/`ActivityWatcher` since
-      the start, but **never actually exercised on a real click/keyboard
-      target** — only file-move skills have been rehearsed for real).
-      Concretely: pick a second real-world scenario that needs actual mouse/
-      keyboard automation (not just files) and run it end-to-end on real
-      hardware, exercising the pyautogui replay path and the Nemotron
-      `verify_screen` visual-check hook for the first time for real.
+- [~] ~~**Skill log / inspection**~~ — OBSOLETE. The auto-learned skills this
+      describes were deleted (`data/skills/` no longer exists; see `main.py`'s
+      module docstring). The "trop de skills appris" complaint it cites is
+      precisely why. Round 41's named routines replace them, and are
+      inspectable by asking ("c'est quoi mes routines ?") - which is what a
+      voice assistant should offer instead of a management window.
+- [x] **Broaden the range of executable actions** — done, far past what this
+      item imagined. There are now ~30 actions (see `nemotron/intent.py`):
+      apps, music, web search, volume, brightness, windows, clipboard,
+      documents, screen reading, code analysis and fixing, memory, timers,
+      routines, system audio, and general_task dispatching to Hermes for
+      anything open-ended. The pyautogui replay path it names was deleted
+      rather than exercised.
 
 Additional ideas worth considering (not requested yet — raise with the user
 before starting any of these):
-- [ ] **Undo for a direct file move / skill run** — a misfire currently
-      requires manually moving the file back; a lightweight "undo last
-      action" (tray menu item, keeps the last N move operations) would be
-      cheap given file moves already know src/dest.
-- [ ] **Safety limits** — a max `n_repetitions` per confirmation, and/or a
-      rate limit on how often auto-execution can fire, as a guard against a
-      Nemotron misfire looping something destructive. Currently unlimited.
-- [ ] **Windows startup integration** — run Hey Peer automatically at login
-      (Startup folder shortcut or a small installer), now that it's meant to
-      live as a background tray app.
-- [ ] **Packaging** — a one-file Windows build (PyInstaller or similar) so
-      the demo doesn't require `git clone` + `pip install` on stage/video.
+- [x] **Undo for a direct file move** — done: `executor/undo.py` covers move,
+      rename, create-file, create-folder, delete (recycle bin, reported as
+      not reversible rather than pretending) and code fixes. Spoken
+      ("annule") rather than a tray item.
+- [~] ~~**Safety limits** on `n_repetitions`~~ — OBSOLETE in this form: the
+      repetition/auto-execution model it guards no longer exists. What
+      replaced it is per-feature: the watched-directory containment check,
+      undo on every file action, MAX_ACTIVE on timers, MAX_STEPS/MAX_ROUTINES
+      on routines, and the routine recursion guard.
+- [x] **Windows startup integration** — `python -m heypeer.startup enable`
+      creates a Startup-folder shortcut (`heypeer/startup.py`). A shortcut
+      rather than a registry Run key or a service: the user can find and
+      delete it in `shell:startup` without regedit, and it stays inside the
+      desktop session where the tray icon, overlay and microphone live.
+      Deliberately not a tray menu item - the tray stays minimal per the
+      user's stated preference (see the item above).
+- [x] **Packaging** — `pyinstaller heypeer.spec` produces `dist/HeyPeer.exe`.
+      The real work was `heypeer/paths.py`: six modules located files by
+      walking up from `__file__`, which in a frozen build resolves to
+      PyInstaller's temporary unpack directory. Bundled resources and user
+      data now resolve separately, because writing `memory.json` or
+      `routines.json` into that directory would appear to work and silently
+      vanish on every restart. The wake-word model and Piper voices are
+      deliberately not bundled (trained on the user's own voice; large and
+      downloaded on demand). NOT verified: the build itself cannot be run
+      from this Linux sandbox - the spec is written from PyInstaller's
+      documented behaviour and needs one real run on Windows.
 - [ ] Submission polish
   - [x] README install/run instructions kept accurate as pieces land
   - [x] Ethics/privacy section accurate (updated for click-coord/key-name replay
         metadata and the plain-char-key refusal)
-  - [ ] 3-min demo video (outside coding scope — manual follow-up)
-  - [ ] Nebius/NVIDIA tool feedback write-up for submission (manual follow-up)
-  - [ ] Hosted demo URL or test build (manual follow-up — needs a real machine
-        with mic/display and a live Nebius API key)
+
+  The three below are **the user's own, not coding work** — kept listed so
+  they are not forgotten, explicitly out of scope for this repo's work:
+  - [ ] 3-min demo video — USER
+  - [ ] Nebius/NVIDIA tool feedback write-up for submission — USER
+  - [ ] Hosted demo URL or test build — USER (needs a real machine with
+        mic/display and a live Nebius API key)
 
 ### Latency/fluidity pass (2026-08-30, requested explicitly)
 
