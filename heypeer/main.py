@@ -264,6 +264,13 @@ class HeyPeer:
         it with the French voice would still sound wrong, just differently."""
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
+        listener = self._wake_listener
+        if listener is not None:
+            # Keep scoring the wake word for the duration of playback, so
+            # "Hey Peer" spoken over the answer cuts it off. Turn-taking
+            # stays muted throughout - see `mute_except_barge_in`.
+            listener.on_barge_in = self._on_barge_in
+            listener.mute_except_barge_in()
         try:
             from heypeer.tray.tts import speak
 
@@ -271,8 +278,23 @@ class HeyPeer:
         except Exception as exc:
             print(f"[tts] Speak failed: {exc}")
         finally:
+            if listener is not None:
+                listener.on_barge_in = None
+                listener.mute()  # back to fully muted for the rest of the turn
             if self.debug_window is not None:
                 self.debug_window.set_state("listening")
+
+    def _on_barge_in(self) -> None:
+        """The wake word fired while Hey Peer was talking: stop talking.
+
+        Only stops playback. The turn it belonged to carries on - an action
+        that was already narrated has usually already run - and the user's
+        actual next instruction arrives through the ordinary path once the
+        turn releases the listener, so there is nothing to queue here."""
+        from heypeer.tray import audio_out
+
+        self._log("Barge-in: stopping playback.")
+        audio_out.stop()
 
     def _speak_async(self, text: str, language: "str | None" = "fr") -> None:
         """Speaks without blocking the caller. Used for narration that

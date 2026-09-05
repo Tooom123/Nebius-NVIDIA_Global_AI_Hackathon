@@ -735,3 +735,35 @@ def test_start_calls_priming_on_the_real_stream_before_the_loop(
         listener.start(on_detected=MagicMock())
 
     prime.assert_called_once_with(listener, fake_stream)
+
+
+def test_mute_except_barge_in_keeps_scoring_but_stays_muted(toy_model: Path) -> None:
+    """Barge-in listening is a *third* state, not just unmuted: turn-taking
+    must stay off (the mic is picking up Hey Peer's own voice) while the
+    wake word is still scored so it can interrupt."""
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+
+    listener.mute_except_barge_in()
+    assert listener._muted is True
+    assert listener._listen_for_barge_in is True
+
+
+def test_plain_mute_does_not_listen_for_barge_in(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+    listener.mute_except_barge_in()
+    listener.mute()
+    assert listener._listen_for_barge_in is False
+
+
+def test_unmute_clears_barge_in_listening(toy_model: Path) -> None:
+    """Otherwise an ordinary turn would keep firing the interrupt callback."""
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+    listener.mute_except_barge_in()
+    listener.unmute()
+    assert listener._muted is False
+    assert listener._listen_for_barge_in is False
+
+
+def test_on_barge_in_defaults_to_nothing_to_interrupt(toy_model: Path) -> None:
+    listener = WakeWordListener(str(toy_model), threshold=0.5)
+    assert listener.on_barge_in is None

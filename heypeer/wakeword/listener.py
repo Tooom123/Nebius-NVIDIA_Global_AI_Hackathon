@@ -240,6 +240,12 @@ class WakeWordListener:
         # for the wake word while it's actively talking anyway, so gating
         # fully covers the "hears itself" symptom this was meant to fix.
         self._muted = False
+        # Set by `mute_except_barge_in` - muted for turn-taking, but still
+        # scoring so the wake word can interrupt playback. See that method.
+        self._listen_for_barge_in = False
+        # Called when the wake word fires while barge-in listening is on.
+        # Set by whoever owns playback; None means nothing to interrupt.
+        self.on_barge_in: "Callable[[], None] | None" = None
         # Rolling window of the most recent raw chunks, so the audio that
         # *caused* a detection (the wake word itself) can be handed to the
         # second-stage verifier along with the instruction — see
@@ -264,6 +270,23 @@ class WakeWordListener:
 
     def mute(self) -> None:
         self._muted = True
+        self._listen_for_barge_in = False
+
+    def mute_except_barge_in(self) -> None:
+        """Mutes ordinary turn-taking but keeps scoring the wake word, so
+        saying "Hey Peer" over the top of a spoken answer can cut it off.
+
+        This is the one case the plain `mute` above cannot serve. Its
+        comment reasons that Hey Peer "never needs to listen for the wake
+        word while it's actively talking anyway" - true for starting a
+        turn, and exactly wrong for stopping one. The echo concern that
+        motivated muting is still real, so this deliberately does *not*
+        re-open the ordinary path: a detection here only interrupts, it
+        never starts a turn from whatever the microphone picked up
+        alongside Hey Peer's own voice.
+        """
+        self._muted = True
+        self._listen_for_barge_in = True
 
     def unmute(self) -> None:
         """Re-arms as well as unmuting, so a new "Hey Peer" can follow
@@ -271,6 +294,7 @@ class WakeWordListener:
         waited for the score to fall below the threshold on its own, which
         made chaining two commands feel broken."""
         self._muted = False
+        self._listen_for_barge_in = False
         self._armed = True
         self._last_trigger_time = 0.0
         self._prebuffer.clear()
@@ -461,6 +485,17 @@ class WakeWordListener:
             while self._running:
                 raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
                 if self._muted:
+                    if self._listen_for_barge_in:
+                        # Score the real audio: the point of this mode is to
+                        # hear "Hey Peer" spoken over the answer. A hit only
+                        # stops playback - it deliberately does not start a
+                        # turn, since what the mic is picking up right now
+                        # includes Hey Peer's own voice.
+                        chunk = np.frombuffer(raw, dtype=np.int16)
+                        if self._maybe_trigger(self.process_chunk(chunk)):
+                            if self.on_barge_in is not None:
+                                self.on_barge_in()
+                        continue
                     # Keep the streaming feature buffer moving, on silence
                     # rather than on the real (muted) audio. Skipping the
                     # update entirely — which is what this used to do — left

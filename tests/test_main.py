@@ -2268,3 +2268,66 @@ def test_debug_then_fix_is_one_continuous_exchange(tmp_path: Path, fake_tts: Mag
         peer.on_wake_word(followup=True)
 
     assert project_file.read_text() == "def f():\n    return 1\n"
+
+
+def test_speak_arms_barge_in_for_the_duration_of_playback(tmp_path: Path) -> None:
+    """While Hey Peer talks, the wake word must stay live so it can be
+    interrupted - and go back to fully muted once the answer is out."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    listener = MagicMock()
+    peer._wake_listener = listener
+    calls = []
+    listener.mute_except_barge_in.side_effect = lambda: calls.append("barge_in_on")
+    listener.mute.side_effect = lambda: calls.append("muted")
+
+    with patch("heypeer.tray.tts.speak") as speak:
+        speak.side_effect = lambda *a, **k: calls.append("spoke")
+        peer._speak("bonjour")
+
+    assert calls == ["barge_in_on", "spoke", "muted"]
+
+
+def test_speak_hands_the_listener_a_way_to_interrupt(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    listener = MagicMock()
+    peer._wake_listener = listener
+    seen = []
+    with patch("heypeer.tray.tts.speak") as speak:
+        speak.side_effect = lambda *a, **k: seen.append(listener.on_barge_in)
+        peer._speak("bonjour")
+
+    assert seen == [peer._on_barge_in]
+    # ...and it is cleared afterwards, so a later detection can't stop audio
+    # that no longer belongs to this turn.
+    assert listener.on_barge_in is None
+
+
+def test_barge_in_stops_playback(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.tray.audio_out.stop") as stop:
+        peer._on_barge_in()
+    stop.assert_called_once()
+
+
+def test_speak_still_works_with_no_listener_attached(tmp_path: Path) -> None:
+    """The CLI path and tests construct a HeyPeer with no wake listener."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._wake_listener = None
+    with patch("heypeer.tray.tts.speak") as speak:
+        peer._speak("bonjour")
+    speak.assert_called_once()
+
+
+def test_speak_restores_mute_even_if_tts_raises(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    listener = MagicMock()
+    peer._wake_listener = listener
+    with patch("heypeer.tray.tts.speak", side_effect=RuntimeError("no audio device")):
+        peer._speak("bonjour")
+    listener.mute.assert_called_once()
+    assert listener.on_barge_in is None
