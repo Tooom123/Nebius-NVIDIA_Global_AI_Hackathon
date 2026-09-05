@@ -109,6 +109,34 @@ def _default_get_instruction() -> str:
 _PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
 
 
+# An answer shorter than this is an acknowledgement - "c'est fait", "j'ouvre
+# Spotify" - which the user just heard and does not need to re-read. Above
+# it there is content: a diagnosis, a summary, something read back. Measured
+# in words rather than characters so one long filename doesn't promote an
+# acknowledgement into a caption.
+CAPTION_MIN_WORDS = 7
+
+
+def _should_caption(text: str) -> bool:
+    """Whether a spoken line is worth also putting on screen.
+
+    Captioning everything would put a panel up dozens of times a day to
+    repeat a word the user already heard; captioning nothing loses the
+    answers that actually have content - a code diagnosis, a clipboard read
+    back, a summary - the moment they finish playing.
+
+    A question is always captioned regardless of length: it is the one kind
+    of line the user has to act on, and "vers quel dossier ?" is short
+    precisely because it is a prompt.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    if text.endswith("?"):
+        return True
+    return len(text.split()) >= CAPTION_MIN_WORDS
+
+
 def _bilingual(language: str, french: str, english: str) -> str:
     """`french` or `english`, matching what Nemotron reported it wrote its
     own narration in for this turn (`intent.language`).
@@ -198,6 +226,10 @@ class HeyPeer:
         # True only while a routine's steps are being dispatched, so a
         # routine cannot run another one - see `_run_run_routine`.
         self._in_routine = False
+        # The on-screen caption panel, created on first use. `_caption_failed`
+        # stops a machine that cannot show one from retrying every answer.
+        self._caption_window = None
+        self._caption_failed = False
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -274,6 +306,8 @@ class HeyPeer:
         intent.py`); callers pass that straight through so what gets *said*
         matches what got *written* - answering in English text but reading
         it with the French voice would still sound wrong, just differently."""
+        if _should_caption(text):
+            self._show_caption(text)
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
         listener = self._wake_listener
@@ -659,6 +693,26 @@ class HeyPeer:
             return
         self._speak(", ".join(names) + ".", language=language)
 
+    def _show_caption(self, text: str) -> None:
+        """Puts `text` on screen alongside speaking it. Created on first use
+        and never required: if the window cannot start, this logs once and
+        Hey Peer carries on speaking exactly as before."""
+        if self._caption_window is None:
+            if self._caption_failed:
+                return
+            try:
+                from heypeer.tray.caption_window import CaptionWindow
+
+                self._caption_window = CaptionWindow()
+            except Exception as exc:
+                self._caption_failed = True
+                self._log(f"Caption display unavailable: {exc}")
+                return
+        try:
+            self._caption_window.show(text)
+        except Exception:
+            pass
+
     def _on_barge_in(self) -> None:
         """The wake word fired while Hey Peer was talking: stop talking.
 
@@ -916,6 +970,9 @@ class HeyPeer:
         if self._countdown_window is not None:
             self._countdown_window.close()
             self._countdown_window = None
+        if self._caption_window is not None:
+            self._caption_window.close()
+            self._caption_window = None
         self._detections.put(_SHUTDOWN)  # unblocks a consumer loop waiting on detections
 
     def _watched_files(self) -> list[str] | None:

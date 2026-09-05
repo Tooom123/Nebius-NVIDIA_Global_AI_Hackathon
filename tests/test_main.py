@@ -2649,3 +2649,68 @@ def test_a_capture_failure_is_reported_honestly(tmp_path: Path) -> None:
     ), patch.object(peer, "_speak") as speak:
         peer._run_listen_to_screen("quoi ?", None, "fr")
     assert "capter le son" in speak.call_args.args[0]
+
+
+def test_acknowledgements_are_not_captioned() -> None:
+    """A panel repeating a word the user just heard, dozens of times a day,
+    is worse than no panel."""
+    from heypeer.main import _should_caption
+
+    assert _should_caption("C'est fait.") is False
+    assert _should_caption("J'ouvre Spotify.") is False
+    assert _should_caption("") is False
+
+
+def test_answers_with_content_are_captioned() -> None:
+    from heypeer.main import _should_caption
+
+    assert _should_caption(
+        "La fonction plante sur une liste vide, parce que la division "
+        "par zéro n'est pas gérée."
+    ) is True
+
+
+def test_questions_are_always_captioned_however_short() -> None:
+    """The one kind of line the user has to act on - and it is short
+    precisely because it is a prompt."""
+    from heypeer.main import _should_caption
+
+    assert _should_caption("Vers quel dossier ?") is True
+
+
+def test_speaking_a_long_answer_shows_a_caption(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_caption") as caption:
+        peer._speak("La fonction plante sur une liste vide parce que la division échoue.")
+    caption.assert_called_once()
+
+
+def test_speaking_an_acknowledgement_shows_no_caption(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_caption") as caption:
+        peer._speak("C'est fait.")
+    caption.assert_not_called()
+
+
+def test_a_caption_failure_never_stops_hey_peer_speaking(tmp_path: Path) -> None:
+    """The panel is a convenience; speech is the product."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch(
+        "heypeer.tray.caption_window.CaptionWindow", side_effect=RuntimeError("no display")
+    ), patch("heypeer.tray.tts.speak") as speak:
+        peer._speak("La fonction plante sur une liste vide parce que la division échoue.")
+    speak.assert_called_once()
+
+
+def test_a_failed_caption_window_is_not_retried_every_answer(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch(
+        "heypeer.tray.caption_window.CaptionWindow", side_effect=RuntimeError("no display")
+    ) as window:
+        peer._show_caption("une phrase assez longue pour être affichée à l'écran")
+        peer._show_caption("une autre phrase assez longue pour être affichée")
+    assert window.call_count == 1

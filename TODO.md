@@ -2796,7 +2796,7 @@ rather than assuming. Chosen from that list by the user, in this order:
 - [x] **7. System audio capture (loopback)** - hear what the machine is
       playing, not just the microphone. Unlocks "resume ce que dit cette
       video" and meeting notes.
-- [ ] **8. Visual overlay** - show the answer as well as speak it. The blob
+- [x] **8. Visual overlay** - show the answer as well as speak it. The blob
       is already an on-screen surface to build on.
 - [ ] **Dev tool: render the blob to a video without launching the app**, so
       its animation can be iterated on quickly in conversation instead of
