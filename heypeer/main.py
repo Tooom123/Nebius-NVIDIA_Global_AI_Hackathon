@@ -60,7 +60,7 @@ from pathlib import Path
 import numpy as np
 
 from heypeer.config import load_settings
-from heypeer.executor import undo
+from heypeer.executor import reminders, undo
 from heypeer.executor.runner import (
     ExecutionAborted,
     create_file,
@@ -186,6 +186,15 @@ class HeyPeer:
         # this run. It applies to every music request, and repeating it would
         # bury the line saying what actually happened.
         self._spotify_hint_shown = False
+        # Live timers. Owned here, not by the exchange: a reminder is the
+        # first thing in this app that outlives the turn that created it and
+        # then speaks on its own, with no wake word. See executor/reminders.py.
+        self._reminders = reminders.ReminderStore(on_fire=self._on_reminder_due)
+        # The countdown pill, and the thread that keeps it ticking. Both are
+        # created lazily, when a first timer is actually set: a user who
+        # never sets one should not pay for a window process at all.
+        self._countdown_window = None
+        self._countdown_stop: "threading.Event | None" = None
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -283,6 +292,176 @@ class HeyPeer:
                 listener.mute()  # back to fully muted for the rest of the turn
             if self.debug_window is not None:
                 self.debug_window.set_state("listening")
+
+    def _ensure_countdown(self) -> None:
+        """Starts the countdown window and its tick thread on first use.
+
+        Lazily, because most sessions never set a timer and a window process
+        that only ever draws nothing is pure cost. Cosmetic throughout: if
+        the window cannot be created (no display, not Windows), timers still
+        fire and still speak - they just do it invisibly."""
+        if self._countdown_window is not None:
+            return
+        try:
+            from heypeer.tray.countdown_window import CountdownDriver, CountdownWindow
+
+            self._countdown_window = CountdownWindow()
+            self._countdown_stop = threading.Event()
+            driver = CountdownDriver(self._reminders, self._countdown_window)
+            thread = threading.Thread(
+                target=driver.run_forever, args=(self._countdown_stop,), daemon=True
+            )
+            thread.start()
+        except Exception as exc:
+            self._log(f"Countdown display unavailable: {exc}")
+            self._countdown_window = None
+
+    def _refresh_countdown(self) -> None:
+        """Pushes the current timers to the pill straight away, rather than
+        waiting up to a tick - so it appears the moment one is set and
+        disappears the moment the last is cancelled."""
+        if self._countdown_window is None:
+            return
+        try:
+            from heypeer.tray.countdown_window import CountdownDriver
+
+            CountdownDriver(self._reminders, self._countdown_window).refresh()
+        except Exception:
+            pass
+
+    def _on_reminder_due(self, reminder) -> None:
+        """A timer came due. Runs on its own thread, with no exchange open
+        and nobody having said a wake word - the only place in this app that
+        speaks entirely unprompted.
+
+        Deliberately does not open a follow-up window. The user may well not
+        be at the machine, and leaving the microphone live on a timer nobody
+        answered is exactly the kind of always-listening behaviour this
+        project avoids elsewhere."""
+        language = reminder.language or "fr"
+        if reminder.label:
+            message = _bilingual(
+                language,
+                f"C'est l'heure : {reminder.label}.",
+                f"Time's up: {reminder.label}.",
+            )
+        else:
+            message = _bilingual(language, "C'est l'heure.", "Time's up.")
+        self._log(f"Reminder due: {reminder.label or '(no label)'}")
+        self._speak(message, language=language)
+        self._refresh_countdown()
+
+    def _run_set_reminder(
+        self,
+        label: "str | None",
+        duration_seconds: "float | None",
+        narration: "str | None",
+        language: str = "fr",
+    ) -> None:
+        from heypeer.executor.reminders import format_duration
+
+        if not duration_seconds or duration_seconds <= 0:
+            # Nemotron is told to "ask" when no duration was given, so this
+            # is the belt-and-braces case: never silently schedule a guess.
+            self._speak(
+                _bilingual(
+                    language,
+                    "Il me faut une durée pour le minuteur.",
+                    "I need a duration for that timer.",
+                ),
+                language=language,
+            )
+            return
+
+        reminder = self._reminders.add(label or "", duration_seconds, language)
+        if reminder is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    "Tu as déjà trop de minuteurs en cours.",
+                    "You already have too many timers running.",
+                ),
+                language=language,
+            )
+            return
+
+        self._ensure_countdown()
+        self._refresh_countdown()
+        spoken = format_duration(duration_seconds, language)
+        self._speak(
+            narration
+            or _bilingual(language, f"C'est noté, dans {spoken}.", f"Got it, in {spoken}."),
+            language=language,
+        )
+
+    def _run_cancel_reminder(
+        self, label: "str | None", narration: "str | None", language: str = "fr"
+    ) -> None:
+        active = self._reminders.active()
+        if not active:
+            self._speak(
+                _bilingual(language, "Tu n'as aucun minuteur en cours.", "You have no timers running."),
+                language=language,
+            )
+            return
+
+        if label:
+            cancelled = self._reminders.cancel_matching(label)
+        elif len(active) == 1:
+            # "annule le minuteur" with exactly one running is unambiguous.
+            cancelled = self._reminders.cancel(active[0].id)
+        else:
+            # Several running and nothing to tell them apart: say what there
+            # is rather than cancelling the wrong one.
+            names = ", ".join(r.label or "sans nom" for r in active)
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Tu en as plusieurs : {names}. Lequel ?",
+                    f"You have several: {names}. Which one?",
+                ),
+                language=language,
+            )
+            self._arm_followup(CONVERSATION_WINDOW_SECONDS)
+            return
+
+        self._refresh_countdown()
+        if cancelled is None:
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Je n'ai pas de minuteur pour {label}.",
+                    f"I can't find a timer for {label}.",
+                ),
+                language=language,
+            )
+            return
+        self._speak(
+            narration or _bilingual(language, "C'est annulé.", "Cancelled."),
+            language=language,
+        )
+
+    def _run_list_reminders(self, language: str = "fr") -> None:
+        from heypeer.executor.reminders import format_duration
+
+        active = self._reminders.active()
+        if not active:
+            self._speak(
+                _bilingual(language, "Tu n'as aucun minuteur en cours.", "You have no timers running."),
+                language=language,
+            )
+            return
+
+        parts = []
+        for reminder in active:
+            left = format_duration(reminder.remaining(), language)
+            if reminder.label:
+                parts.append(
+                    _bilingual(language, f"{left} pour {reminder.label}", f"{left} for {reminder.label}")
+                )
+            else:
+                parts.append(left)
+        self._speak(", ".join(parts) + ".", language=language)
 
     def _on_barge_in(self) -> None:
         """The wake word fired while Hey Peer was talking: stop talking.
@@ -532,6 +711,15 @@ class HeyPeer:
 
     def _on_quit(self) -> None:
         self._stop_voice()
+        # Cancel pending timers before anything else is torn down: a daemon
+        # timer thread firing into a half-shut-down app would try to speak
+        # through an audio stack that is going away.
+        self._reminders.clear()
+        if self._countdown_stop is not None:
+            self._countdown_stop.set()
+        if self._countdown_window is not None:
+            self._countdown_window.close()
+            self._countdown_window = None
         self._detections.put(_SHUTDOWN)  # unblocks a consumer loop waiting on detections
 
     def _watched_files(self) -> list[str] | None:
@@ -781,6 +969,14 @@ class HeyPeer:
             self._run_remember_fact(intent.content, intent.speech, language)
         elif intent.action == "general_task" and intent.content:
             self._run_general_task(intent.content, intent.speech, language)
+        elif intent.action == "set_reminder":
+            self._run_set_reminder(
+                intent.content, intent.duration_seconds, intent.speech, language
+            )
+        elif intent.action == "cancel_reminder":
+            self._run_cancel_reminder(intent.content, intent.speech, language)
+        elif intent.action == "list_reminders":
+            self._run_list_reminders(language)
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(

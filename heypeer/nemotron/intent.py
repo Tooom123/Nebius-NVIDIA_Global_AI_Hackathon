@@ -28,6 +28,9 @@ ACTIONS = (
     "debug_screen_code",  # "qu'est-ce qui ne va pas ici ?" with no filename - looks at the screen
     "remember_fact",  # "retiens que..." - content is the fact
     "general_task",  # a multi-step task outside every action above - content is the task
+    "set_reminder",  # "rappelle-moi dans 10 minutes" - content is the label, duration_seconds the delay
+    "cancel_reminder",  # "annule le minuteur" - content is which one, empty for all/the only one
+    "list_reminders",  # "il me reste combien de temps ?" - no field
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -77,6 +80,9 @@ ACTION_DESCRIPTIONS = {
     "debug_screen_code": "diagnose code by looking at the screen",
     "remember_fact": "remember something for later",
     "general_task": "carry out a general, multi-step task",
+    "set_reminder": "set a timer or a reminder",
+    "cancel_reminder": "cancel a timer",
+    "list_reminders": "say how long is left on a timer",
 }
 
 
@@ -129,6 +135,11 @@ class Intent:
     # chose to write in it. None (a malformed or pre-language-aware answer)
     # falls back to French - see tts.speak.
     language: str | None = None
+    # "set_reminder" only: how far ahead to fire, in seconds. Nemotron does
+    # the unit arithmetic ("dans un quart d'heure" -> 900): it already
+    # understands the phrasing, and a second parser here would be one more
+    # place for "une heure et demie" to be got wrong.
+    duration_seconds: float | None = None
     # Whether the exchange is finished. False keeps the microphone open for a
     # reply with no wake word, which is what makes this a conversation rather
     # than a series of unrelated commands: Hey Peer stops listening when the

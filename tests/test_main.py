@@ -2331,3 +2331,147 @@ def test_speak_restores_mute_even_if_tts_raises(tmp_path: Path) -> None:
         peer._speak("bonjour")
     listener.mute.assert_called_once()
     assert listener.on_barge_in is None
+
+
+def _reminder_intent(**kwargs) -> Intent:
+    base = dict(action="set_reminder", skill_id=None, n_repetitions=1)
+    base.update(kwargs)
+    return Intent(**base)
+
+
+def test_set_reminder_schedules_and_confirms(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_ensure_countdown"):
+        peer._run_set_reminder("les pâtes", 600, None, "fr")
+    assert len(peer._reminders.active()) == 1
+    assert peer._reminders.active()[0].label == "les pâtes"
+    assert "10 minutes" in speak.call_args.args[0]
+    peer._reminders.clear()
+
+
+def test_set_reminder_refuses_without_a_duration(tmp_path: Path) -> None:
+    """Never silently schedule a guess - a timer with no length is a
+    misunderstanding, not a default."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_set_reminder("les pâtes", None, None, "fr")
+    assert peer._reminders.active() == []
+    assert "durée" in speak.call_args.args[0]
+
+
+def test_set_reminder_says_so_when_there_are_already_too_many(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    from heypeer.executor.reminders import MAX_ACTIVE
+
+    for i in range(MAX_ACTIVE):
+        peer._reminders.add(f"t{i}", 600)
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_ensure_countdown"):
+        peer._run_set_reminder("one too many", 600, None, "fr")
+    assert "trop de minuteurs" in speak.call_args.args[0]
+    peer._reminders.clear()
+
+
+def test_a_reminder_speaks_when_it_comes_due(tmp_path: Path) -> None:
+    """The whole point: it talks with no wake word and no exchange open."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    reminder = MagicMock(label="les pâtes", language="fr")
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_refresh_countdown"):
+        peer._on_reminder_due(reminder)
+    assert "les pâtes" in speak.call_args.args[0]
+
+
+def test_a_due_reminder_does_not_leave_the_microphone_open(tmp_path: Path) -> None:
+    """The user may not even be at the machine - a timer nobody answered
+    must not leave Hey Peer listening."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    reminder = MagicMock(label="", language="fr")
+    with patch.object(peer, "_speak"), patch.object(peer, "_refresh_countdown"), patch.object(
+        peer, "_arm_followup"
+    ) as arm:
+        peer._on_reminder_due(reminder)
+    arm.assert_not_called()
+
+
+def test_cancel_reminder_with_one_running_needs_no_label(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    with patch.object(peer, "_speak"), patch.object(peer, "_refresh_countdown"):
+        peer._run_cancel_reminder(None, None, "fr")
+    assert peer._reminders.active() == []
+
+
+def test_cancel_reminder_asks_which_when_several_are_running(tmp_path: Path) -> None:
+    """Cancelling the wrong timer silently is worse than asking."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    peer._reminders.add("la lessive", 900)
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_arm_followup") as arm:
+        peer._run_cancel_reminder(None, None, "fr")
+    assert len(peer._reminders.active()) == 2, "nothing should have been cancelled"
+    assert "Lequel" in speak.call_args.args[0]
+    arm.assert_called_once()
+    peer._reminders.clear()
+
+
+def test_cancel_reminder_matches_a_named_one_among_several(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    peer._reminders.add("la lessive", 900)
+    with patch.object(peer, "_speak"), patch.object(peer, "_refresh_countdown"):
+        peer._run_cancel_reminder("les pâtes", None, "fr")
+    assert [r.label for r in peer._reminders.active()] == ["la lessive"]
+    peer._reminders.clear()
+
+
+def test_cancel_reminder_with_nothing_running_says_so(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_cancel_reminder(None, None, "fr")
+    assert "aucun minuteur" in speak.call_args.args[0]
+
+
+def test_list_reminders_reads_back_what_is_left(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_list_reminders("fr")
+    spoken = speak.call_args.args[0]
+    assert "les pâtes" in spoken and "minutes" in spoken
+    peer._reminders.clear()
+
+
+def test_list_reminders_with_nothing_running(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak:
+        peer._run_list_reminders("fr")
+    assert "aucun minuteur" in speak.call_args.args[0]
+
+
+def test_quitting_cancels_pending_timers(tmp_path: Path) -> None:
+    """A daemon timer firing into a half-shut-down app would try to speak
+    through an audio stack that is going away."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._reminders.add("les pâtes", 600)
+    peer._on_quit()
+    assert peer._reminders.active() == []
+
+
+def test_set_reminder_dispatches_from_an_intent(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    intent = _reminder_intent(content="les pâtes", duration_seconds=600, speech="C'est noté.")
+    with patch.object(peer, "_run_set_reminder") as run:
+        peer._dispatch_intent(intent, "mets un minuteur")
+    run.assert_called_once_with("les pâtes", 600, "C'est noté.", "fr")

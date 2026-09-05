@@ -2780,7 +2780,7 @@ rather than assuming. Chosen from that list by the user, in this order:
       whole utterance then hands it to `audio_out.play`, which does a single
       blocking `stream.write(samples)`: there is no way to stop it. Needs
       chunked playback plus a stop signal.
-- [ ] **2. Reminders, timers and alarms**, with a real on-screen countdown -
+- [x] **2. Reminders, timers and alarms**, with a real on-screen countdown -
       the single most-used voice-assistant feature in every comparison
       found, and Hey Peer cannot do it at all. Needs a scheduler that
       outlives the exchange and can *speak without a wake word*.

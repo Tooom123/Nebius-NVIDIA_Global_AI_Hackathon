@@ -340,6 +340,37 @@ read back weeks from now with no other context - not \"vendredi\" alone, \
   a fresh launch of the app, in an exchange that has not started yet - not
   just for the rest of this conversation.
 
+- Set a timer or a reminder (e.g. "mets un minuteur de 10 minutes", \
+"rappelle-moi dans un quart d'heure", "previens-moi dans 2 minutes pour les \
+pates", "reveille-moi dans une heure"):
+  {"action": "set_reminder", \
+"duration_seconds": <how long from now, in seconds, as a number - you do \
+the arithmetic: "10 minutes" is 600, "un quart d'heure" is 900, "une heure \
+et demie" is 5400>, \
+"content": "<what it is for, if they said - \"les pates\" for \"previens-moi \
+dans 2 minutes pour les pates\". Empty string when they just asked for a \
+timer with no reason given - never invent one>", \
+"speech": "<one short sentence confirming it, e.g. \"C'est note, dans 10 \
+minutes.\">", "end_turn": true}
+  If they gave no duration at all ("mets un minuteur"), use "ask" for it -
+  a timer needs a length, and guessing one is worse than asking.
+  A time of day rather than a delay ("reveille-moi a 7h") is not this yet:
+  answer with "reply" that you only do delays from now for the moment.
+
+- Cancel a timer that is running (e.g. "annule le minuteur", "arrete le \
+minuteur des pates", "laisse tomber le rappel"):
+  {"action": "cancel_reminder", \
+"content": "<which one, in the user's own words - \"les pates\". Empty \
+string for \"annule le minuteur\" with nothing to distinguish it>", \
+"speech": "<one short sentence, e.g. \"C'est annule.\">", "end_turn": true}
+
+- Say what is left on a running timer (e.g. "il reste combien de temps ?", \
+"c'est quoi mes minuteurs ?", "ou en est le minuteur des pates ?"):
+  {"action": "list_reminders", "speech": null, "end_turn": true}
+  Leave "speech" null: the time left is read from the running timers after
+  this JSON, and any sentence written here would be a guess at a number you
+  do not have.
+
 - Carry out a general, multi-step task with no action above for it, that a \
 capable assistant with broader tools (web research, scheduling, browsing \
 and interacting with a website - clicking, filling a form, navigating - or \
@@ -561,6 +592,18 @@ _TYPOGRAPHIC = {
 }
 
 
+def _positive_number(value) -> "float | None":
+    """A duration from the model, or None if it isn't one.
+
+    Strict about zero and negatives as well as about types: a timer for
+    "0 seconds" or "-5" is a misunderstanding, and scheduling it would fire
+    instantly and look like a bug rather than surfacing the problem. The
+    caller treats None as "no duration given" and asks."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
 def _plain_punctuation(text: "str | None") -> "str | None":
     """Replaces typographic punctuation with ASCII equivalents.
 
@@ -617,6 +660,7 @@ def _parse_intent(raw_content: "str | None") -> Intent:
         question=_plain_punctuation(data.get("question")),
         speech=_plain_punctuation(data.get("speech")),
         language=data.get("language") if data.get("language") in ("fr", "en") else None,
+        duration_seconds=_positive_number(data.get("duration_seconds")),
         # Absent or non-boolean means "over". An exchange that stays open
         # keeps the microphone live with no wake word to gate it, so that is
         # the state a malformed answer must not be able to fall into.
