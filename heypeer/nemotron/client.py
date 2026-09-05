@@ -1,4 +1,34 @@
-"""Client for Nemotron 3 Nano Omni served via Nebius Token Factory.
+"""Client for the models served via Nebius Token Factory.
+
+## Two models, because one of them cannot see
+
+`settings.nemotron_model_id` classifies every spoken turn;
+`settings.vision_model_id` handles the two calls that send an image
+(`describe_image`, `diagnose_screen_code`) plus the unused `verify_screen`.
+
+That split is forced, not a preference. This project ran on
+`nvidia/Nemotron-3-Nano-Omni`, which handled both, until Nebius removed it
+from Serverless on 2026-08-31. Its recommended replacement,
+`nvidia/Nemotron-3_5-Lightning`, answers "This model does not support image
+input" to every image request - as does every other Nemotron currently on
+the endpoint. Checked live rather than assumed: `google/gemma-3-27b-it` and
+`openbmb/MiniCPM-V-4_5` are the vision-capable options there, and on the
+project's own "what is wrong with this code" screenshot Gemma found the
+real bug (division by zero on an empty list) while MiniCPM hallucinated a
+missing brace in Python. Hence Gemma as the default, overridable with
+VISION_MODEL_ID.
+
+Both are still reached through the same OpenAI-compatible API and the same
+client; only the model id differs per call.
+
+## Historical note on image + JSON mode
+
+An earlier deployment returned a hard 400 for `response_format=
+{"type": "json_object"}` together with image content, which is why
+`interpret_text`'s own `screenshot_path` parameter exists but is never
+used. That limitation does not apply to the current vision model -
+re-verified live during the migration: image plus json_object works, and
+`diagnose_screen_code` depends on it.
 
 Nebius Token Factory exposes an OpenAI-compatible Chat Completions API, so this
 uses the `openai` SDK pointed at Nebius's base URL.
@@ -644,6 +674,15 @@ language:
 If the code actually looks fine, say so plainly and do not invent a problem
 or offer to fix something that is not broken.
 
+Name the actual defect and its consequence - "la division echoue si la
+liste est vide" - never a restatement that says the same expression twice
+("tu utilises X au lieu de X"), and never a vague "il y a une erreur ici".
+If you genuinely cannot read the code clearly enough in the screenshot to
+tell, say that instead: it is a useful answer, and a confident wrong one is
+not.
+
+In French, address the user as "tu", never "vous".
+
 Plain ASCII punctuation only. Respond with ONLY a JSON object:
 {"diagnosis": "<what to say>"}.
 """
@@ -978,13 +1017,14 @@ class NemotronClient:
                 "text": (
                     f"Question ({'English' if language == 'en' else 'French'}): {question}\n\n"
                     'Answer in two or three short spoken sentences, in that language, plain ASCII '
-                    'punctuation only. Respond with ONLY a JSON object: {"answer": "<the answer>"}'
+                    'punctuation only. In French address the user as "tu", never "vous". '
+                    'Respond with ONLY a JSON object: {"answer": "<the answer>"}'
                 ),
             },
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
         ]
         response = self._client.chat.completions.create(
-            model=self.settings.nemotron_model_id,
+            model=self.settings.vision_model_id,
             response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
         )
@@ -1016,7 +1056,7 @@ class NemotronClient:
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
         ]
         response = self._client.chat.completions.create(
-            model=self.settings.nemotron_model_id,
+            model=self.settings.vision_model_id,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": DIAGNOSE_SCREEN_CODE_SYSTEM_PROMPT},
@@ -1036,7 +1076,7 @@ class NemotronClient:
         """Visual verification hook used by SkillRunner between replay steps."""
         image_b64 = base64.b64encode(screenshot_png).decode()
         response = self._client.chat.completions.create(
-            model=self.settings.nemotron_model_id,
+            model=self.settings.vision_model_id,
             messages=[
                 {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
                 {
