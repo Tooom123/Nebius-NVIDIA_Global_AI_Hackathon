@@ -2598,3 +2598,54 @@ def test_listing_routines_reads_the_names(tmp_path: Path) -> None:
     ) as speak:
         peer._run_list_routines("fr")
     assert "matin" in speak.call_args.args[0] and "boulot" in speak.call_args.args[0]
+
+
+def test_listen_to_screen_says_so_when_unsupported(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=False), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_listen_to_screen("qu'est-ce qu'ils disent ?", None, "fr")
+    assert "son de l'ordinateur" in speak.call_args.args[0]
+
+
+def test_listen_to_screen_transcribes_locally_then_asks_about_the_text(tmp_path: Path) -> None:
+    """The audio must never leave the machine just because the user asked
+    what was said - only the transcript goes to the model."""
+    nemotron = MagicMock()
+    nemotron.answer_about_text.return_value = "Ils parlent du budget."
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=True), patch(
+        "heypeer.executor.system_audio.capture", return_value=b"\x01\x00" * 100
+    ), patch("heypeer.wakeword.stt.transcribe", return_value="on parle du budget"), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_listen_to_screen("qu'est-ce qu'ils disent ?", None, "fr")
+    nemotron.answer_about_text.assert_called_once()
+    assert nemotron.answer_about_text.call_args.args[0] == "on parle du budget"
+    assert speak.call_args.args[0] == "Ils parlent du budget."
+
+
+def test_silence_is_reported_as_silence_not_as_a_failure(tmp_path: Path) -> None:
+    """Nothing playing is the likely case, and it is not an error."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=True), patch(
+        "heypeer.executor.system_audio.capture", return_value=b"\x00\x00" * 100
+    ), patch("heypeer.wakeword.stt.transcribe", return_value="   "), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_listen_to_screen("quoi ?", None, "fr")
+    assert "rien entendu" in speak.call_args.args[0]
+    nemotron.answer_about_text.assert_not_called()
+
+
+def test_a_capture_failure_is_reported_honestly(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.system_audio.is_available", return_value=True), patch(
+        "heypeer.executor.system_audio.capture", side_effect=RuntimeError("no device")
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_listen_to_screen("quoi ?", None, "fr")
+    assert "capter le son" in speak.call_args.args[0]

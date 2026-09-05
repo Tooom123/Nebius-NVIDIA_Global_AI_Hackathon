@@ -34,6 +34,7 @@ ACTIONS = (
     "create_routine",  # "quand je dis X, fais A et B" - target_name is X, content the steps
     "run_routine",  # "lance ma routine du matin" - target_name is which one
     "list_routines",  # "c'est quoi mes routines ?" - no field
+    "listen_to_screen",  # "qu'est-ce qu'elle dit dans cette video ?" - captures system audio
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -89,6 +90,7 @@ ACTION_DESCRIPTIONS = {
     "create_routine": "create a named routine",
     "run_routine": "run a named routine",
     "list_routines": "list the routines",
+    "listen_to_screen": "listen to what the computer is playing",
 }
 
 

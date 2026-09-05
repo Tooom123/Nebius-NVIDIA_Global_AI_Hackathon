@@ -466,6 +466,94 @@ class HeyPeer:
                 parts.append(left)
         self._speak(", ".join(parts) + ".", language=language)
 
+    # How long to listen to system audio for. Long enough to catch a
+    # sentence or two of a video, short enough that the user is not left
+    # waiting wondering whether it heard them.
+    LISTEN_SECONDS = 12.0
+
+    def _run_listen_to_screen(
+        self, question: str, narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Captures what the machine is playing, transcribes it locally, and
+        answers `question` about it.
+
+        Transcription is local (the same Whisper the microphone path uses),
+        so audio the user was merely listening to never leaves the machine
+        just because they asked what was said. Only the resulting text goes
+        to the model, exactly as with a document or the clipboard.
+        """
+        from heypeer.executor import system_audio
+
+        if not system_audio.is_available():
+            self._log("System audio capture unavailable.")
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je ne peux pas écouter le son de l'ordinateur sur cette machine.",
+                    "I can't listen to this computer's audio on this machine.",
+                ),
+                language=language,
+            )
+            return
+
+        self._speak(
+            narration or _bilingual(language, "J'écoute...", "Listening..."),
+            language=language,
+        )
+        try:
+            raw = system_audio.capture(self.LISTEN_SECONDS)
+        except Exception as exc:
+            self._log(f"System audio capture failed: {exc}")
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je n'ai pas réussi à capter le son.",
+                    "I couldn't capture the audio.",
+                ),
+                language=language,
+            )
+            return
+
+        text = ""
+        if raw:
+            try:
+                import numpy as np
+
+                from heypeer.wakeword.stt import transcribe
+
+                text = transcribe(np.frombuffer(raw, dtype=np.int16))
+            except Exception as exc:
+                self._log(f"Transcribing system audio failed: {exc}")
+
+        if not text.strip():
+            # Silence is the likely case when nothing is actually playing,
+            # and it must not be reported as a transcription failure.
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je n'ai rien entendu, il n'y a peut-être rien en cours de lecture.",
+                    "I didn't hear anything - maybe nothing is playing.",
+                ),
+                language=language,
+            )
+            return
+
+        self._log(f"Heard: {text[:200]}")
+        try:
+            answer = self.nemotron.answer_about_text(text, question, language)
+        except Exception as exc:
+            self._log(f"Answering about the captured audio failed: {exc}")
+            answer = ""
+        self._speak(
+            answer
+            or _bilingual(
+                language,
+                "Je n'ai pas réussi à analyser ce que j'ai entendu.",
+                "I couldn't make sense of what I heard.",
+            ),
+            language=language,
+        )
+
     def _run_create_routine(
         self,
         name: "str | None",
@@ -1093,6 +1181,10 @@ class HeyPeer:
             self._run_run_routine(intent.target_name, language)
         elif intent.action == "list_routines":
             self._run_list_routines(language)
+        elif intent.action == "listen_to_screen":
+            self._run_listen_to_screen(
+                intent.question or instruction_text, intent.speech, language
+            )
         elif intent.action == "move_file" and intent.src_filename and intent.dest_folder:
             source = self._resolved_path(intent.src_filename)
             self._run_file_action(

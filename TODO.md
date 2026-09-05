@@ -2793,7 +2793,7 @@ rather than assuming. Chosen from that list by the user, in this order:
       feature. Note: an *auto-learned* version was built and deliberately
       deleted (see main.py's module docstring); this is the explicit,
       user-named kind, which avoids all three reasons that one failed.
-- [ ] **7. System audio capture (loopback)** - hear what the machine is
+- [x] **7. System audio capture (loopback)** - hear what the machine is
       playing, not just the microphone. Unlocks "resume ce que dit cette
       video" and meeting notes.
 - [ ] **8. Visual overlay** - show the answer as well as speak it. The blob

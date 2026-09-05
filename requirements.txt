@@ -35,3 +35,9 @@ pyperclip>=1.8.2
 
 # PDF text extraction, for "resume ce PDF" - pure Python, no C extension.
 pypdf>=4.0.0
+
+# System-audio (loopback) capture, for "resume ce que dit cette video".
+# Windows-only by nature - WASAPI loopback is a Windows API, and this
+# package publishes Windows wheels only - and optional: everything degrades
+# to saying so when it is missing. See executor/system_audio.py.
+# pyaudiowpatch>=0.2.12 ; sys_platform == "win32"

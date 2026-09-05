@@ -400,6 +400,18 @@ you know" - only ever use this action for a name in that list:
 que tu sais faire en routine ?"):
   {"action": "list_routines", "speech": null, "end_turn": true}
 
+- Listen to what the computer is currently playing and answer about it \
+(e.g. "qu'est-ce qu'elle dit dans cette video ?", "resume ce qui se dit \
+la", "j'ai rate la derniere phrase, c'etait quoi ?"):
+  {"action": "listen_to_screen", \
+"question": "<what the user wants to know about it, in their own words>", \
+"speech": "<one short sentence, e.g. \"J'ecoute...\">", "end_turn": true}
+  This captures the sound the machine is playing, not the microphone - it
+  is for a video, a call or a track already running, never for something
+  said out loud in the room. You do not have the audio while writing this
+  JSON; it is captured and answered afterwards, so never guess at what was
+  said here.
+
 - Carry out a general, multi-step task with no action above for it, that a \
 capable assistant with broader tools (web research, scheduling, browsing \
 and interacting with a website - clicking, filling a form, navigating - or \
@@ -541,6 +553,26 @@ printed to a terminal and spoken aloud.
 # above, which only produces intent JSON before anything has been read),
 # this turns it into something worth saying out loud rather than reading it
 # verbatim - see `NemotronClient.summarize_for_speech`.
+ANSWER_ABOUT_TEXT_SYSTEM_PROMPT = """\
+You are answering a spoken question about something the user was listening
+to. The text you are given is a transcript of audio their computer was
+playing - a video, a call, a track - transcribed automatically, so it may
+be imperfect, may start mid-sentence, and may end mid-sentence.
+
+Answer their question from that transcript and nothing else. If it does not
+contain the answer, say so plainly rather than filling the gap: "ils n'en
+parlent pas dans ce que j'ai entendu" is a good answer, an invented one is
+not. If the question is general ("qu'est-ce qu'ils disent ?"), summarize
+what was said instead.
+
+Two or three short sentences, in the given language, plain ASCII
+punctuation. This is read aloud: no bullet points, no headings, no
+"according to the transcript".
+
+Respond with ONLY a JSON object: {"answer": "<what to say out loud>"}.
+"""
+
+
 SUMMARIZE_SYSTEM_PROMPT = """\
 You turn a block of text into something worth saying out loud. The text
 came from the clipboard or a document Hey Peer read for the user; you were
@@ -860,6 +892,38 @@ class NemotronClient:
         except json.JSONDecodeError:
             return ""
         return _plain_punctuation(data.get("summary")) or ""
+
+    def answer_about_text(self, text: str, question: str, language: str = "fr") -> str:
+        """Answers `question` about `text` - a transcript of what the
+        machine was playing (see `executor/system_audio.py`).
+
+        Distinct from `summarize_for_speech` because the user usually asked
+        something specific ("j'ai rate la derniere phrase, c'etait quoi ?"),
+        and a summary is the wrong answer to a question. The prompt handles
+        the general case by falling back to a summary, so this covers both
+        without a second call deciding which one to make.
+        """
+        truncated = text[: self.SUMMARIZE_MAX_CHARS]
+        content = (
+            f"Language: {'English' if language == 'en' else 'French'}\n"
+            f"Question: {question}\n\nTranscript:\n{truncated}"
+        )
+        response = self._client.chat.completions.create(
+            model=self.settings.nemotron_model_id,
+            messages=[
+                {"role": "system", "content": ANSWER_ABOUT_TEXT_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+        return _plain_punctuation(data.get("answer")) or ""
 
     def diagnose_code(self, code: str, question: str, language: str = "fr") -> str:
         """A short, spoken diagnosis of `code` - what's wrong and why, or

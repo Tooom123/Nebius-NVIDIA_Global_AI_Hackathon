@@ -134,6 +134,19 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in NEBIUS_API_KEY
 ```
 
+One capability is an opt-in extra rather than a default install: listening
+to what the computer is *playing* ("resume ce que dit cette video") needs
+WASAPI loopback, which is Windows-only and ships in a separate package.
+
+```bash
+pip install pyaudiowpatch   # Windows only; everything else works without it
+```
+
+Without it Hey Peer says it cannot listen to system audio, and nothing else
+changes. It is deliberately not in `requirements.txt`: the package has no
+macOS or Linux wheel, so requiring it would break `pip install` for
+everyone not on Windows.
+
 ## Running
 
 ```bash
