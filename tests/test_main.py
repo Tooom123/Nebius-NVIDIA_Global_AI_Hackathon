@@ -1682,13 +1682,18 @@ def test_summarize_document_reads_extracts_and_summarizes(
         action="summarize_document", skill_id=None, n_repetitions=1,
         target_name="facture.pdf", speech="Voici un résumé de facture.pdf :",
     )
-    nemotron.summarize_for_speech.return_value = "Une facture de 42 euros."
+    nemotron.summarize_long_text.return_value = ("Une facture de 42 euros.", True)
     peer = HeyPeer(nemotron=nemotron, watched_dir=watched_dir, get_instruction=lambda: "resume facture.pdf")
 
-    with patch("heypeer.executor.documents.extract_text", return_value="Facture, 42 EUR"):
+    from heypeer.executor.documents import Extraction
+
+    with patch(
+        "heypeer.executor.documents.extract",
+        return_value=Extraction("Facture, 42 EUR"),
+    ):
         peer.on_wake_word()
 
-    nemotron.summarize_for_speech.assert_called_once_with("Facture, 42 EUR", "fr")
+    nemotron.summarize_long_text.assert_called_once_with("Facture, 42 EUR", "fr")
     assert fake_tts.call_args_list[0].args == ("Voici un résumé de facture.pdf :",)
     assert fake_tts.call_args_list[1].args == ("Une facture de 42 euros.",)
 
@@ -2714,3 +2719,90 @@ def test_a_failed_caption_window_is_not_retried_every_answer(tmp_path: Path) -> 
         peer._show_caption("une phrase assez longue pour être affichée à l'écran")
         peer._show_caption("une autre phrase assez longue pour être affichée")
     assert window.call_count == 1
+
+
+def test_a_partly_read_document_says_so_out_loud(tmp_path: Path) -> None:
+    """The whole point of this change. Summarizing part of a document while
+    sounding like it read all of it is a wrong answer dressed as a complete
+    one - worse than either reading it all or admitting the limit."""
+    from heypeer.executor.documents import Extraction
+
+    nemotron = MagicMock()
+    nemotron.summarize_long_text.return_value = ("Un rapport trimestriel.", True)
+    watched = tmp_path / "Downloads"
+    watched.mkdir()
+    (watched / "rapport.pdf").write_text("x")
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched)
+
+    with patch(
+        "heypeer.executor.documents.extract",
+        return_value=Extraction("texte", complete=False, pages_read=300, pages_total=420),
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_summarize_document("rapport.pdf", None, "fr")
+
+    spoken = " ".join(c.args[0] for c in speak.call_args_list)
+    assert "420" in spoken and "300" in spoken, "must say how much it actually read"
+    assert "Un rapport trimestriel." in spoken
+
+
+def test_a_document_read_in_full_makes_no_excuse(tmp_path: Path) -> None:
+    """The caveat must not appear when it read everything - a warning that
+    fires always is a warning nobody reads."""
+    from heypeer.executor.documents import Extraction
+
+    nemotron = MagicMock()
+    nemotron.summarize_long_text.return_value = ("Une facture.", True)
+    watched = tmp_path / "Downloads"
+    watched.mkdir()
+    (watched / "facture.pdf").write_text("x")
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched)
+
+    with patch(
+        "heypeer.executor.documents.extract", return_value=Extraction("texte")
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_summarize_document("facture.pdf", None, "fr")
+
+    spoken = " ".join(c.args[0] for c in speak.call_args_list)
+    assert "pages" not in spoken and "partie" not in spoken
+
+
+def test_a_document_too_long_to_summarize_whole_says_so(tmp_path: Path) -> None:
+    """The other cause of incompleteness: chunking stopped at MAX_CHUNKS."""
+    from heypeer.executor.documents import Extraction
+
+    nemotron = MagicMock()
+    nemotron.summarize_long_text.return_value = ("Un long rapport.", False)
+    watched = tmp_path / "Downloads"
+    watched.mkdir()
+    (watched / "rapport.pdf").write_text("x")
+    peer = HeyPeer(nemotron=nemotron, watched_dir=watched)
+
+    with patch(
+        "heypeer.executor.documents.extract", return_value=Extraction("texte")
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_summarize_document("rapport.pdf", None, "fr")
+
+    spoken = " ".join(c.args[0] for c in speak.call_args_list)
+    assert "qu'une partie" in spoken
+
+
+def test_summarizing_a_document_outside_the_watched_folder(tmp_path: Path) -> None:
+    """Consistency with the file actions widened two days ago: this handler
+    still resolved names against the watched directory only."""
+    from heypeer.executor.documents import Extraction
+
+    nemotron = MagicMock()
+    nemotron.summarize_long_text.return_value = ("Un contrat.", True)
+    elsewhere = tmp_path / "Documents"
+    elsewhere.mkdir()
+    doc = elsewhere / "contrat.pdf"
+    doc.write_text("x")
+    peer = HeyPeer(nemotron=nemotron, watched_dir=tmp_path / "Downloads")
+
+    with patch.object(peer, "_resolved_path", return_value=doc), patch(
+        "heypeer.executor.documents.extract", return_value=Extraction("texte")
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_summarize_document("contrat.pdf", None, "fr")
+
+    spoken = " ".join(c.args[0] for c in speak.call_args_list)
+    assert "Un contrat." in spoken

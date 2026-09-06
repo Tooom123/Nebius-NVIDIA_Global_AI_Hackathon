@@ -2851,7 +2851,7 @@ independently in `executor/screen.py`. Not copied, converged.
 
 Worth taking, roughly in order of value per unit of work:
 
-- [ ] **Read whole documents, not the first 4000 characters.** Their v1.0.47.
+- [x] **Read whole documents, not the first 4000 characters.** Their v1.0.47.
       `SUMMARIZE_MAX_CHARS = 4000` and `MAX_PAGES = 30` mean "resume ce PDF"
       silently answers from the beginning of a long document and never says
       so. Two honest fixes, either acceptable: chunk-and-combine, or keep the

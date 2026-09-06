@@ -10,6 +10,7 @@ tell those apart and says the same honest thing regardless.
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from heypeer.executor import documents
 from heypeer.executor.documents import extract_text
 
 
@@ -88,3 +89,42 @@ def test_pages_beyond_the_cap_are_not_extracted() -> None:
         page.extract_text.assert_called_once()
     for page in pages[MAX_PAGES:]:
         page.extract_text.assert_not_called()
+
+
+def test_extraction_reports_a_complete_document(tmp_path: Path) -> None:
+    doc = tmp_path / "note.txt"
+    doc.write_text("bonjour", encoding="utf-8")
+    got = documents.extract(doc)
+    assert got.text == "bonjour"
+    assert got.complete is True
+
+
+def test_extract_text_still_returns_a_plain_string(tmp_path: Path) -> None:
+    """The old API is still used elsewhere and must not have changed shape."""
+    doc = tmp_path / "note.txt"
+    doc.write_text("bonjour", encoding="utf-8")
+    assert documents.extract_text(doc) == "bonjour"
+
+
+def test_a_document_longer_than_max_pages_is_marked_incomplete(monkeypatch) -> None:
+    """It reads what it can and says so - the alternative, staying quiet,
+    is the bug this replaced."""
+    from unittest.mock import MagicMock
+
+    page = MagicMock()
+    page.extract_text.return_value = "page"
+    reader = MagicMock()
+    reader.pages = [page] * (documents.MAX_PAGES + 20)
+    fake_pypdf = MagicMock()
+    fake_pypdf.PdfReader.return_value = reader
+    monkeypatch.setitem(__import__("sys").modules, "pypdf", fake_pypdf)
+
+    got = documents.extract(Path("big.pdf"))
+    assert got.complete is False
+    assert got.pages_read == documents.MAX_PAGES
+    assert got.pages_total == documents.MAX_PAGES + 20
+
+
+def test_max_pages_is_high_enough_for_an_ordinary_report() -> None:
+    """It was 30, which silently cut a sixty-page report in half."""
+    assert documents.MAX_PAGES >= 100

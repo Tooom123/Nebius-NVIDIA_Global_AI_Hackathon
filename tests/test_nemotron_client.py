@@ -962,3 +962,116 @@ def test_diagnose_screen_code_returns_empty_string_on_no_answer() -> None:
         diagnosis = client.diagnose_screen_code(b"fake-png-bytes", "why?")
 
     assert diagnosis == ""
+
+
+def _client_with(monkeypatch, summaries: "list[str]") -> "tuple[NemotronClient, list]":
+    """A client whose `summarize_for_speech` returns `summaries` in order,
+    recording what it was asked to summarize."""
+    from unittest.mock import MagicMock
+
+    from heypeer.config import Settings
+
+    client = NemotronClient(
+        Settings(nebius_api_key="k", nebius_base_url="http://x", nemotron_model_id="m")
+    )
+    seen = []
+    calls = iter(summaries)
+
+    def fake(text, language="fr"):
+        seen.append(text)
+        return next(calls)
+
+    monkeypatch.setattr(client, "summarize_for_speech", fake)
+    return client, seen
+
+
+def test_short_text_takes_the_single_call_path(monkeypatch) -> None:
+    """Nothing that already worked may pay for long-document support."""
+    client, seen = _client_with(monkeypatch, ["un resume"])
+    summary, complete = client.summarize_long_text("court", "fr")
+    assert summary == "un resume"
+    assert complete is True
+    assert seen == ["court"], "short text must be one call, not chunked"
+
+
+def test_a_long_document_is_summarized_in_full_not_truncated(monkeypatch) -> None:
+    """The bug this replaced: a sixty-page report answered from its first
+    few pages, presented as the summary of the whole thing."""
+    text = "A" * 20000
+    client, seen = _client_with(monkeypatch, ["p1", "p2", "p3", "p4", "final"])
+    summary, complete = client.summarize_long_text(text, "fr")
+
+    assert summary == "final"
+    assert complete is True
+    # Every character of the document reached a chunk.
+    assert sum(len(t) for t in seen[:-1]) == len(text)
+
+
+def test_the_partials_are_combined_into_one_spoken_summary(monkeypatch) -> None:
+    client, seen = _client_with(monkeypatch, ["p1", "p2", "p3", "p4", "final"])
+    client.summarize_long_text("A" * 20000, "fr")
+    assert "p1" in seen[-1] and "p2" in seen[-1], "the last call combines the partials"
+
+
+def test_a_very_long_document_reports_that_it_is_incomplete(monkeypatch) -> None:
+    """Past MAX_CHUNKS the caller must be able to say so - silently
+    summarizing part of a document is exactly what this replaced."""
+    from heypeer.nemotron.client import NemotronClient as C
+
+    text = "A" * (C.CHUNK_CHARS * (C.MAX_CHUNKS + 5))
+    client, _ = _client_with(monkeypatch, ["p"] * (C.MAX_CHUNKS + 1))
+    _, complete = client.summarize_long_text(text, "fr")
+    assert complete is False
+
+
+def test_one_failed_chunk_does_not_lose_the_rest(monkeypatch) -> None:
+    from heypeer.config import Settings
+
+    client = NemotronClient(
+        Settings(nebius_api_key="k", nebius_base_url="http://x", nemotron_model_id="m")
+    )
+    calls = {"n": 0}
+
+    def flaky(text, language="fr"):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("one chunk failed")
+        return f"part {calls['n']}"
+
+    monkeypatch.setattr(client, "summarize_for_speech", flaky)
+    summary, _ = client.summarize_long_text("A" * 20000, "fr")
+    assert summary, "a single failed chunk must not lose the whole document"
+
+
+def test_every_chunk_failing_returns_nothing_rather_than_a_lie(monkeypatch) -> None:
+    from heypeer.config import Settings
+
+    client = NemotronClient(
+        Settings(nebius_api_key="k", nebius_base_url="http://x", nemotron_model_id="m")
+    )
+    monkeypatch.setattr(
+        client, "summarize_for_speech",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")),
+    )
+    summary, _ = client.summarize_long_text("A" * 20000, "fr")
+    assert summary == ""
+
+
+def test_a_failed_combine_falls_back_to_a_real_partial(monkeypatch) -> None:
+    """Better a real summary of part of the document than nothing."""
+    from heypeer.config import Settings
+
+    client = NemotronClient(
+        Settings(nebius_api_key="k", nebius_base_url="http://x", nemotron_model_id="m")
+    )
+    calls = {"n": 0}
+
+    def fail_on_combine(text, language="fr"):
+        calls["n"] += 1
+        if len(text) < client.CHUNK_CHARS:  # the combine pass
+            raise RuntimeError("combine failed")
+        return f"part {calls['n']}"
+
+    monkeypatch.setattr(client, "summarize_for_speech", fail_on_combine)
+    summary, _ = client.summarize_long_text("A" * 20000, "fr")
+    assert summary.startswith("part ")
