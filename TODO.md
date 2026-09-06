@@ -2831,6 +2831,75 @@ workstation itself - files, windows, clipboard, code diagnosis by vision -
 which is what Hey Peer already does. Items 7 and 8 were picked because they
 widen that gap rather than close someone else's.
 
+## Round 42: ideas taken from Clicky's five months of changelog (2026-09-07)
+
+Clicky (heyclicky.com, github.com/farzaa/clicky) is a macOS voice assistant
+that ships the same shape of product. Read its full changelog v1.0 -> v1.0.48
+and its open-source code. Correcting an earlier read of mine: the public repo
+is frozen at April 2026 and only *points* at things, but the shipped product
+has clicked, spawned agents and driven the desktop since v1.0.12 (May).
+
+It is not a hackathon rival - macOS only, built on Claude (the track requires
+an open-source NVIDIA model), everything through their cloud. But five months
+of dated, shipped entries is a very good map of which problems in this product
+category are real, because each one is a thing they hit and had to fix.
+
+Two entries confirmed choices already made here, which is worth recording:
+their v1.0.22 "Interrupt Me Anytime" is exactly round 41's barge-in, and their
+screenshots are 1280px at 80% quality - the same 1280 arrived at
+independently in `executor/screen.py`. Not copied, converged.
+
+Worth taking, roughly in order of value per unit of work:
+
+- [ ] **Read whole documents, not the first 4000 characters.** Their v1.0.47.
+      `SUMMARIZE_MAX_CHARS = 4000` and `MAX_PAGES = 30` mean "resume ce PDF"
+      silently answers from the beginning of a long document and never says
+      so. Two honest fixes, either acceptable: chunk-and-combine, or keep the
+      cap and *say* it only read the first part. Silently summarising 8% of a
+      report as if it were the whole thing is the current behaviour and it is
+      the worst of the three.
+- [ ] **Say it out loud when the answer cannot be spoken.** Their v1.0.48
+      handles a muted speaker by putting the reply on the clipboard. Hey Peer
+      speaks into a muted machine and the user gets nothing at all. The
+      caption overlay from round 41 already half-covers this; the missing
+      piece is noticing.
+- [ ] **Route quick turns to a faster model.** Their v1.0.45 split routing so
+      short questions go to a fast model and hard ones to a frontier model,
+      and they list it as the single biggest latency win. Hey Peer sends
+      every turn to the same model. `fast_path.py` is the same idea one layer
+      lower (regex before any model at all), so the shape already exists.
+- [ ] **Speaking-rate control.** Their v1.0.45, 0.5x-1.5x. Ours is a fixed
+      `SYNTHESIS_LENGTH_SCALE = 0.95`. Cheap: Piper takes the parameter
+      already, it only needs a setting and a spoken way to change it.
+- [ ] **Multi-step walkthroughs that survive a pause.** Their v1.0.26, raised
+      from 5 to 15 steps in v1.0.48 - so users evidently wanted longer ones.
+      Named routines (round 41) run steps back-to-back with no pause for the
+      user to actually *do* something between them. A routine that waits for
+      "c'est bon, ensuite ?" is a different and more useful thing.
+- [ ] **Per-application knowledge.** Their v1.0.28 shipped teaching skills for
+      89 named apps. `executor/apps.py` knows how to *launch* applications;
+      it knows nothing about what is inside them. A small amount of
+      per-app knowledge would sharpen `read_screen` and `debug_screen_code`.
+- [ ] **Drag a file onto the indicator to talk about it.** Their v1.0.23.
+      Sidesteps filename resolution entirely for the case where the user can
+      already see the file. The blob is already an on-screen window.
+- [ ] **Dictation into any application.** Their v1.0.37, ~450ms, and the
+      feature they iterated on hardest (v1.0.34-39). Everything needed is
+      already here: local Whisper, wake word, an overlay. What is missing is
+      typing the text into the focused field instead of acting on it.
+
+Deliberately NOT taken:
+
+- Their pointing cursor, as-is. The user's own variant - a cursor that flies
+  to an element and *clicks* - is the better idea and is recorded separately;
+  it is deferred, not scheduled.
+- The notch (v1.0.15/v1.0.27). macOS hardware.
+- Proactive agents. They shipped them in v1.0.33 and *removed* them in
+  v1.0.46, along with local activity tracking. That is the second time this
+  project has evidence against always-watching behaviour - the first being
+  its own deleted learned-skills feature.
+- Teams, billing, account deletion. Not a hackathon entry's problem.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
