@@ -943,6 +943,71 @@ class NemotronClient:
             return ""
         return _plain_punctuation(data.get("summary")) or ""
 
+    # How much of a long document goes into one chunk. Below
+    # SUMMARIZE_MAX_CHARS' sibling on purpose: each chunk has to leave room
+    # for the model's own answer, and smaller chunks summarise more
+    # faithfully than ones stuffed to the context limit.
+    CHUNK_CHARS = 6000
+    # A ceiling on round trips. Ten chunks is a long report already; past
+    # that the value of one more pass is small and the wait is not - the
+    # user is standing there waiting to hear something.
+    MAX_CHUNKS = 10
+
+    def summarize_long_text(self, text: str, language: str = "fr") -> "tuple[str, bool]":
+        """Summarises `text` however long it is, returning
+        `(summary, complete)`.
+
+        `summarize_for_speech` truncates at SUMMARIZE_MAX_CHARS, which is
+        right for a clipboard capture and wrong for a document: "resume ce
+        PDF" on a sixty-page report answered from its first few pages and
+        presented that as the summary of the whole thing. A wrong answer
+        that looks like a complete one is worse than either reading it all
+        or saying plainly that it did not.
+
+        Short text takes exactly the old single-call path - same prompt,
+        same cost - so nothing that already worked pays for this. Longer
+        text is summarised chunk by chunk, and those partial summaries are
+        summarised together into what actually gets spoken. `complete` is
+        False only when MAX_CHUNKS cut the document short, so the caller can
+        say so rather than implying it read everything.
+        """
+        if len(text) <= self.SUMMARIZE_MAX_CHARS:
+            return self.summarize_for_speech(text, language), True
+
+        chunks = [
+            text[i : i + self.CHUNK_CHARS]
+            for i in range(0, len(text), self.CHUNK_CHARS)
+        ]
+        complete = len(chunks) <= self.MAX_CHUNKS
+        chunks = chunks[: self.MAX_CHUNKS]
+
+        partials = []
+        for chunk in chunks:
+            try:
+                partial = self.summarize_for_speech(chunk, language)
+            except Exception:
+                # One failed chunk must not lose the rest of the document -
+                # the same reasoning as skipping a malformed PDF page.
+                continue
+            if partial:
+                partials.append(partial)
+
+        if not partials:
+            return "", complete
+        if len(partials) == 1:
+            return partials[0], complete
+
+        # The partials are themselves spoken-length summaries, so combining
+        # them is the same job again - one more pass over text that is now
+        # comfortably short.
+        combined = "\n".join(partials)
+        try:
+            return self.summarize_for_speech(combined, language), complete
+        except Exception:
+            # Falling back to the first partial is better than nothing: it
+            # is a real summary of a real part of the document.
+            return partials[0], complete
+
     def answer_about_text(self, text: str, question: str, language: str = "fr") -> str:
         """Answers `question` about `text` - a transcript of what the
         machine was playing (see `executor/system_audio.py`).

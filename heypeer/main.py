@@ -1564,43 +1564,62 @@ class HeyPeer:
         text is actually extracted - reusing the exact same second-stage
         call (`summarize_for_speech`), since a document's text and clipboard
         text are both just "some text worth condensing" to it."""
-        from heypeer.executor.documents import extract_text
+        from heypeer.executor.documents import extract
 
-        resolved = self.watched_dir and resolve_existing_filename(self.watched_dir, filename)
-        if not resolved:
+        path = self._resolved_path(filename)
+        if path is None:
             self._speak(_bilingual(
                 language, f"Je ne vois pas de fichier {filename}.",
                 f"I can't find the file {filename}.",
             ), language=language)
             return
 
-        text = extract_text(self.watched_dir / resolved)
-        if not text:
+        extraction = extract(path)
+        if not extraction.text:
             # Covers both "genuinely empty" and "a scanned PDF with no text
             # layer at all" - see documents.py's module docstring for why
             # there is no way to tell those apart without OCR, and both are
             # truthfully "nothing to summarize" either way.
             self._speak(_bilingual(
-                language, f"Je n'ai rien pu extraire de {resolved}.",
-                f"I couldn't extract anything from {resolved}.",
+                language, f"Je n'ai rien pu extraire de {path.name}.",
+                f"I couldn't extract anything from {path.name}.",
             ), language=language)
             return
 
         self._speak(narration or _bilingual(
-            language, f"Voici un résumé de {resolved} :", f"Here's a summary of {resolved}:",
+            language, f"Voici un résumé de {path.name} :", f"Here's a summary of {path.name}:",
         ), language=language)
         try:
-            summary = self.nemotron.summarize_for_speech(text, language)
+            summary, whole = self.nemotron.summarize_long_text(extraction.text, language)
         except Exception as exc:
             self._log(f"Document summarization failed: {exc}")
-            summary = ""
-        if summary:
-            self._speak(summary, language=language)
-        else:
+            summary, whole = "", True
+        if not summary:
             self._speak(_bilingual(
                 language, "Je n'ai pas réussi à résumer ce document.",
                 "I couldn't summarize that document.",
             ), language=language)
+            return
+
+        # Say plainly when the summary does not cover the whole document,
+        # from either cause: extraction stopped at MAX_PAGES, or chunking
+        # stopped at MAX_CHUNKS. Summarising part of a document while
+        # sounding like it read all of it is the bug this whole change
+        # exists to remove, and staying silent here would reintroduce it.
+        if not extraction.complete:
+            self._speak(_bilingual(
+                language,
+                f"Le document fait {extraction.pages_total} pages, "
+                f"j'ai lu les {extraction.pages_read} premières.",
+                f"The document is {extraction.pages_total} pages; "
+                f"I read the first {extraction.pages_read}.",
+            ), language=language)
+        elif not whole:
+            self._speak(_bilingual(
+                language, "C'est un long document, je n'en ai résumé qu'une partie.",
+                "It's a long document; I only summarized part of it.",
+            ), language=language)
+        self._speak(summary, language=language)
 
     def _run_read_screen(
         self, question: str, narration: "str | None", language: str = "fr"
