@@ -1,12 +1,20 @@
 # Hey Peer
 
+[![tests](https://github.com/Tooom123/Nebius-NVIDIA_Global_AI_Hackathon/actions/workflows/tests.yml/badge.svg)](https://github.com/Tooom123/Nebius-NVIDIA_Global_AI_Hackathon/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Hey Peer** is an always-listening personal assistant that observes a user's repeated
-digital habits (sequences of actions across apps), detects patterns, and offers to
-automate them on demand — activated by the voice keyword **"Hey Peer"**.
+> **Say it. It's done.**
 
-Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*).
+**Hey Peer** is an always-on voice assistant for Windows that *acts on your
+machine* rather than telling you how to. Say "Hey Peer" and it moves files,
+fixes code in your editor, plays music, sets timers, reads your screen, runs
+named routines — in French or English, switching per sentence.
+
+The wake word, speech recognition and speech synthesis all run **locally**:
+your voice never leaves your machine. Only text reaches the model.
+
+Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*),
+on **NVIDIA Nemotron** via **Nebius Token Factory**.
 
 ## What it does
 
@@ -377,7 +385,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 682 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 681 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.

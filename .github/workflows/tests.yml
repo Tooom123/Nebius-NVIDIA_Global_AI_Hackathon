@@ -1,0 +1,62 @@
+# Runs the test suite on every push and pull request.
+#
+# The suite needs no Nebius key, no microphone and no external binaries,
+# which is what makes it runnable here. It does need an X display, which is
+# not obvious and was not true of my first claim: pystray touches X11 when
+# `heypeer.tray.app` is imported, so two modules fail at collection on a
+# headless machine. `xvfb-run` supplies one. Found by this workflow's own
+# second run - the dev machine has DISPLAY set and hid it completely.
+#
+# Anything needing real hardware or a live endpoint is deliberately not a
+# test; it lives in the manual test plan instead.
+name: tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# A new push to the same branch makes the previous run's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # pyaudio has no wheel and builds against PortAudio's headers; without
+      # this the install fails on a "portaudio.h: No such file" that reads
+      # like a Python problem and is not one.
+      # portaudio19-dev: pyaudio has no wheel and builds against PortAudio's
+      # headers; without it the install fails on "portaudio.h: No such file",
+      # which reads like a Python packaging problem and is not one.
+      # xvfb: pystray touches X11 at import time, so `from heypeer.tray.app
+      # import TrayApp` raises DisplayNameError on a headless runner before
+      # any test body runs. A virtual display is the honest fix - the tray
+      # genuinely is a GUI component, and contorting the code to import
+      # without a display would be changing the product to suit the CI.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev xvfb
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+          # The package itself, so `import heypeer` resolves. The dev
+          # environment has this via `pip install -e .` and it was easy to
+          # miss here: every test module failed to collect with "No module
+          # named 'heypeer'" on the first run.
+          pip install -e .
+
+      - name: Run tests
+        run: xvfb-run -a pytest -q
