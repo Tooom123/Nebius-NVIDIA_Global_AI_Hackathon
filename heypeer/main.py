@@ -137,6 +137,30 @@ def _should_caption(text: str) -> bool:
     return len(text.split()) >= CAPTION_MIN_WORDS
 
 
+def _cursor_color_from_env() -> "tuple[int, int, int]":
+    """The pointer's colour, from HEYPEER_CURSOR_COLOR as "r,g,b".
+
+    Red by default, at the user's explicit choice. Read here rather than in
+    the renderer so onboarding has one place to write it and the running
+    app one place to read it; a malformed value falls back rather than
+    failing startup over a cosmetic setting.
+    """
+    import os
+
+    from heypeer.tray.cursor_render import DEFAULT_COLOR
+
+    raw = os.environ.get("HEYPEER_CURSOR_COLOR", "")
+    if not raw:
+        return DEFAULT_COLOR
+    try:
+        parts = [int(p) for p in raw.split(",")]
+    except ValueError:
+        return DEFAULT_COLOR
+    if len(parts) != 3:
+        return DEFAULT_COLOR
+    return tuple(max(0, min(255, p)) for p in parts)
+
+
 def _bilingual(language: str, french: str, english: str) -> str:
     """`french` or `english`, matching what Nemotron reported it wrote its
     own narration in for this turn (`intent.language`).
@@ -230,6 +254,11 @@ class HeyPeer:
         # stops a machine that cannot show one from retrying every answer.
         self._caption_window = None
         self._caption_failed = False
+        # The animated pointer, created on first click. `cursor_color` is
+        # what onboarding will set; red by default, at the user's choice.
+        self._cursor_window = None
+        self._cursor_failed = False
+        self.cursor_color = _cursor_color_from_env()
 
     def _log(self, message: str) -> None:
         """The conversation lives in the terminal now - the debug window is
@@ -587,6 +616,107 @@ class HeyPeer:
             ),
             language=language,
         )
+
+    def _run_click_element(
+        self, name: "str | None", narration: "str | None", language: str = "fr"
+    ) -> None:
+        """Finds a named control, flies the pointer to it, and clicks it.
+
+        The three halves in order: `executor/ui_elements` resolves the name
+        to a real rectangle through the accessibility tree, `tray/
+        cursor_window` animates the journey, and `executor/cursor_control`
+        delivers the press. The animation is cosmetic - if its window
+        cannot start, the click still happens, because a button that gets
+        pressed without the animation is a working feature and the reverse
+        is not.
+        """
+        from heypeer.executor import cursor_control, ui_elements
+
+        if not name:
+            self._speak(
+                _bilingual(language, "Sur quoi veux-tu que je clique ?", "What should I click?"),
+                language=language,
+            )
+            self._arm_followup(CONVERSATION_WINDOW_SECONDS)
+            return
+
+        if not ui_elements.is_available() or not cursor_control.is_supported():
+            self._log("Clicking unavailable: needs Windows and the uiautomation package.")
+            self._speak(
+                _bilingual(
+                    language,
+                    "Je ne peux pas cliquer sur cette machine.",
+                    "I can't click on this machine.",
+                ),
+                language=language,
+            )
+            return
+
+        element = ui_elements.find(name)
+        if element is None:
+            # Deliberately specific: "I could not find it" and "I cannot
+            # click" are different problems with different fixes, and
+            # collapsing them would send the user looking in the wrong place.
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Je ne vois pas de bouton {name} à l'écran.",
+                    f"I can't find a {name} button on screen.",
+                ),
+                language=language,
+            )
+            return
+
+        self._speak_async(
+            narration or _bilingual(language, f"Je clique sur {element.name}.",
+                                    f"Clicking {element.name}."),
+            language=language,
+        )
+
+        target = element.center
+        try:
+            start = cursor_control.cursor_position()
+        except Exception:
+            start = target
+        self._animate_cursor(start, target)
+
+        try:
+            cursor_control.click_at(*target)
+            self._log(f"Clicked {element.name!r} at {target}.")
+        except Exception as exc:
+            self._log(f"Click failed: {exc}")
+            self._speak(
+                _bilingual(
+                    language,
+                    f"Je n'ai pas réussi à cliquer sur {element.name}.",
+                    f"I couldn't click {element.name}.",
+                ),
+                language=language,
+            )
+
+    def _animate_cursor(self, start: "tuple[int, int]", end: "tuple[int, int]") -> None:
+        """Flies the drawn pointer from `start` to `end`, blocking until it
+        arrives so the caller clicks at the moment it lands.
+
+        Entirely best-effort: every failure here returns immediately and
+        lets the click happen unanimated.
+        """
+        if self._cursor_window is None:
+            if self._cursor_failed:
+                return
+            try:
+                from heypeer.tray.cursor_window import CursorWindow
+
+                self._cursor_window = CursorWindow()
+                self._cursor_window.set_color(self.cursor_color)
+            except Exception as exc:
+                self._cursor_failed = True
+                self._log(f"Cursor animation unavailable: {exc}")
+                return
+        try:
+            self._cursor_window.play(start, end)
+        except Exception:
+            pass
 
     def _run_create_routine(
         self,
@@ -973,6 +1103,9 @@ class HeyPeer:
         if self._caption_window is not None:
             self._caption_window.close()
             self._caption_window = None
+        if self._cursor_window is not None:
+            self._cursor_window.close()
+            self._cursor_window = None
         self._detections.put(_SHUTDOWN)  # unblocks a consumer loop waiting on detections
 
     def _watched_files(self) -> list[str] | None:
@@ -1238,6 +1371,8 @@ class HeyPeer:
             self._run_run_routine(intent.target_name, language)
         elif intent.action == "list_routines":
             self._run_list_routines(language)
+        elif intent.action == "click_element":
+            self._run_click_element(intent.target_name, intent.speech, language)
         elif intent.action == "listen_to_screen":
             self._run_listen_to_screen(
                 intent.question or instruction_text, intent.speech, language

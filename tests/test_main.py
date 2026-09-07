@@ -2806,3 +2806,148 @@ def test_summarizing_a_document_outside_the_watched_folder(tmp_path: Path) -> No
 
     spoken = " ".join(c.args[0] for c in speak.call_args_list)
     assert "Un contrat." in spoken
+
+
+def test_clicking_finds_the_control_then_presses_its_centre(tmp_path: Path) -> None:
+    """The three pieces in order: resolve the name, animate, press."""
+    from heypeer.executor.ui_elements import Element
+
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    element = Element("Send", "ButtonControl", (600, 300, 700, 340))
+
+    with patch("heypeer.executor.ui_elements.is_available", return_value=True), patch(
+        "heypeer.executor.cursor_control.is_supported", return_value=True
+    ), patch("heypeer.executor.ui_elements.find", return_value=element), patch(
+        "heypeer.executor.cursor_control.cursor_position", return_value=(100, 100)
+    ), patch("heypeer.executor.cursor_control.click_at") as click, patch.object(
+        peer, "_animate_cursor"
+    ) as animate, patch.object(peer, "_speak_async"):
+        peer._run_click_element("Send", None, "fr")
+
+    click.assert_called_once_with(650, 320)
+    animate.assert_called_once_with((100, 100), (650, 320))
+
+
+def test_the_pointer_arrives_before_the_click(tmp_path: Path) -> None:
+    """A click delivered before the pointer lands looks like it pressed the
+    wrong place."""
+    from heypeer.executor.ui_elements import Element
+
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    order = []
+
+    with patch("heypeer.executor.ui_elements.is_available", return_value=True), patch(
+        "heypeer.executor.cursor_control.is_supported", return_value=True
+    ), patch(
+        "heypeer.executor.ui_elements.find",
+        return_value=Element("Send", "ButtonControl", (0, 0, 10, 10)),
+    ), patch("heypeer.executor.cursor_control.cursor_position", return_value=(0, 0)), patch(
+        "heypeer.executor.cursor_control.click_at", side_effect=lambda *a: order.append("click")
+    ), patch.object(
+        peer, "_animate_cursor", side_effect=lambda *a: order.append("animate")
+    ), patch.object(peer, "_speak_async"):
+        peer._run_click_element("Send", None, "fr")
+
+    assert order == ["animate", "click"]
+
+
+def test_a_missing_control_is_distinguished_from_being_unable_to_click(tmp_path: Path) -> None:
+    """Different problems with different fixes - collapsing them sends the
+    user looking in the wrong place."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+
+    with patch("heypeer.executor.ui_elements.is_available", return_value=True), patch(
+        "heypeer.executor.cursor_control.is_supported", return_value=True
+    ), patch("heypeer.executor.ui_elements.find", return_value=None), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_click_element("Envoyer", None, "fr")
+    not_found = speak.call_args.args[0]
+
+    with patch("heypeer.executor.ui_elements.is_available", return_value=False), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_click_element("Envoyer", None, "fr")
+    cannot = speak.call_args.args[0]
+
+    assert not_found != cannot
+    assert "Envoyer" in not_found
+
+
+def test_clicking_with_no_name_asks_which(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_speak") as speak, patch.object(peer, "_arm_followup") as arm:
+        peer._run_click_element(None, None, "fr")
+    assert "?" in speak.call_args.args[0]
+    arm.assert_called_once()
+
+
+def test_a_broken_animation_still_clicks(tmp_path: Path) -> None:
+    """A button pressed without the animation is a working feature; the
+    reverse is neither."""
+    from heypeer.executor.ui_elements import Element
+
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+
+    with patch("heypeer.executor.ui_elements.is_available", return_value=True), patch(
+        "heypeer.executor.cursor_control.is_supported", return_value=True
+    ), patch(
+        "heypeer.executor.ui_elements.find",
+        return_value=Element("Send", "ButtonControl", (0, 0, 10, 10)),
+    ), patch("heypeer.executor.cursor_control.cursor_position", return_value=(0, 0)), patch(
+        "heypeer.tray.cursor_window.CursorWindow", side_effect=RuntimeError("no display")
+    ), patch("heypeer.executor.cursor_control.click_at") as click, patch.object(
+        peer, "_speak_async"
+    ):
+        peer._run_click_element("Send", None, "fr")
+
+    click.assert_called_once()
+
+
+def test_a_failed_click_is_reported_rather_than_claimed(tmp_path: Path) -> None:
+    from heypeer.executor.ui_elements import Element
+
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+
+    with patch("heypeer.executor.ui_elements.is_available", return_value=True), patch(
+        "heypeer.executor.cursor_control.is_supported", return_value=True
+    ), patch(
+        "heypeer.executor.ui_elements.find",
+        return_value=Element("Send", "ButtonControl", (0, 0, 10, 10)),
+    ), patch("heypeer.executor.cursor_control.cursor_position", return_value=(0, 0)), patch(
+        "heypeer.executor.cursor_control.click_at", side_effect=RuntimeError("blocked")
+    ), patch.object(peer, "_animate_cursor"), patch.object(peer, "_speak_async"), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_click_element("Send", None, "fr")
+
+    assert "réussi" in speak.call_args.args[0]
+
+
+def test_the_cursor_colour_defaults_to_red() -> None:
+    from heypeer.main import _cursor_color_from_env
+
+    with patch.dict("os.environ", {}, clear=True):
+        assert _cursor_color_from_env() == (255, 0, 0)
+
+
+def test_the_cursor_colour_can_be_configured() -> None:
+    from heypeer.main import _cursor_color_from_env
+
+    with patch.dict("os.environ", {"HEYPEER_CURSOR_COLOR": "0,200,120"}):
+        assert _cursor_color_from_env() == (0, 200, 120)
+
+
+def test_a_malformed_cursor_colour_falls_back_rather_than_crashing() -> None:
+    """Startup must not fail over a cosmetic setting."""
+    from heypeer.main import _cursor_color_from_env
+
+    for bad in ("nonsense", "1,2", "1,2,3,4", ""):
+        with patch.dict("os.environ", {"HEYPEER_CURSOR_COLOR": bad}):
+            assert _cursor_color_from_env() == (255, 0, 0)

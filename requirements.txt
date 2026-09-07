@@ -49,3 +49,8 @@ pypdf>=4.0.0
 # on Piper either way - see heypeer/tray/kokoro_tts.py. Also needs the
 # espeak-ng binary.
 # kokoro>=0.9.4
+
+# Finding a control by name in a window's accessibility tree, for
+# "clique sur Envoyer". Windows-only and optional: without it Hey Peer says
+# it cannot click. See heypeer/executor/ui_elements.py.
+# uiautomation>=2.0.29 ; sys_platform == "win32"

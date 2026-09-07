@@ -154,6 +154,16 @@ cp .env.example .env   # fill in NEBIUS_API_KEY
 
 Two capabilities are opt-in extras rather than default installs.
 
+**Clicking things on screen.** "Clique sur Envoyer" finds the control in the
+window's accessibility tree, flies a pixel-art pointer to it and presses it.
+
+```bash
+pip install uiautomation    # Windows only
+```
+
+Without it Hey Peer says it cannot click and nothing else changes. The
+pointer is red by default; set `HEYPEER_CURSOR_COLOR=r,g,b` to change it.
+
 **A better English voice.** Hey Peer speaks French through Piper and English
 through [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0),
 whose English voices are graded A-/A against Piper's audibly synthetic ones.
@@ -385,7 +395,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 681 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 752 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.

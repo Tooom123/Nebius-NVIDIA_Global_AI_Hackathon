@@ -19,9 +19,11 @@ def _no_real_overlay_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replaces the overlay window classes with mocks for every test."""
     import heypeer.tray.caption_window as caption_window
     import heypeer.tray.countdown_window as countdown_window
+    import heypeer.tray.cursor_window as cursor_window
 
     monkeypatch.setattr(caption_window, "CaptionWindow", MagicMock())
     monkeypatch.setattr(countdown_window, "CountdownWindow", MagicMock())
+    monkeypatch.setattr(cursor_window, "CursorWindow", MagicMock())
 
 
 def _fake_piper(monkeypatch: pytest.MonkeyPatch) -> MagicMock:

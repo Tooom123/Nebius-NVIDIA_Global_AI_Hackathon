@@ -453,6 +453,19 @@ la", "j'ai rate la derniere phrase, c'etait quoi ?"):
   JSON; it is captured and answered afterwards, so never guess at what was
   said here.
 
+- Click a button or menu item that is on screen right now (e.g. "clique sur \
+Envoyer", "appuie sur Enregistrer", "clique sur le bouton Annuler"):
+  {"action": "click_element", \
+"target_name": "<the control's label, exactly as the user said it - \
+\"Envoyer\", \"Enregistrer\">", \
+"speech": "<one short sentence, e.g. \"Je clique sur Envoyer.\">", \
+"end_turn": true}
+  Only for a control the user is looking at in the application in front of
+  them. It is found by name in the window's accessibility tree, so use the
+  label as spoken - do not translate it, and do not invent one they did not
+  say. A task that needs several steps in a browser is "general_task", not
+  this: this clicks one named thing, once.
+
 - Carry out a general, multi-step task with no action above for it, that a \
 capable assistant with broader tools (web research, scheduling, browsing \
 and interacting with a website - clicking, filling a form, navigating - or \
