@@ -2951,3 +2951,126 @@ def test_a_malformed_cursor_colour_falls_back_rather_than_crashing() -> None:
     for bad in ("nonsense", "1,2", "1,2,3,4", ""):
         with patch.dict("os.environ", {"HEYPEER_CURSOR_COLOR": bad}):
             assert _cursor_color_from_env() == (255, 0, 0)
+
+
+def _habit(instruction="ouvre Slack", action="open_app", count=3, days=2):
+    from heypeer.habits import Habit
+
+    return Habit(instruction=instruction, action=action, count=count, days=days)
+
+
+def test_a_dispatched_action_is_recorded_as_an_observation(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    intent = Intent(action="open_app", skill_id=None, n_repetitions=1, target_name="Slack")
+    with patch("heypeer.habits.record") as record, patch.object(peer, "_run_open_app"):
+        peer._dispatch_intent(intent, "ouvre Slack")
+    record.assert_called_once_with("open_app", "ouvre Slack")
+
+
+def test_routine_steps_are_not_counted_as_habits(tmp_path: Path) -> None:
+    """A routine's steps are Hey Peer replaying the user - counting them
+    would let one routine manufacture the evidence for suggesting itself."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._in_routine = True
+    intent = Intent(action="open_app", skill_id=None, n_repetitions=1, target_name="Slack")
+    with patch("heypeer.habits.record") as record, patch.object(peer, "_run_open_app"):
+        peer._dispatch_intent(intent, "ouvre Slack")
+    record.assert_not_called()
+
+
+def test_a_habit_is_offered_when_the_exchange_ends(tmp_path: Path) -> None:
+    """The one moment an unprompted sentence interrupts nothing."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.habits.detect", return_value=_habit()), patch.object(
+        peer, "_speak"
+    ) as speak, patch.object(peer, "_arm_followup") as arm:
+        peer._close_exchange()
+    assert "ouvre Slack" in speak.call_args.args[0]
+    arm.assert_called_once(), "the exchange must stay open for the answer"
+
+
+def test_only_one_habit_is_offered_per_run(tmp_path: Path) -> None:
+    """A second suggestion in one session is what makes assistants annoying
+    enough to switch off."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.habits.detect", return_value=_habit()), patch.object(
+        peer, "_speak"
+    ), patch.object(peer, "_arm_followup"):
+        assert peer._maybe_suggest_habit() is True
+        assert peer._maybe_suggest_habit() is False
+
+
+def test_nothing_is_said_when_there_is_no_habit(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.habits.detect", return_value=None), patch.object(peer, "_speak") as speak:
+        peer._close_exchange()
+    speak.assert_not_called()
+
+
+def test_saying_yes_creates_the_routine_from_the_instruction(tmp_path: Path) -> None:
+    """The whole reason this design works: what was observed is already a
+    sentence Hey Peer can carry out."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._pending_habit = _habit("range la facture dans Archives", "move_file")
+    intent = Intent(action="reply", skill_id=None, n_repetitions=1, speech="Oui, vas-y.")
+    saved = MagicMock(steps=["range la facture dans Archives"])
+    saved.name = "range la facture dans Archives"
+
+    with patch("heypeer.executor.routines.remember", return_value=saved) as remember, patch(
+        "heypeer.habits.accept"
+    ) as accept, patch.object(peer, "_speak"):
+        consumed = peer._answer_habit_suggestion(intent)
+
+    assert consumed is True
+    assert remember.call_args.args[1] == ["range la facture dans Archives"]
+    accept.assert_called_once()
+
+
+def test_saying_no_declines_and_lets_the_turn_through(tmp_path: Path) -> None:
+    """Anything that is not a clear yes is a no, and the turn is still the
+    user's - it must be dispatched normally rather than swallowed."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._pending_habit = _habit()
+    intent = Intent(action="reply", skill_id=None, n_repetitions=1, speech="Non merci.")
+
+    with patch("heypeer.habits.decline") as decline, patch(
+        "heypeer.executor.routines.remember"
+    ) as remember:
+        consumed = peer._answer_habit_suggestion(intent)
+
+    assert consumed is False
+    decline.assert_called_once()
+    remember.assert_not_called()
+
+
+def test_the_pending_habit_is_cleared_either_way(tmp_path: Path) -> None:
+    """Otherwise the next turn would be read as another answer to a
+    question nobody is still asking."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    for speech in ("Oui.", "Non."):
+        peer._pending_habit = _habit()
+        intent = Intent(action="reply", skill_id=None, n_repetitions=1, speech=speech)
+        with patch("heypeer.executor.routines.remember"), patch("heypeer.habits.accept"), patch(
+            "heypeer.habits.decline"
+        ), patch.object(peer, "_speak"):
+            peer._answer_habit_suggestion(intent)
+        assert peer._pending_habit is None
+
+
+def test_a_broken_habit_store_never_breaks_a_turn(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    intent = Intent(action="open_app", skill_id=None, n_repetitions=1, target_name="Slack")
+    with patch("heypeer.habits.record", side_effect=RuntimeError("disk full")), patch.object(
+        peer, "_run_open_app"
+    ) as run:
+        peer._dispatch_intent(intent, "ouvre Slack")
+    run.assert_called_once(), "the action must still happen"
