@@ -2951,6 +2951,50 @@ The cursor renderer itself (round 42, `tray/cursor_render.py`) is done and
 independent of all of this - it draws and animates; what it points at is
 this decision.
 
+## Round 44: habits, without the monitoring that was deleted (2026-09-07)
+
+The user asked for the trend/habit automation back. It was deleted for
+three recorded reasons, so this was rebuilt to have none of them rather
+than restored:
+
+* **It slowed the machine down.** Root cause was found at the time and
+  written down: `ActivityWatcher._poll_active_window()` ran on *every*
+  keypress, and each poll went through Win32 plus a process lookup - one
+  system query per typed character. There are no input hooks here at all.
+* **The learned skills never matched a spoken instruction.** They were
+  click and keystroke sequences, and nothing anyone says resolves to those.
+  What is recorded now is the instruction itself, in the user's words - the
+  same material a routine is made of, so matching is not part of the
+  problem.
+* **They bloated every prompt.** Nothing here reaches the prompt. A
+  suggestion is spoken once; if accepted it becomes an ordinary named
+  routine, which contributes only its name.
+
+Two design choices the user made, both the conservative option:
+
+- Observe only what Hey Peer was *asked to do*, recorded in the dispatch
+  function that already runs. Not the file-move watcher either, though it
+  was the cheap half of the old system - one fewer dependency, and the
+  actions Hey Peer performs are the ones a routine can replay.
+- Suggest out loud, once, and let the user answer. Not silent creation, and
+  emphatically not automatic execution: Clicky shipped proactive agents in
+  v1.0.33 and removed them in v1.0.46, which with this project's own
+  deleted feature is two independent pieces of evidence against acting
+  unasked.
+
+The thresholds are deliberately strict because the two errors are not
+symmetric. A missed habit costs nothing - the user carries on saying the
+sentence they already say. A wrong suggestion interrupts them to propose
+something they never wanted. So: three repeats, on at least two separate
+days, within thirty days, and declined suggestions are never raised again.
+
+The two-day rule is the one doing real work. Four "monte le son" in a row
+is the commonest shape of "same instruction repeatedly", and it is one
+intention badly served rather than a habit - suggesting a routine there
+answers "you keep asking for this" with "shall I make it easier to ask?".
+
+777 tests.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.

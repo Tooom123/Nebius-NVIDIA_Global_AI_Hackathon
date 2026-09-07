@@ -258,6 +258,10 @@ class HeyPeer:
         # what onboarding will set; red by default, at the user's choice.
         self._cursor_window = None
         self._cursor_failed = False
+        # At most one habit suggestion per run, and the one currently
+        # awaiting an answer - see `_maybe_suggest_habit`.
+        self._habit_suggested = False
+        self._pending_habit = None
         self.cursor_color = _cursor_color_from_env()
 
     def _log(self, message: str) -> None:
@@ -616,6 +620,115 @@ class HeyPeer:
             ),
             language=language,
         )
+
+    def _answer_habit_suggestion(self, intent: Intent) -> bool:
+        """Handles the turn that answers "want me to make that a routine?".
+
+        Returns whether it consumed the turn. Anything that is not a clear
+        yes counts as no and the habit is never raised again - an assistant
+        that asks twice has not understood the answer.
+
+        The yes case builds the routine out of the instruction itself,
+        which is the whole reason this design works: what was observed is
+        already a sentence Hey Peer can carry out, so there is nothing to
+        translate. Naming it is left to the user, since only they know what
+        the habit is *for*.
+        """
+        from heypeer import habits
+        from heypeer.executor import routines as routine_store
+
+        habit = self._pending_habit
+        self._pending_habit = None
+        language = intent.language or "fr"
+
+        said_yes = intent.action in ("create_routine", "run_routine") or (
+            intent.action == "reply"
+            and any(
+                word in (intent.speech or "").lower()
+                for word in ("oui", "yes", "d'accord", "ok", "vas-y", "volontiers")
+            )
+        )
+        if not said_yes:
+            habits.decline(habit.instruction)
+            return False  # let the turn be dispatched normally
+
+        name = intent.target_name or habit.instruction
+        routine = routine_store.remember(name, [habit.instruction])
+        habits.accept(habit.instruction)
+        if routine is None:
+            self._speak(
+                _bilingual(language, "Je n'ai pas réussi à créer cette routine.",
+                           "I couldn't create that routine."),
+                language=language,
+            )
+            return True
+        self._speak(
+            _bilingual(
+                language,
+                f"C'est fait. Dis \"lance {routine.name}\" quand tu veux.",
+                f"Done. Say \"run {routine.name}\" whenever you like.",
+            ),
+            language=language,
+        )
+        return True
+
+    def _note_habit(self, intent: Intent, instruction_text: str) -> None:
+        """Records what Hey Peer was asked to do, for habit detection.
+
+        Deliberately here rather than in a watcher: this is the same
+        function that already dispatches the action, so noticing costs an
+        appended line a few times a day. The monitoring this replaces used
+        global input hooks and polled the active window on every keypress -
+        see `habits.py` for the full list of what that got wrong.
+
+        Not recorded while a routine is running: a routine's steps are Hey
+        Peer replaying the user, and counting them would let one routine
+        manufacture the evidence for suggesting itself.
+        """
+        if self._in_routine:
+            return
+        try:
+            from heypeer import habits
+
+            habits.record(intent.action, instruction_text)
+        except Exception:
+            pass  # bookkeeping must never interrupt a turn the user asked for
+
+    def _maybe_suggest_habit(self, language: str = "fr") -> bool:
+        """Offers to turn a repeated instruction into a routine, at most
+        once per run. Returns whether anything was said.
+
+        Once per run because the cost of the two errors is not symmetric: a
+        habit noticed a day late costs nothing, and a second suggestion in
+        one session is the behaviour that makes assistants annoying enough
+        to switch off.
+        """
+        if self._habit_suggested:
+            return False
+        try:
+            from heypeer import habits
+
+            habit = habits.detect()
+        except Exception:
+            return False
+        if habit is None:
+            return False
+
+        self._habit_suggested = True
+        self._pending_habit = habit
+        self._log(f"Habit noticed: {habit.instruction!r} x{habit.count} over {habit.days} days")
+        self._speak(
+            _bilingual(
+                language,
+                f"J'ai remarqué que tu me demandes souvent : {habit.instruction}. "
+                "Tu veux que j'en fasse une routine ?",
+                f"I've noticed you often ask me: {habit.instruction}. "
+                "Want me to make that a routine?",
+            ),
+            language=language,
+        )
+        self._arm_followup(CONVERSATION_WINDOW_SECONDS)
+        return True
 
     def _run_click_element(
         self, name: "str | None", narration: "str | None", language: str = "fr"
@@ -1020,6 +1133,13 @@ class HeyPeer:
         matters as much as the microphone does: carrying an old exchange into
         the next "Hey Peer" would have the assistant answering a question
         nobody just asked."""
+        # Offered here rather than mid-turn: the user has finished what
+        # they came for, so this is the one moment an unprompted sentence
+        # interrupts nothing. If it fires, the exchange stays open for the
+        # answer instead of closing.
+        if self._pending_habit is None and self._maybe_suggest_habit():
+            return
+
         self._history.clear()
         if self._wake_listener is not None:
             self._wake_listener.cancel_followup()
@@ -1277,6 +1397,9 @@ class HeyPeer:
         `instruction_text` is what the user said, recorded into the history
         alongside whatever Hey Peer says back so the *next* turn can refer to
         this one."""
+        if self._pending_habit is not None and self._answer_habit_suggestion(intent):
+            return
+        self._note_habit(intent, instruction_text)
         language = intent.language or "fr"
         if intent.action in SPOKEN_ACTIONS:
             # Nothing to do to the computer: this turn is an answer. Covers
