@@ -136,6 +136,16 @@ def preload() -> None:
     except Exception:
         pass  # a warm-up failure must not stop the real thing from working
 
+    # Kokoro's model load is ~7.6s, far more than Piper's - worth paying at
+    # startup rather than on the first English sentence. No-ops when it is
+    # not installed.
+    try:
+        from heypeer.tray import kokoro_tts
+
+        kokoro_tts.preload()
+    except Exception:
+        pass
+
 
 def speak(text: str, language: "str | None" = "fr") -> None:
     """Synthesizes `text` and plays it back through the default output
@@ -155,7 +165,26 @@ def speak(text: str, language: "str | None" = "fr") -> None:
 
     from piper.config import SynthesisConfig
 
-    from heypeer.tray import audio_out
+    from heypeer.tray import audio_out, kokoro_tts
+
+    # English goes through Kokoro when it is installed - its English voices
+    # are graded A-/A against Piper's audibly synthetic ones, and the user
+    # judged only those credible on real Hey Peer lines. French stays on
+    # Piper: Kokoro's single French voice is trained on the same SIWIS
+    # corpus Piper already offers, so there is nothing to gain and real
+    # latency to lose. See kokoro_tts.py for the measurements.
+    if language == "en":
+        raw = kokoro_tts.synthesize(text)
+        if raw is not None:
+            audio_out.play(
+                _trim_silence(raw, 2),
+                rate=kokoro_tts.SAMPLE_RATE,
+                sample_width=2,
+                channels=1,
+            )
+            return
+        # Falls through to Piper's English voice: not installed, or
+        # synthesis failed. A worse-sounding answer beats a silent one.
 
     voice_name, speaker_id = _voice_for(language)
     voice = _get_voice(voice_name)

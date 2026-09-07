@@ -41,3 +41,11 @@ pypdf>=4.0.0
 # package publishes Windows wheels only - and optional: everything degrades
 # to saying so when it is missing. See executor/system_audio.py.
 # pyaudiowpatch>=0.2.12 ; sys_platform == "win32"
+
+# English speech through Kokoro (Apache-2.0), whose English voices are
+# graded A-/A against Piper's audibly synthetic ones. Optional and heavy
+# (it pulls torch), so it is not installed by default: without it English
+# falls back to Piper and nothing else changes. French deliberately stays
+# on Piper either way - see heypeer/tray/kokoro_tts.py. Also needs the
+# espeak-ng binary.
+# kokoro>=0.9.4

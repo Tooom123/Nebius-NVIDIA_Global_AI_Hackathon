@@ -98,34 +98,12 @@ def test_voice_for_an_unrecognised_language_falls_back_to_french() -> None:
     assert tts._voice_for("de") == (tts.DEFAULT_VOICE_NAME, tts.DEFAULT_SPEAKER_ID)
 
 
-def _fake_piper(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """Stubs everything `speak()` touches below the text-selection logic
-    this round actually changed: voice loading, synthesis, and playback."""
-    import sys
-    import types
-
-    monkeypatch.setattr(tts, "_ensure_voice_downloaded", lambda name: f"/fake/{name}.onnx")
-    fake_voice = MagicMock()
-
-    def fake_synthesize_wav(text, wav_file, syn_config):
-        # A minimal, valid wav so the rest of speak() (which reads it back
-        # to trim silence) has something real to work with.
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(22050)
-        wav_file.writeframes((0).to_bytes(2, "little") * 100)
-
-    fake_voice.synthesize_wav.side_effect = fake_synthesize_wav
-    fake_piper_voice_cls = MagicMock(load=MagicMock(return_value=fake_voice))
-    fake_module = types.ModuleType("piper")
-    fake_module.PiperVoice = fake_piper_voice_cls
-    monkeypatch.setitem(sys.modules, "piper", fake_module)
-    monkeypatch.setattr("heypeer.tray.audio_out.play", MagicMock())
-    return fake_voice
-
+from conftest import _fake_piper
 
 def test_speak_loads_the_english_voice_for_english_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Piper fallback, used when Kokoro is not installed."""
     fake_voice = _fake_piper(monkeypatch)
+    monkeypatch.setattr("heypeer.tray.kokoro_tts.synthesize", lambda *a, **k: None)
 
     tts.speak("Opening Spotify.", language="en")
 
@@ -138,6 +116,7 @@ def test_speak_does_not_respell_english_text(monkeypatch: pytest.MonkeyPatch) ->
     French-voice problem. Handed to an English voice, "Spotify" must reach
     the synthesiser exactly as written, not as "spo-ti-fai"."""
     fake_voice = _fake_piper(monkeypatch)
+    monkeypatch.setattr("heypeer.tray.kokoro_tts.synthesize", lambda *a, **k: None)
 
     tts.speak("Opening Spotify.", language="en")
 
@@ -167,6 +146,7 @@ def test_speak_defaults_to_french_when_language_is_not_given(monkeypatch: pytest
 
 def test_speak_caches_french_and_english_voices_independently(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_piper(monkeypatch)
+    monkeypatch.setattr("heypeer.tray.kokoro_tts.synthesize", lambda *a, **k: None)
 
     tts.speak("Bonjour.", language="fr")
     tts.speak("Hello.", language="en")

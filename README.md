@@ -144,7 +144,23 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in NEBIUS_API_KEY
 ```
 
-One capability is an opt-in extra rather than a default install: listening
+Two capabilities are opt-in extras rather than default installs.
+
+**A better English voice.** Hey Peer speaks French through Piper and English
+through [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0),
+whose English voices are graded A-/A against Piper's audibly synthetic ones.
+
+```bash
+pip install kokoro       # also needs the espeak-ng binary
+```
+
+Without it English falls back to Piper and nothing else changes. French
+deliberately stays on Piper either way: Kokoro's single French voice is
+trained on the same SIWIS corpus Piper already offers, so there is nothing
+to gain and real latency to lose. Measured on CPU, warm: Kokoro English is
+RTF 0.02, Kokoro French RTF 0.61. See `heypeer/tray/kokoro_tts.py`.
+
+The other extra: listening
 to what the computer is *playing* ("resume ce que dit cette video") needs
 WASAPI loopback, which is Windows-only and ships in a separate package.
 
@@ -361,7 +377,7 @@ negative sets without checking for this).
 Built incrementally during the hackathon, one commit per stage — see
 [TODO.md](TODO.md) for the detailed build log and what's still open.
 
-All core stages are implemented and unit-tested (`pytest`, 669 tests): wake-word
+All core stages are implemented and unit-tested (`pytest`, 682 tests): wake-word
 training/inference, the Nemotron client (**verified against the live Nebius API**,
 not just mocks), direct file actions (move/rename/create/delete/undo) with
 path-containment safety checks, the tray app, and the on-screen indicator.
