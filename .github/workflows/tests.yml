@@ -41,6 +41,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
+          # The package itself, so `import heypeer` resolves. The dev
+          # environment has this via `pip install -e .` and it was easy to
+          # miss here: every test module failed to collect with "No module
+          # named 'heypeer'" on the first run.
+          pip install -e .
 
       - name: Run tests
         run: pytest -q

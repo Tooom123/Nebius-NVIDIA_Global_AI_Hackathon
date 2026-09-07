@@ -1,7 +1,7 @@
 [project]
 name = "heypeer"
 version = "0.1.0"
-description = "Always-listening personal assistant that learns and replays repetitive digital habits, powered by Nemotron 3 Nano Omni on Nebius Token Factory."
+description = "Always-on French/English voice assistant for Windows that acts on your machine - files, code, music, timers - with wake word, speech-to-text and speech all running locally."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
