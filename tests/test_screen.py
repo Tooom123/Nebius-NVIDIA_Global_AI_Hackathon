@@ -1,10 +1,10 @@
 """Tests for the screenshot capture behind "read_screen".
 
-This Linux sandbox has no real display `PIL.ImageGrab` can capture from -
-confirmed directly (`ImageGrab.grab()` raises `OSError: X get_image failed`
-here), which is exactly the failure path `capture()` exists to degrade
-from. What's tested is that degradation, and the resize logic, not the
-capture call itself.
+Nothing here calls `PIL.ImageGrab` for real. Whether a grab succeeds
+depends entirely on the machine - it fails in a bare sandbox and succeeds
+under `xvfb-run` on CI - so a test that relied on either outcome would be
+testing the environment rather than the code. What is tested is the
+degradation path and the resize logic, both driven by patching the grab.
 """
 
 from unittest.mock import MagicMock, patch
@@ -14,14 +14,18 @@ from PIL import Image
 from heypeer.executor.screen import MAX_WIDTH, capture
 
 
-def test_capture_returns_none_when_grabbing_fails() -> None:
-    """The real failure mode on this sandbox, confirmed directly: no
-    display for PIL.ImageGrab to capture from. Any environment without one
-    (a headless CI runner, this dev sandbox) must degrade the same way."""
-    assert capture() is None
-
-
 def test_capture_returns_none_rather_than_raising_for_any_grab_failure() -> None:
+    """Degradation is the property that matters, and this is the honest way
+    to test it.
+
+    There used to be a second test above this one that simply called
+    `capture()` and asserted None, on the reasoning that this sandbox has no
+    display. That passed for an environmental reason rather than a
+    behavioural one, and CI proved it: under `xvfb-run` there *is* a
+    display, the grab succeeds, and the assertion failed on a machine where
+    nothing was wrong. Patching the failure is what actually pins the
+    behaviour, on any machine.
+    """
     with patch("PIL.ImageGrab.grab", side_effect=OSError("no display")):
         assert capture() is None
 
