@@ -1,0 +1,46 @@
+# Runs the test suite on every push and pull request.
+#
+# The suite is entirely offline by design - no Nebius key, no microphone, no
+# display, no external binaries - which is what makes it runnable here at
+# all. Verified before writing this by running it with NEBIUS_API_KEY unset
+# and HOME pointed at an empty directory: 682 passed. Anything needing real
+# hardware or a live endpoint is deliberately not a test; it lives in the
+# manual test plan instead.
+name: tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# A new push to the same branch makes the previous run's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # pyaudio has no wheel and builds against PortAudio's headers; without
+      # this the install fails on a "portaudio.h: No such file" that reads
+      # like a Python problem and is not one.
+      - name: Install PortAudio headers
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: pytest -q
