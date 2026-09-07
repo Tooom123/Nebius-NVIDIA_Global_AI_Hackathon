@@ -35,6 +35,7 @@ ACTIONS = (
     "run_routine",  # "lance ma routine du matin" - target_name is which one
     "list_routines",  # "c'est quoi mes routines ?" - no field
     "listen_to_screen",  # "qu'est-ce qu'elle dit dans cette video ?" - captures system audio
+    "click_element",  # "clique sur Envoyer" - target_name is the control's name
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -91,6 +92,7 @@ ACTION_DESCRIPTIONS = {
     "run_routine": "run a named routine",
     "list_routines": "list the routines",
     "listen_to_screen": "listen to what the computer is playing",
+    "click_element": "click a button on screen",
 }
 
 
