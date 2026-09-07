@@ -2900,6 +2900,57 @@ Deliberately NOT taken:
   its own deleted learned-skills feature.
 - Teams, billing, account deletion. Not a hackathon entry's problem.
 
+## Round 43: can Hermes hand us its click coordinates? (2026-09-07)
+
+The user's question, on seeing the pixel cursor: if Hermes already computes
+where to click, can it hand those coordinates over so Hey Peer animates its
+own cursor there in parallel? Researched against Hermes's own docs rather
+than guessed, and the answer is three separate findings.
+
+**1. Hermes does not click by coordinates in the normal case.** Its
+`computer_use` tool takes a Set-of-Mark snapshot - a screenshot with every
+clickable element numbered - and acts by *element reference*:
+`computer_use(action="click", element=14)`. Raw pixel coordinates are the
+documented *fallback*, used only when the accessibility tree comes back
+empty. So there is frequently no coordinate to hand over; there is an
+element id, meaningful only inside Hermes's own snapshot.
+
+**2. The CLI cannot stream tool calls anyway.** `hermes chat` has `--quiet`
+(suppress banner and tool previews), `--oneshot`, `--verbose`, and
+`--usage-file` for a token/cost report. There is no `--json` event stream on
+`chat`, and nothing documented that emits individual tool invocations as
+they happen. `executor/general_agent.py` runs `hermes chat -q` and reads
+stdout at the end; a live feed of "about to click here" is not something the
+documented interface offers.
+
+**3. Hermes requires approval for every click.** "Destructive actions
+(click, type, drag, scroll, key, focus_app) require approval - either
+interactively via the CLI dialog or via messaging-platform approval
+buttons." So a Hermes-driven task is not a silent stream of clicks to
+shadow; it stops and asks.
+
+**What this settles.** Mirroring Hermes's clicks is not blocked by effort,
+it is blocked by the interface: no stream, and often no coordinate. And
+even with both, drawing our cursor over a click Hermes delivered would be
+staging - the honest failure of it is that the pointer would drift from the
+real one the moment Hermes retried, scrolled, or waited for approval.
+
+- [ ] **Click what Hey Peer itself drives**, via Windows UI Automation
+      (`uiautomation` - wheel confirmed installable) for the element's
+      BoundingRectangle plus SendInput for the click. This is the version
+      where the cursor is telling the truth: Hey Peer resolved the target
+      and Hey Peer pressed it. It is also better than Clicky's approach,
+      which asks a vision model for pixels - the accessibility tree is
+      exact and survives a window moving.
+- [ ] **If a Hermes mirror is ever wanted anyway**, the honest shape is a
+      "Hermes is working" indicator rather than a fake pointer: something
+      that shows a delegated task is running without claiming to be the
+      thing doing it.
+
+The cursor renderer itself (round 42, `tray/cursor_render.py`) is done and
+independent of all of this - it draws and animates; what it points at is
+this decision.
+
 ## Environment notes (this sandbox)
 
 No microphone, no display server actually attached, no GPU, no Nebius API key here.
