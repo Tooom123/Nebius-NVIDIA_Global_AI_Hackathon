@@ -127,6 +127,20 @@ def preload() -> bool:
     """
     if not is_available():
         return False
+
+    # Kokoro's grapheme-to-phoneme layer (misaki) uses spaCy, and downloads
+    # en_core_web_sm the first time it runs - 12MB, once, installed as a
+    # package. Harmless, and alarming to watch happen unannounced in the
+    # middle of a launch: the user reported exactly that as an error. Saying
+    # what is about to happen costs one line and turns it into progress.
+    try:
+        import spacy
+
+        if not spacy.util.is_package("en_core_web_sm"):
+            print("[tts] Premier lancement : telechargement du modele de prononciation (12 Mo)...")
+    except Exception:
+        pass  # spaCy absent or changed - the download either happens quietly or not at all
+
     try:
         return synthesize("Ready.") is not None
     except Exception:

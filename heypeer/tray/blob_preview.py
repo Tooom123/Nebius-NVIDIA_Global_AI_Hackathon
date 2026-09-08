@@ -97,6 +97,11 @@ def frames(state: str, seconds: float, size: int, level: "float | None" = None):
             radius_profile(OUTLINE_ANGLES, phase, amplitude),
             radius,
             glow=glow,
+            phase=phase,
+            # The aura pulses with the state's own energy rather than being
+            # constant: it is the thing that says Hey Peer is active, so it
+            # should be near-absent at idle and full while speaking.
+            aura=min(1.0, energy["glow"] * 1.3 + gain * 0.5),
         )
 
 

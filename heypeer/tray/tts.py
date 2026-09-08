@@ -176,13 +176,19 @@ def speak(text: str, language: "str | None" = "fr") -> None:
     if language == "en":
         raw = kokoro_tts.synthesize(text)
         if raw is not None:
-            audio_out.play(
-                _trim_silence(raw, 2),
+            trimmed = _trim_silence(raw, 2)
+            if trimmed and audio_out.play(
+                trimmed,
                 rate=kokoro_tts.SAMPLE_RATE,
                 sample_width=2,
                 channels=1,
-            )
-            return
+            ):
+                return
+            # Produced nothing, or was cut short. Fall through to Piper
+            # rather than returning silently - the user hearing the worse
+            # voice is better than hearing nothing and reporting that Hey
+            # Peer stopped answering.
+            print("[tts] Kokoro produced no audible output; falling back to Piper.")
         # Falls through to Piper's English voice: not installed, or
         # synthesis failed. A worse-sounding answer beats a silent one.
 
@@ -208,7 +214,14 @@ def speak(text: str, language: "str | None" = "fr") -> None:
         rate = wav_file.getframerate()
 
     raw = _trim_silence(raw, sample_width)
-    audio_out.play(raw, rate=rate, sample_width=sample_width, channels=channels)
+    if not raw:
+        # Synthesis produced nothing, or trimming removed everything. Silent
+        # either way, and silence is exactly the symptom a user reports as
+        # "it doesn't answer" - so say so rather than returning quietly.
+        print(f"[tts] Nothing to play for {text[:40]!r}")
+        return
+    if not audio_out.play(raw, rate=rate, sample_width=sample_width, channels=channels):
+        print("[tts] Playback was cut short.")
 
 
 def _trim_silence(raw: bytes, sample_width: int) -> bytes:

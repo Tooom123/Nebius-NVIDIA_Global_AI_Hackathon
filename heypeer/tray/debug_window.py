@@ -71,13 +71,19 @@ import time
 #   speaking   the most alive: broad lobes forming and dissolving
 #   awaiting   a question was asked and the answer needs no wake word, so the
 #              blob stays on screen: the exchange is still open
+# Amplitudes pulled back toward a circle at the user's request: the blob was
+# distorting far enough to read as a lump rather than a sphere, which cost
+# it the depth the shading works hard to create. Roughly halved across the
+# board, keeping the *ratios* between states so the energy still rises from
+# idle to speaking - the motion the user liked is the speed and the
+# breathing, not the size of the deformation.
 STATE_ENERGY = {
-    "idle":      {"amplitude": 0.030, "speed": 0.35, "glow": 0.35, "level_gain": 0.0},
-    "listening": {"amplitude": 0.070, "speed": 0.60, "glow": 0.50, "level_gain": 0.0},
-    "awaiting":  {"amplitude": 0.075, "speed": 0.70, "glow": 0.55, "level_gain": 1.0},
-    "recording": {"amplitude": 0.080, "speed": 0.80, "glow": 0.55, "level_gain": 1.0},
-    "thinking":  {"amplitude": 0.120, "speed": 1.60, "glow": 0.60, "level_gain": 0.0},
-    "speaking":  {"amplitude": 0.150, "speed": 1.10, "glow": 0.70, "level_gain": 0.6},
+    "idle":      {"amplitude": 0.018, "speed": 0.35, "glow": 0.35, "level_gain": 0.0},
+    "listening": {"amplitude": 0.038, "speed": 0.60, "glow": 0.50, "level_gain": 0.0},
+    "awaiting":  {"amplitude": 0.042, "speed": 0.70, "glow": 0.55, "level_gain": 1.0},
+    "recording": {"amplitude": 0.045, "speed": 0.80, "glow": 0.55, "level_gain": 1.0},
+    "thinking":  {"amplitude": 0.065, "speed": 1.60, "glow": 0.60, "level_gain": 0.0},
+    "speaking":  {"amplitude": 0.080, "speed": 1.10, "glow": 0.70, "level_gain": 0.6},
 }
 
 # What a full-scale mic level adds on top of the state's own values. These
@@ -273,7 +279,19 @@ def _window_process(
         y = slide_position(slide_from, target_y, elapsed)
 
         radii = radius_profile(OUTLINE_ANGLES, phase, amplitude)
-        overlay.update(render(SIZE, radii, radius, glow=glow), x, int(y))
+        # The aura pulses with the state's own energy, so it is near-absent
+        # at idle and full while speaking. Passing `phase` is what makes its
+        # hue travel around the form rather than sit still.
+        overlay.update(
+            render(
+                SIZE, radii, radius,
+                glow=glow,
+                phase=phase,
+                aura=min(1.0, current["glow"] * 1.3 + smooth_level * current["level_gain"] * 0.5),
+            ),
+            x,
+            int(y),
+        )
 
         if landed is not None:
             # Re-evaluated every frame rather than only on a transition, so a
