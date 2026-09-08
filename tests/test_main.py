@@ -3074,3 +3074,62 @@ def test_a_broken_habit_store_never_breaks_a_turn(tmp_path: Path) -> None:
     ) as run:
         peer._dispatch_intent(intent, "ouvre Slack")
     run.assert_called_once(), "the action must still happen"
+
+
+def test_the_screen_glow_lights_up_and_goes_out_with_the_exchange(tmp_path: Path) -> None:
+    """It means "Hey Peer is up" - permanently on would decorate the screen
+    rather than say anything."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    window = MagicMock()
+    peer._glow_window = window
+
+    peer._screen_glow(True)
+    window.show.assert_called_once()
+
+    with patch.object(peer, "_maybe_suggest_habit", return_value=False):
+        peer._close_exchange()
+    window.hide.assert_called_once()
+
+
+def test_a_machine_that_cannot_show_the_glow_stops_trying(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch(
+        "heypeer.tray.screen_glow_window.ScreenGlowWindow",
+        side_effect=RuntimeError("no display"),
+    ) as window:
+        peer._screen_glow(True)
+        peer._screen_glow(True)
+    assert window.call_count == 1
+
+
+def test_turning_the_glow_off_never_creates_a_window(tmp_path: Path) -> None:
+    """Shutting down, or an exchange ending on a machine that never showed
+    it, must not start a process just to hide something."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.tray.screen_glow_window.ScreenGlowWindow") as window:
+        peer._screen_glow(False)
+    window.assert_not_called()
+
+
+def test_a_retired_model_is_named_at_startup(capsys) -> None:
+    """`.env` is gitignored, so a corrected default never reaches an
+    existing checkout - the user only learns their model is gone from a 404
+    mid-turn, which looks like Hey Peer having gone deaf."""
+    from heypeer.main import RETIRED_MODELS, _warn_about_retired_models
+
+    retired = next(iter(RETIRED_MODELS))
+    _warn_about_retired_models(MagicMock(nemotron_model_id=retired))
+    out = capsys.readouterr().out
+    assert retired in out
+    assert RETIRED_MODELS[retired] in out
+    assert "NEMOTRON_MODEL_ID" in out
+
+
+def test_a_current_model_produces_no_warning(capsys) -> None:
+    from heypeer.main import _warn_about_retired_models
+
+    _warn_about_retired_models(MagicMock(nemotron_model_id="nvidia/Nemotron-3_5-Lightning"))
+    assert capsys.readouterr().out == ""

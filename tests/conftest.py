@@ -20,10 +20,12 @@ def _no_real_overlay_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     import heypeer.tray.caption_window as caption_window
     import heypeer.tray.countdown_window as countdown_window
     import heypeer.tray.cursor_window as cursor_window
+    import heypeer.tray.screen_glow_window as screen_glow_window
 
     monkeypatch.setattr(caption_window, "CaptionWindow", MagicMock())
     monkeypatch.setattr(countdown_window, "CountdownWindow", MagicMock())
     monkeypatch.setattr(cursor_window, "CursorWindow", MagicMock())
+    monkeypatch.setattr(screen_glow_window, "ScreenGlowWindow", MagicMock())
 
 
 @pytest.fixture(autouse=True)

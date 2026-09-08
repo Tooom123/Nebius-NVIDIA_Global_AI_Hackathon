@@ -258,6 +258,10 @@ class HeyPeer:
         # what onboarding will set; red by default, at the user's choice.
         self._cursor_window = None
         self._cursor_failed = False
+        # The screen-edge glow: on while Hey Peer is doing something. Created
+        # on first use, like the other overlays.
+        self._glow_window = None
+        self._glow_failed = False
         # At most one habit suggestion per run, and the one currently
         # awaiting an answer - see `_maybe_suggest_habit`.
         self._habit_suggested = False
@@ -936,6 +940,28 @@ class HeyPeer:
             return
         self._speak(", ".join(names) + ".", language=language)
 
+    def _screen_glow(self, on: bool) -> None:
+        """Turns the screen-edge glow on or off.
+
+        Entirely cosmetic and entirely contained: a machine that cannot show
+        it stops trying after the first attempt, and no failure here changes
+        whether Hey Peer is actually listening."""
+        if self._glow_window is None:
+            if self._glow_failed or not on:
+                return
+            try:
+                from heypeer.tray.screen_glow_window import ScreenGlowWindow
+
+                self._glow_window = ScreenGlowWindow()
+            except Exception as exc:
+                self._glow_failed = True
+                self._log(f"Screen glow unavailable: {exc}")
+                return
+        try:
+            self._glow_window.show() if on else self._glow_window.hide()
+        except Exception:
+            pass
+
     def _show_caption(self, text: str) -> None:
         """Puts `text` on screen alongside speaking it. Created on first use
         and never required: if the window cannot start, this logs once and
@@ -1083,6 +1109,9 @@ class HeyPeer:
         # screen.
         if self.debug_window is not None:
             self.debug_window.set_state("recording")
+        # Light the screen edges the moment the wake word is confirmed - the
+        # same instant the blob drops in, so the two read as one cue.
+        self._screen_glow(True)
         return True
 
     def _on_ready_to_listen(self) -> None:
@@ -1140,6 +1169,7 @@ class HeyPeer:
         if self._pending_habit is None and self._maybe_suggest_habit():
             return
 
+        self._screen_glow(False)
         self._history.clear()
         if self._wake_listener is not None:
             self._wake_listener.cancel_followup()
@@ -1226,6 +1256,9 @@ class HeyPeer:
         if self._cursor_window is not None:
             self._cursor_window.close()
             self._cursor_window = None
+        if self._glow_window is not None:
+            self._glow_window.close()
+            self._glow_window = None
         self._detections.put(_SHUTDOWN)  # unblocks a consumer loop waiting on detections
 
     def _watched_files(self) -> list[str] | None:
@@ -1270,6 +1303,25 @@ class HeyPeer:
                     intent = self._interpret(instruction_text)
             except Exception as exc:
                 self._log(f"Failed to interpret the instruction: {exc}")
+                # Say so out loud. This used to only print, which meant a
+                # dead endpoint - an expired key, a retired model - looked
+                # exactly like Hey Peer having gone deaf: it woke, chimed,
+                # heard the instruction, and then said nothing at all. The
+                # user reported precisely that, and spent the investigation
+                # on the speech path when the console had already named the
+                # real fault.
+                message = str(exc)
+                if "does not exist" in message or "404" in message:
+                    # The one failure with a concrete fix the user can
+                    # apply, and the likeliest after a model retirement:
+                    # .env is gitignored, so a corrected default never
+                    # reaches an existing checkout.
+                    self._speak(
+                        "Le modèle configuré n'existe plus. Vérifie "
+                        "NEMOTRON_MODEL_ID dans ton fichier .env.",
+                    )
+                else:
+                    self._speak("Je n'ai pas réussi à joindre le modèle.")
                 return
             self._dispatch_intent(intent, instruction_text)
         finally:
@@ -2325,11 +2377,37 @@ class HeyPeer:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 
 
+# Models Nebius has removed from Serverless, and what replaced them. Checked
+# at startup because `.env` is gitignored: a corrected default in the repo
+# never reaches a checkout that already has one, so the only way a user
+# learns their model is gone is a 404 in the middle of a turn - which is
+# what happened, and which looked to them like Hey Peer had gone deaf.
+RETIRED_MODELS = {
+    "nvidia/Nemotron-3-Nano-Omni": "nvidia/Nemotron-3_5-Lightning",
+}
+
+
+def _warn_about_retired_models(settings) -> None:
+    """Says loudly, before anything else, that the configured model is one
+    Nebius has retired. Printing rather than raising: the rest of Hey Peer
+    still works, and a hard failure would be worse than a clear warning."""
+    replacement = RETIRED_MODELS.get(settings.nemotron_model_id)
+    if replacement is None:
+        return
+    print(
+        f"\n  !! {settings.nemotron_model_id} was retired from Nebius Serverless.\n"
+        f"     Nothing will be understood until this is changed. In your .env:\n"
+        f"       NEMOTRON_MODEL_ID={replacement}\n"
+        f"       VISION_MODEL_ID=google/gemma-3-27b-it\n"
+    )
+
+
 def _build_peer(with_debug_window: bool = False) -> HeyPeer:
     settings = load_settings()
     print("Hey Peer starting.")
     print(f"Nemotron model: {settings.nemotron_model_id}")
     print(f"Watching folder: {settings.watched_dir}")
+    _warn_about_retired_models(settings)
     return HeyPeer(
         nemotron=NemotronClient(settings),
         watched_dir=settings.watched_dir,
