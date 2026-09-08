@@ -109,34 +109,6 @@ def _default_get_instruction() -> str:
 _PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
 
 
-# An answer shorter than this is an acknowledgement - "c'est fait", "j'ouvre
-# Spotify" - which the user just heard and does not need to re-read. Above
-# it there is content: a diagnosis, a summary, something read back. Measured
-# in words rather than characters so one long filename doesn't promote an
-# acknowledgement into a caption.
-CAPTION_MIN_WORDS = 7
-
-
-def _should_caption(text: str) -> bool:
-    """Whether a spoken line is worth also putting on screen.
-
-    Captioning everything would put a panel up dozens of times a day to
-    repeat a word the user already heard; captioning nothing loses the
-    answers that actually have content - a code diagnosis, a clipboard read
-    back, a summary - the moment they finish playing.
-
-    A question is always captioned regardless of length: it is the one kind
-    of line the user has to act on, and "vers quel dossier ?" is short
-    precisely because it is a prompt.
-    """
-    text = (text or "").strip()
-    if not text:
-        return False
-    if text.endswith("?"):
-        return True
-    return len(text.split()) >= CAPTION_MIN_WORDS
-
-
 def _cursor_color_from_env() -> "tuple[int, int, int]":
     """The pointer's colour, from HEYPEER_CURSOR_COLOR as "r,g,b".
 
@@ -252,8 +224,8 @@ class HeyPeer:
         self._in_routine = False
         # The on-screen caption panel, created on first use. `_caption_failed`
         # stops a machine that cannot show one from retrying every answer.
-        self._caption_window = None
-        self._caption_failed = False
+        self._transcript_window = None
+        self._transcript_failed = False
         # The animated pointer, created on first click. `cursor_color` is
         # what onboarding will set; red by default, at the user's choice.
         self._cursor_window = None
@@ -343,8 +315,7 @@ class HeyPeer:
         intent.py`); callers pass that straight through so what gets *said*
         matches what got *written* - answering in English text but reading
         it with the French voice would still sound wrong, just differently."""
-        if _should_caption(text):
-            self._show_caption(text)
+        self._show_transcript(text, "peer")
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
         listener = self._wake_listener
@@ -962,23 +933,30 @@ class HeyPeer:
         except Exception:
             pass
 
-    def _show_caption(self, text: str) -> None:
-        """Puts `text` on screen alongside speaking it. Created on first use
-        and never required: if the window cannot start, this logs once and
-        Hey Peer carries on speaking exactly as before."""
-        if self._caption_window is None:
-            if self._caption_failed:
+    def _show_transcript(self, text: str, who: str = "peer") -> None:
+        """Types `text` into the panel beside the blob, replacing whatever
+        was there.
+
+        Replaces the old corner caption panel, at the user's request: a
+        panel in a corner is a notification, and notifications are things
+        you dismiss. This sits where the user is already looking and holds
+        only the present - what is being said now, never a log.
+
+        Created on first use and never required: if the window cannot
+        start, this logs once and Hey Peer carries on speaking as before."""
+        if self._transcript_window is None:
+            if self._transcript_failed:
                 return
             try:
-                from heypeer.tray.caption_window import CaptionWindow
+                from heypeer.tray.transcript_window import TranscriptWindow
 
-                self._caption_window = CaptionWindow()
+                self._transcript_window = TranscriptWindow()
             except Exception as exc:
-                self._caption_failed = True
-                self._log(f"Caption display unavailable: {exc}")
+                self._transcript_failed = True
+                self._log(f"Transcript display unavailable: {exc}")
                 return
         try:
-            self._caption_window.show(text)
+            self._transcript_window.say(text, who)
         except Exception:
             pass
 
@@ -1250,9 +1228,9 @@ class HeyPeer:
         if self._countdown_window is not None:
             self._countdown_window.close()
             self._countdown_window = None
-        if self._caption_window is not None:
-            self._caption_window.close()
-            self._caption_window = None
+        if self._transcript_window is not None:
+            self._transcript_window.close()
+            self._transcript_window = None
         if self._cursor_window is not None:
             self._cursor_window.close()
             self._cursor_window = None
@@ -1300,6 +1278,7 @@ class HeyPeer:
                     self._log("Hey Peer detected.")
                     instruction_text = self.get_instruction()
                     self._log(f"> {instruction_text}")
+                    self._show_transcript(instruction_text, "user")
                     intent = self._interpret(instruction_text)
             except Exception as exc:
                 self._log(f"Failed to interpret the instruction: {exc}")
@@ -1416,6 +1395,9 @@ class HeyPeer:
             self._log("Hey Peer detected.")
             instruction_text = strip_wake_word(transcript)
         self._log(f"> {instruction_text}")
+        # On screen as well as in the log - this is the spoken path, so it is
+        # where the user's own words actually come from.
+        self._show_transcript(instruction_text, "user")
         if not instruction_text:
             return Intent(action="unknown", skill_id=None, n_repetitions=1), ""
 

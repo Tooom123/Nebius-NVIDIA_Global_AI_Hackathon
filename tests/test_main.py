@@ -2656,68 +2656,54 @@ def test_a_capture_failure_is_reported_honestly(tmp_path: Path) -> None:
     assert "capter le son" in speak.call_args.args[0]
 
 
-def test_acknowledgements_are_not_captioned() -> None:
-    """A panel repeating a word the user just heard, dozens of times a day,
-    is worse than no panel."""
-    from heypeer.main import _should_caption
+def test_everything_spoken_reaches_the_transcript() -> None:
+    """The corner caption filtered by length, because a panel popping up in
+    the corner for "c'est fait" was noise. Beside the blob, while it is
+    already on screen, the panel *is* the conversation - so it shows what
+    was said, all of it."""
+    from heypeer.main import HeyPeer
 
-    assert _should_caption("C'est fait.") is False
-    assert _should_caption("J'ouvre Spotify.") is False
-    assert _should_caption("") is False
-
-
-def test_answers_with_content_are_captioned() -> None:
-    from heypeer.main import _should_caption
-
-    assert _should_caption(
-        "La fonction plante sur une liste vide, parce que la division "
-        "par zéro n'est pas gérée."
-    ) is True
-
-
-def test_questions_are_always_captioned_however_short() -> None:
-    """The one kind of line the user has to act on - and it is short
-    precisely because it is a prompt."""
-    from heypeer.main import _should_caption
-
-    assert _should_caption("Vers quel dossier ?") is True
-
-
-def test_speaking_a_long_answer_shows_a_caption(tmp_path: Path) -> None:
-    nemotron = MagicMock()
-    peer = _peer(tmp_path, nemotron)
-    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_caption") as caption:
-        peer._speak("La fonction plante sur une liste vide parce que la division échoue.")
-    caption.assert_called_once()
-
-
-def test_speaking_an_acknowledgement_shows_no_caption(tmp_path: Path) -> None:
-    nemotron = MagicMock()
-    peer = _peer(tmp_path, nemotron)
-    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_caption") as caption:
+    peer = HeyPeer(nemotron=MagicMock())
+    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_transcript") as shown:
         peer._speak("C'est fait.")
-    caption.assert_not_called()
+        peer._speak("La fonction plante sur une liste vide.")
+    assert [c.args[0] for c in shown.call_args_list] == [
+        "C'est fait.",
+        "La fonction plante sur une liste vide.",
+    ]
 
 
-def test_a_caption_failure_never_stops_hey_peer_speaking(tmp_path: Path) -> None:
+def test_hey_peers_own_words_are_marked_as_its_own() -> None:
+    """The two sides are typed at different speeds - the user already knows
+    what they said."""
+    from heypeer.main import HeyPeer
+
+    peer = HeyPeer(nemotron=MagicMock())
+    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_show_transcript") as shown:
+        peer._speak("Tres bien, et toi ?")
+    assert shown.call_args.args[1] == "peer"
+
+
+def test_a_transcript_failure_never_stops_hey_peer_speaking() -> None:
     """The panel is a convenience; speech is the product."""
-    nemotron = MagicMock()
-    peer = _peer(tmp_path, nemotron)
+    from heypeer.main import HeyPeer
+
+    peer = HeyPeer(nemotron=MagicMock())
     with patch(
-        "heypeer.tray.caption_window.CaptionWindow", side_effect=RuntimeError("no display")
+        "heypeer.tray.transcript_window.TranscriptWindow", side_effect=RuntimeError("no display")
     ), patch("heypeer.tray.tts.speak") as speak:
-        peer._speak("La fonction plante sur une liste vide parce que la division échoue.")
+        peer._speak("Tres bien, et toi ?")
     speak.assert_called_once()
 
 
-def test_a_failed_caption_window_is_not_retried_every_answer(tmp_path: Path) -> None:
-    nemotron = MagicMock()
-    peer = _peer(tmp_path, nemotron)
+def test_a_failed_transcript_window_is_not_retried_every_answer() -> None:
+    peer_cls = __import__("heypeer.main", fromlist=["HeyPeer"]).HeyPeer
+    peer = peer_cls(nemotron=MagicMock())
     with patch(
-        "heypeer.tray.caption_window.CaptionWindow", side_effect=RuntimeError("no display")
+        "heypeer.tray.transcript_window.TranscriptWindow", side_effect=RuntimeError("no display")
     ) as window:
-        peer._show_caption("une phrase assez longue pour être affichée à l'écran")
-        peer._show_caption("une autre phrase assez longue pour être affichée")
+        peer._show_transcript("une phrase")
+        peer._show_transcript("une autre phrase")
     assert window.call_count == 1
 
 
