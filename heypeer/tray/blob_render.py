@@ -56,6 +56,22 @@ from functools import lru_cache
 import numpy as np
 from PIL import Image
 
+# Apple Intelligence's own gradient stops, as published. Taken rather than
+# invented: the user asked for this palette specifically, and a hand-mixed
+# approximation of a well-known one reads as a botched imitation where the
+# real values read as a deliberate reference.
+#
+# The old cyan-blue-violet ramp is kept below under its original names
+# because three other modules import them - the countdown dial, the caption
+# panel's accent bar, and the blob preview - and those are a different
+# object's colours, not this one's.
+APPLE_ORANGE = (255, 186, 113)   # FFBA71
+APPLE_PINK = (255, 103, 120)     # FF6778
+APPLE_MAGENTA = (245, 185, 234)  # F5B9EA
+APPLE_PURPLE = (188, 130, 243)   # BC82F3
+APPLE_LAVENDER = (198, 134, 255) # C686FF
+APPLE_BLUE = (141, 159, 255)     # 8D9FFF
+
 PALETTE_CYAN = (125, 211, 252)
 PALETTE_BLUE = (37, 99, 235)
 PALETTE_VIOLET = (124, 58, 237)
@@ -149,14 +165,20 @@ def _ramp_curve() -> np.ndarray:
 
 @lru_cache(maxsize=1)
 def _ramp() -> np.ndarray:
-    """The cyan-blue-violet ramp as a lookup table, indexed 0-255.
+    """Apple Intelligence's gradient as a lookup table, indexed 0-255.
 
-    A table rather than three `np.interp` calls per frame: the ramp is fixed,
-    and taking it by index costs a single gather instead of interpolating a
-    240x240 array three times."""
+    Ordered lit-to-shadowed: warm where the light hits, cooling through pink
+    and purple into blue as the surface turns away. That direction is what
+    makes it read as one lit object rather than as a rainbow painted on a
+    ball - a hue ramp running the other way fights the shading instead of
+    reinforcing it.
+
+    A table rather than several `np.interp` calls per frame: the ramp is
+    fixed, and taking it by index costs a single gather instead of
+    interpolating a 240x240 array three times."""
     t = np.linspace(0.0, 1.0, 256, dtype=np.float32)
-    stops = [0.0, 0.55, 1.0]
-    ramp = [PALETTE_CYAN, PALETTE_BLUE, PALETTE_VIOLET]
+    stops = [0.0, 0.22, 0.45, 0.68, 1.0]
+    ramp = [APPLE_ORANGE, APPLE_PINK, APPLE_MAGENTA, APPLE_PURPLE, APPLE_BLUE]
     return np.stack(
         [np.interp(t, stops, [c[i] for c in ramp]) for i in range(3)], axis=-1
     ).astype(np.float32)
@@ -224,17 +246,38 @@ def _shade(dx, dy, dz_scale, u):
     return np.clip(rgb, 0.0, 255.0)
 
 
+# The aura: how far past the silhouette the coloured light reaches, how
+# strong it is, and how fast the hue travels around the form. Reach is much
+# larger than GLOW_REACH because this is the effect meant to be *seen* -
+# Siri's own version is a wide, soft bloom, not an outline.
+# Kept under the margin the frame leaves around the blob at its widest.
+# 0.70 looked right and failed the existing frame-clipping test: a glow that
+# is still non-zero at the bitmap border shows as a straight line across it,
+# which is the same failure GLOW_REACH's comment above describes. The test
+# caught it immediately.
+AURA_REACH = 0.34
+AURA_ALPHA = 0.85
+AURA_HUE_SPEED = 0.55
+
+
 def render(
     size: int,
     radii: np.ndarray,
     base_radius: float,
     glow: float = 1.0,
+    phase: float = 0.0,
+    aura: float = 1.0,
 ) -> Image.Image:
     """One RGBA frame.
 
     `radii` is a per-angle outline (see `blob_shape.radius_profile`), scaled
     by `base_radius` in pixels. `glow` scales the halo, which is how the
     energy of a state shows without changing the silhouette's size.
+
+    `aura` scales the coloured bloom around the form and `phase` rotates its
+    hue. Together they are the Apple-Intelligence-style glow: light in the
+    palette's own colours pulsing outward from the edge, strongest in dark
+    surroundings, which is where this overlay always sits.
     """
     dx, dy, distance, theta = _geometry(size)
     outline = (
@@ -250,7 +293,6 @@ def render(
     # still faintly non-zero at the frame border, and a glow cut off by the
     # edge of the bitmap shows as a straight line across it.
     halo = np.clip(1 - np.clip(outside, 0, None) / (base_radius * GLOW_REACH), 0, 1) ** 2
-    alpha = np.maximum(body, halo * GLOW_ALPHA * glow) * 255
 
     # Shading is per-frame now, not cached: it depends on the outline, which
     # is the whole point - the lit face and the rim follow the shape as it
@@ -258,5 +300,43 @@ def render(
     inv_outline = 1.0 / np.maximum(outline, 1e-3)
     rgb = _shade(dx, dy, inv_outline, distance * inv_outline)
 
+    if aura > 0:
+        # Falls off with distance past the edge, cubed rather than squared so
+        # it stays bright close in and fades to nothing well before the frame
+        # border - a bloom that reaches the edge of the bitmap shows as a
+        # straight line across it, the same failure the halo above avoids.
+        # Measured from the silhouette outward *and* a little inward, so the
+        # light appears to come from the edge itself rather than to start
+        # just outside it. A bloom that begins where the body ends leaves a
+        # dark seam along the outline - visible immediately on the first
+        # render, and the reason this is not simply `outside`.
+        from_edge = np.abs(outside) / (base_radius * AURA_REACH)
+        reach = np.clip(1.0 - from_edge, 0, 1)
+        bloom = reach * reach * aura
+
+        # Hue travels *around* the form with the angle rather than radially:
+        # that is what makes it read as light circling the object, where a
+        # radial gradient reads as a static coloured ring.
+        wheel = ((theta / (2 * math.pi) + phase * AURA_HUE_SPEED) % 1.0)
+        aura_rgb = _ramp()[(wheel * 255).astype(np.uint8)]
+
+        # Added, not blended: the aura is light, and light adds. Blending
+        # would darken the body where the two overlap, which is the opposite
+        # of a glow.
+        # Full strength outside the body, and a fraction of it over the rim
+        # inside - which is what makes the edge itself look lit rather than
+        # outlined. Added, not blended: the aura is light, and light adds;
+        # blending would darken the body where they overlap, the opposite of
+        # a glow.
+        # Only a thin lick of it reaches inside. A first pass let the bloom
+        # sit at nearly half strength across the whole body, which washed
+        # the form out to pale pink and destroyed the shading that gives it
+        # depth - the glow has to surround the object, not repaint it.
+        inside_falloff = 0.12
+        weight = bloom * (1.0 - body * (1.0 - inside_falloff))
+        rgb = np.clip(rgb + aura_rgb * weight[..., None] * 1.4, 0, 255)
+        halo = np.maximum(halo, bloom * np.clip(1.0 - body, 0, 1) * AURA_ALPHA)
+
+    alpha = np.maximum(body, halo * GLOW_ALPHA * glow) * 255
     rgba = np.dstack([rgb, np.clip(alpha, 0, 255)])
     return Image.fromarray(rgba.astype(np.uint8), mode="RGBA")

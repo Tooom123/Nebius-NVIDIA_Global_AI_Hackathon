@@ -109,34 +109,6 @@ def _default_get_instruction() -> str:
 _PLACEHOLDER_NAMES = {"unknown", "none", "null", "n/a", "undefined", "inconnu", ""}
 
 
-# An answer shorter than this is an acknowledgement - "c'est fait", "j'ouvre
-# Spotify" - which the user just heard and does not need to re-read. Above
-# it there is content: a diagnosis, a summary, something read back. Measured
-# in words rather than characters so one long filename doesn't promote an
-# acknowledgement into a caption.
-CAPTION_MIN_WORDS = 7
-
-
-def _should_caption(text: str) -> bool:
-    """Whether a spoken line is worth also putting on screen.
-
-    Captioning everything would put a panel up dozens of times a day to
-    repeat a word the user already heard; captioning nothing loses the
-    answers that actually have content - a code diagnosis, a clipboard read
-    back, a summary - the moment they finish playing.
-
-    A question is always captioned regardless of length: it is the one kind
-    of line the user has to act on, and "vers quel dossier ?" is short
-    precisely because it is a prompt.
-    """
-    text = (text or "").strip()
-    if not text:
-        return False
-    if text.endswith("?"):
-        return True
-    return len(text.split()) >= CAPTION_MIN_WORDS
-
-
 def _cursor_color_from_env() -> "tuple[int, int, int]":
     """The pointer's colour, from HEYPEER_CURSOR_COLOR as "r,g,b".
 
@@ -252,12 +224,16 @@ class HeyPeer:
         self._in_routine = False
         # The on-screen caption panel, created on first use. `_caption_failed`
         # stops a machine that cannot show one from retrying every answer.
-        self._caption_window = None
-        self._caption_failed = False
+        self._transcript_window = None
+        self._transcript_failed = False
         # The animated pointer, created on first click. `cursor_color` is
         # what onboarding will set; red by default, at the user's choice.
         self._cursor_window = None
         self._cursor_failed = False
+        # The screen-edge glow: on while Hey Peer is doing something. Created
+        # on first use, like the other overlays.
+        self._glow_window = None
+        self._glow_failed = False
         # At most one habit suggestion per run, and the one currently
         # awaiting an answer - see `_maybe_suggest_habit`.
         self._habit_suggested = False
@@ -298,6 +274,12 @@ class HeyPeer:
         # spoken instruction. Doesn't block wake-word readiness.
         threading.Thread(target=self._preload_stt, daemon=True).start()
         threading.Thread(target=self._preload_tts, daemon=True).start()
+        # Start the glow's process now rather than on the first wake word.
+        # Creating it costs a process spawn and an overlay window, and doing
+        # that *inside* the wake handler put all of it between "Hey Peer" and
+        # the border appearing - which is exactly the lag the user saw
+        # against the blob, whose window is already running by then.
+        threading.Thread(target=self._screen_glow, args=(False,), daemon=True).start()
 
     def _preload_stt(self) -> None:
         """Warms both Whisper models in the background, and says so when it is
@@ -339,8 +321,7 @@ class HeyPeer:
         intent.py`); callers pass that straight through so what gets *said*
         matches what got *written* - answering in English text but reading
         it with the French voice would still sound wrong, just differently."""
-        if _should_caption(text):
-            self._show_caption(text)
+        self._show_transcript(text, "peer")
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
         listener = self._wake_listener
@@ -936,23 +917,52 @@ class HeyPeer:
             return
         self._speak(", ".join(names) + ".", language=language)
 
-    def _show_caption(self, text: str) -> None:
-        """Puts `text` on screen alongside speaking it. Created on first use
-        and never required: if the window cannot start, this logs once and
-        Hey Peer carries on speaking exactly as before."""
-        if self._caption_window is None:
-            if self._caption_failed:
+    def _screen_glow(self, on: bool) -> None:
+        """Turns the screen-edge glow on or off.
+
+        Entirely cosmetic and entirely contained: a machine that cannot show
+        it stops trying after the first attempt, and no failure here changes
+        whether Hey Peer is actually listening."""
+        if self._glow_window is None:
+            if self._glow_failed:
                 return
             try:
-                from heypeer.tray.caption_window import CaptionWindow
+                from heypeer.tray.screen_glow_window import ScreenGlowWindow
 
-                self._caption_window = CaptionWindow()
+                self._glow_window = ScreenGlowWindow()
             except Exception as exc:
-                self._caption_failed = True
-                self._log(f"Caption display unavailable: {exc}")
+                self._glow_failed = True
+                self._log(f"Screen glow unavailable: {exc}")
                 return
         try:
-            self._caption_window.show(text)
+            self._glow_window.show() if on else self._glow_window.hide()
+        except Exception:
+            pass
+
+    def _show_transcript(self, text: str, who: str = "peer") -> None:
+        """Types `text` into the panel beside the blob, replacing whatever
+        was there.
+
+        Replaces the old corner caption panel, at the user's request: a
+        panel in a corner is a notification, and notifications are things
+        you dismiss. This sits where the user is already looking and holds
+        only the present - what is being said now, never a log.
+
+        Created on first use and never required: if the window cannot
+        start, this logs once and Hey Peer carries on speaking as before."""
+        if self._transcript_window is None:
+            if self._transcript_failed:
+                return
+            try:
+                from heypeer.tray.transcript_window import TranscriptWindow
+
+                self._transcript_window = TranscriptWindow()
+            except Exception as exc:
+                self._transcript_failed = True
+                self._log(f"Transcript display unavailable: {exc}")
+                return
+        try:
+            self._transcript_window.say(text, who)
         except Exception:
             pass
 
@@ -1083,6 +1093,9 @@ class HeyPeer:
         # screen.
         if self.debug_window is not None:
             self.debug_window.set_state("recording")
+        # Light the screen edges the moment the wake word is confirmed - the
+        # same instant the blob drops in, so the two read as one cue.
+        self._screen_glow(True)
         return True
 
     def _on_ready_to_listen(self) -> None:
@@ -1140,6 +1153,7 @@ class HeyPeer:
         if self._pending_habit is None and self._maybe_suggest_habit():
             return
 
+        self._screen_glow(False)
         self._history.clear()
         if self._wake_listener is not None:
             self._wake_listener.cancel_followup()
@@ -1220,12 +1234,15 @@ class HeyPeer:
         if self._countdown_window is not None:
             self._countdown_window.close()
             self._countdown_window = None
-        if self._caption_window is not None:
-            self._caption_window.close()
-            self._caption_window = None
+        if self._transcript_window is not None:
+            self._transcript_window.close()
+            self._transcript_window = None
         if self._cursor_window is not None:
             self._cursor_window.close()
             self._cursor_window = None
+        if self._glow_window is not None:
+            self._glow_window.close()
+            self._glow_window = None
         self._detections.put(_SHUTDOWN)  # unblocks a consumer loop waiting on detections
 
     def _watched_files(self) -> list[str] | None:
@@ -1267,9 +1284,29 @@ class HeyPeer:
                     self._log("Hey Peer detected.")
                     instruction_text = self.get_instruction()
                     self._log(f"> {instruction_text}")
+                    self._show_transcript(instruction_text, "user")
                     intent = self._interpret(instruction_text)
             except Exception as exc:
                 self._log(f"Failed to interpret the instruction: {exc}")
+                # Say so out loud. This used to only print, which meant a
+                # dead endpoint - an expired key, a retired model - looked
+                # exactly like Hey Peer having gone deaf: it woke, chimed,
+                # heard the instruction, and then said nothing at all. The
+                # user reported precisely that, and spent the investigation
+                # on the speech path when the console had already named the
+                # real fault.
+                message = str(exc)
+                if "does not exist" in message or "404" in message:
+                    # The one failure with a concrete fix the user can
+                    # apply, and the likeliest after a model retirement:
+                    # .env is gitignored, so a corrected default never
+                    # reaches an existing checkout.
+                    self._speak(
+                        "Le modèle configuré n'existe plus. Vérifie "
+                        "NEMOTRON_MODEL_ID dans ton fichier .env.",
+                    )
+                else:
+                    self._speak("Je n'ai pas réussi à joindre le modèle.")
                 return
             self._dispatch_intent(intent, instruction_text)
         finally:
@@ -1364,6 +1401,9 @@ class HeyPeer:
             self._log("Hey Peer detected.")
             instruction_text = strip_wake_word(transcript)
         self._log(f"> {instruction_text}")
+        # On screen as well as in the log - this is the spoken path, so it is
+        # where the user's own words actually come from.
+        self._show_transcript(instruction_text, "user")
         if not instruction_text:
             return Intent(action="unknown", skill_id=None, n_repetitions=1), ""
 
@@ -2325,11 +2365,37 @@ class HeyPeer:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
 
 
+# Models Nebius has removed from Serverless, and what replaced them. Checked
+# at startup because `.env` is gitignored: a corrected default in the repo
+# never reaches a checkout that already has one, so the only way a user
+# learns their model is gone is a 404 in the middle of a turn - which is
+# what happened, and which looked to them like Hey Peer had gone deaf.
+RETIRED_MODELS = {
+    "nvidia/Nemotron-3-Nano-Omni": "nvidia/Nemotron-3_5-Lightning",
+}
+
+
+def _warn_about_retired_models(settings) -> None:
+    """Says loudly, before anything else, that the configured model is one
+    Nebius has retired. Printing rather than raising: the rest of Hey Peer
+    still works, and a hard failure would be worse than a clear warning."""
+    replacement = RETIRED_MODELS.get(settings.nemotron_model_id)
+    if replacement is None:
+        return
+    print(
+        f"\n  !! {settings.nemotron_model_id} was retired from Nebius Serverless.\n"
+        f"     Nothing will be understood until this is changed. In your .env:\n"
+        f"       NEMOTRON_MODEL_ID={replacement}\n"
+        f"       VISION_MODEL_ID=google/gemma-3-27b-it\n"
+    )
+
+
 def _build_peer(with_debug_window: bool = False) -> HeyPeer:
     settings = load_settings()
     print("Hey Peer starting.")
     print(f"Nemotron model: {settings.nemotron_model_id}")
     print(f"Watching folder: {settings.watched_dir}")
+    _warn_about_retired_models(settings)
     return HeyPeer(
         nemotron=NemotronClient(settings),
         watched_dir=settings.watched_dir,
