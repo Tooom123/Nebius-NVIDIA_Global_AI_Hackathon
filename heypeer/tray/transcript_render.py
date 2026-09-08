@@ -1,12 +1,12 @@
-"""The live transcript beside the blob - one line at a time, typed out.
+"""The live transcript - the conversation, one line at a time, typed out.
 
 ## What replaced what
 
 There was a caption panel in the bottom-right corner (`caption_render.py`),
 showing whatever Hey Peer had just said. The user asked for it to go: a
 panel in a corner is a notification, and notifications are things you
-dismiss. This is the opposite - the conversation appears *beside the blob*,
-where the user is already looking, and is gone as soon as it stops being
+dismiss. This is the opposite - the conversation appears across the top of
+the screen, in one fixed place, and is gone as soon as it stops being
 current.
 
 ## Why one side at a time
@@ -36,8 +36,9 @@ lives with whatever owns the clock.
 Helvetica bold white, at the user's request. `_font` walks the real
 Helvetica names first and falls back through Arial - metrically compatible,
 and on Windows the substitute Helvetica usually resolves to anyway - then
-DejaVu, which ships with Pillow so there is always something. No outline,
-no shadow beyond a soft one: the glow behind it does the separating.
+DejaVu, which ships with Pillow so there is always something. Outlined in
+black all the way round, since it is composited over whatever the user
+happens to have open and cannot assume a dark background.
 """
 
 from PIL import Image, ImageDraw
@@ -49,12 +50,13 @@ FONT_SIZE = 23
 MAX_LINES = 4
 
 TEXT = (255, 255, 255, 255)
-# A soft dark backing rather than a panel: enough to keep white legible over
-# a bright window, not enough to read as a box with edges. The corner panel
-# this replaces had a border and a fill, which is what made it look like a
-# notification.
-SHADOW = (0, 0, 0, 150)
-SHADOW_OFFSET = 2
+# A true outline, drawn all the way round each glyph, rather than the offset
+# drop shadow this had first. A shadow only darkens one side, so white text
+# over a light window lost its top-left edge; an outline holds the letters
+# on any background, which is what this needs - it sits over whatever the
+# user happens to have open.
+OUTLINE = (0, 0, 0, 235)
+OUTLINE_WIDTH = 3
 
 SUPERSAMPLE = 2
 
@@ -143,28 +145,35 @@ def render(text: str, revealed: int = -1) -> "Image.Image | None":
 
     y = MARGIN * s
     for line in lines:
+        # Pillow's own stroke, rather than drawing the text several times at
+        # offsets: it strokes the real glyph outline, so corners and thin
+        # stems stay clean where eight offset copies leave notches.
         draw.text(
-            ((MARGIN + SHADOW_OFFSET) * s, y + SHADOW_OFFSET * s),
-            line, font=font, fill=SHADOW,
+            (MARGIN * s, y), line, font=font, fill=TEXT,
+            stroke_width=OUTLINE_WIDTH * s, stroke_fill=OUTLINE,
         )
-        draw.text((MARGIN * s, y), line, font=font, fill=TEXT)
         y += LINE_HEIGHT * s
 
     return image.resize((WIDTH, height), Image.LANCZOS)
 
 
-def position(
-    blob_x: int, blob_y: int, blob_size: int, panel_height: int, screen_width: int
-) -> "tuple[int, int]":
-    """Where to put the panel, given where the blob is.
+# How far in from the screen's edge the panel sits. Clear of the border
+# glow's band so the text is never read through it.
+TOP_MARGIN = 26
+GLOW_CLEARANCE = 96
 
-    Beside it, vertically centred on it, and on whichever side has room -
-    the blob follows the cursor, so a panel fixed to its right would run off
-    the screen every time the user works near the right edge.
+
+def position(screen_width: int, screen_height: int, panel_height: int) -> "tuple[int, int]":
+    """Top of the screen, just right of centre, at the user's request.
+
+    Fixed rather than following the blob. Beside a cursor-following blob the
+    panel moved while it was being read, and near a screen edge it had to
+    flip sides mid-sentence; anchored at the top it is always in the same
+    place, which is what makes it glanceable.
+
+    Inset by `GLOW_CLEARANCE` so it clears the border glow's band - white
+    text read through a coloured glow is legible in a screenshot and much
+    less so in motion.
     """
-    gap = 12
-    right = blob_x + blob_size + gap
-    y = blob_y + (blob_size - panel_height) // 2
-    if right + WIDTH <= screen_width:
-        return (right, y)
-    return (max(0, blob_x - WIDTH - gap), y)
+    x = min(screen_width // 2 + GLOW_CLEARANCE, screen_width - WIDTH - GLOW_CLEARANCE)
+    return (max(GLOW_CLEARANCE, x), TOP_MARGIN)

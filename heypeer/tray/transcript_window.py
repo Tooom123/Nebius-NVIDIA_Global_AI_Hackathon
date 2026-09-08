@@ -32,13 +32,14 @@ PEER_CPS = 26.0
 LINGER_SECONDS = 2.5
 
 
-def _screen_width() -> int:
+def _screen_size() -> "tuple[int, int]":
     try:
         import ctypes
 
-        return int(ctypes.windll.user32.GetSystemMetrics(0))
+        user32 = ctypes.windll.user32
+        return int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1))
     except Exception:
-        return 1920
+        return 1920, 1080
 
 
 def _window_process(command_queue) -> None:
@@ -58,7 +59,7 @@ def _window_process(command_queue) -> None:
     if not overlay.create():
         return _drain_until_quit()
 
-    screen_width = _screen_width()
+    screen_width, screen_height = _screen_size()
     text = ""
     cps = USER_CPS
     revealed = 0.0
@@ -110,7 +111,7 @@ def _window_process(command_queue) -> None:
         image = tr.render(text, int(revealed))
         if image is None:
             continue
-        x, y = tr.position(blob_box[0], blob_box[1], blob_box[2], image.height, screen_width)
+        x, y = tr.position(screen_width, screen_height, image.height)
         overlay.update(_pad(image, tr.WIDTH, height), x, y)
         if not visible:
             overlay.set_visible(True)

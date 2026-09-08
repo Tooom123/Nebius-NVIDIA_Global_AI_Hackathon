@@ -3090,14 +3090,20 @@ def test_a_machine_that_cannot_show_the_glow_stops_trying(tmp_path: Path) -> Non
     assert window.call_count == 1
 
 
-def test_turning_the_glow_off_never_creates_a_window(tmp_path: Path) -> None:
-    """Shutting down, or an exchange ending on a machine that never showed
-    it, must not start a process just to hide something."""
+def test_the_glow_window_is_warmed_up_rather_than_built_on_the_wake_word(
+    tmp_path: Path,
+) -> None:
+    """Creating it costs a process spawn and an overlay window. Doing that
+    inside the wake handler put all of it between "Hey Peer" and the border
+    appearing, which is why it lagged behind the blob - whose window is
+    already running by then. `_screen_glow(False)` is what startup calls to
+    build it early, so it must create rather than skip."""
     nemotron = MagicMock()
     peer = _peer(tmp_path, nemotron)
     with patch("heypeer.tray.screen_glow_window.ScreenGlowWindow") as window:
         peer._screen_glow(False)
-    window.assert_not_called()
+    window.assert_called_once()
+    window.return_value.hide.assert_called_once()
 
 
 def test_a_retired_model_is_named_at_startup(capsys) -> None:

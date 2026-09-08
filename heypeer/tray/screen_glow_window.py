@@ -33,8 +33,18 @@ FRAME_SECONDS = 1 / 12
 # How long the glow takes to reach full strength, and to leave. Long enough
 # to read as a fade rather than a switch, short enough that the glow is
 # established before Hey Peer has finished its first sentence.
-FADE_IN_SECONDS = 0.35
+# Matched to debug_window.SLIDE_SECONDS so the border and the blob land
+# together. They are triggered on the same line, but the blob *slides* in
+# over 0.28s while this was fading over 0.35s, so the glow was visibly the
+# slower of the two - the user saw them arrive separately.
+FADE_IN_SECONDS = 0.28
 FADE_OUT_SECONDS = 0.5
+
+# How often the idle process wakes to check for a "show". At 0.25s the
+# border could start up to a quarter-second after the blob for no reason
+# other than where in the cycle the message landed - which on a 0.28s fade
+# is most of it. Cheap: an empty loop iteration on a sleeping process.
+IDLE_POLL_SECONDS = 0.03
 
 
 def _virtual_screen() -> "tuple[int, int, int, int]":
@@ -82,7 +92,7 @@ def _window_process(command_queue) -> None:
         overlay.pump_messages()
         try:
             kind, _payload = command_queue.get(
-                timeout=FRAME_SECONDS if (visible or intensity > 0) else 0.25
+                timeout=FRAME_SECONDS if (visible or intensity > 0) else IDLE_POLL_SECONDS
             )
             if kind == "quit":
                 overlay.destroy()

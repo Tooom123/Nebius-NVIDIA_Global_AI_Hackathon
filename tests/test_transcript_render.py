@@ -54,19 +54,31 @@ def test_wrapping_is_measured_against_the_real_font() -> None:
     assert all(draw.textlength(line, font=font) <= 200 for line in lines)
 
 
-def test_the_panel_sits_beside_the_blob() -> None:
-    x, y = tr.position(100, 200, 240, 120, screen_width=1920)
-    assert x > 100 + 240, "to the right of the blob"
-    assert 200 < y + 60 < 200 + 240, "vertically centred on it"
+def test_the_panel_is_pinned_to_the_top_of_the_screen() -> None:
+    """Fixed rather than following the blob: beside a cursor-following blob
+    the panel moved while it was being read, and near an edge it flipped
+    sides mid-sentence."""
+    x, y = tr.position(1920, 1080, 120)
+    assert y == tr.TOP_MARGIN
+    assert x > 1920 // 2, "right of centre"
 
 
-def test_it_flips_to_the_other_side_near_the_screen_edge() -> None:
-    """The blob follows the cursor, so a panel fixed to its right runs off
-    screen whenever the user works near the right edge."""
-    x, _ = tr.position(1750, 200, 240, 120, screen_width=1920)
-    assert x < 1750
+def test_the_panel_clears_the_border_glow() -> None:
+    """White text read through a coloured glow is legible in a screenshot
+    and much less so in motion."""
+    x, y = tr.position(1920, 1080, 120)
+    assert x >= tr.GLOW_CLEARANCE
+    assert x + tr.WIDTH <= 1920 - tr.GLOW_CLEARANCE
 
 
-def test_it_never_goes_off_the_left_edge_either() -> None:
-    x, _ = tr.position(10, 200, 240, 120, screen_width=400)
-    assert x >= 0
+def test_a_narrow_screen_still_gets_a_position_on_screen() -> None:
+    x, y = tr.position(700, 500, 120)
+    assert x >= 0 and y >= 0
+
+
+def test_the_text_is_outlined_rather_than_shadowed() -> None:
+    """A drop shadow only darkens one side, so white text over a light
+    window loses its top-left edge. This sits over whatever the user has
+    open."""
+    assert tr.OUTLINE_WIDTH > 0
+    assert tr.OUTLINE[3] > 200

@@ -274,6 +274,12 @@ class HeyPeer:
         # spoken instruction. Doesn't block wake-word readiness.
         threading.Thread(target=self._preload_stt, daemon=True).start()
         threading.Thread(target=self._preload_tts, daemon=True).start()
+        # Start the glow's process now rather than on the first wake word.
+        # Creating it costs a process spawn and an overlay window, and doing
+        # that *inside* the wake handler put all of it between "Hey Peer" and
+        # the border appearing - which is exactly the lag the user saw
+        # against the blob, whose window is already running by then.
+        threading.Thread(target=self._screen_glow, args=(False,), daemon=True).start()
 
     def _preload_stt(self) -> None:
         """Warms both Whisper models in the background, and says so when it is
@@ -918,7 +924,7 @@ class HeyPeer:
         it stops trying after the first attempt, and no failure here changes
         whether Hey Peer is actually listening."""
         if self._glow_window is None:
-            if self._glow_failed or not on:
+            if self._glow_failed:
                 return
             try:
                 from heypeer.tray.screen_glow_window import ScreenGlowWindow
