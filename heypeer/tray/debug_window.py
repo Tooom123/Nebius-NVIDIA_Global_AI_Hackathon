@@ -273,7 +273,19 @@ def _window_process(
         y = slide_position(slide_from, target_y, elapsed)
 
         radii = radius_profile(OUTLINE_ANGLES, phase, amplitude)
-        overlay.update(render(SIZE, radii, radius, glow=glow), x, int(y))
+        # The aura pulses with the state's own energy, so it is near-absent
+        # at idle and full while speaking. Passing `phase` is what makes its
+        # hue travel around the form rather than sit still.
+        overlay.update(
+            render(
+                SIZE, radii, radius,
+                glow=glow,
+                phase=phase,
+                aura=min(1.0, current["glow"] * 1.3 + smooth_level * current["level_gain"] * 0.5),
+            ),
+            x,
+            int(y),
+        )
 
         if landed is not None:
             # Re-evaluated every frame rather than only on a transition, so a
