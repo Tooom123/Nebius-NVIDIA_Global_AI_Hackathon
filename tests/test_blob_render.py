@@ -183,13 +183,19 @@ def _sample(lum: np.ndarray, fx: float, fy: float, radius: float) -> float:
 def test_the_lit_side_is_much_brighter_than_the_shadowed_side() -> None:
     """Diffuse shading is what makes the form read as a volume rather than a
     disc with a gradient on it. The light comes from the upper left, so that
-    quadrant of the surface has to be plainly brighter than the lower right."""
+    quadrant of the surface has to be plainly brighter than the lower right.
+
+    The ratio is 1.6 rather than 2 since the palette became Apple
+    Intelligence's, whose five stops are all light - there is no dark violet
+    for the shadowed side to fall to any more. Loosened deliberately and
+    only this far: the property under test is that the form still reads as
+    lit, and a ratio near 1 would mean it had stopped."""
     lum = _luminance(_frame(amplitude=0.03))
 
     lit = _sample(lum, -0.5, -0.5, BASE)
     shadowed = _sample(lum, 0.5, 0.5, BASE)
 
-    assert lit > shadowed * 2
+    assert lit > shadowed * 1.6
 
 
 def test_there_is_a_tight_specular_highlight() -> None:
@@ -200,7 +206,10 @@ def test_there_is_a_tight_specular_highlight() -> None:
     lum = _luminance(frame)
     body = _alpha(frame) > 245
 
-    assert lum[body].max() > np.median(lum[body]) * 2
+    # 1.4 rather than 2, for the same reason as the diffuse ratio above: on
+    # a palette with no dark stops the median body luminance is much higher,
+    # so the same physical highlight is a smaller multiple of it.
+    assert lum[body].max() > np.median(lum[body]) * 1.4
     # Confined: only a small part of the surface is near that peak.
     near_peak = (lum > lum[body].max() * 0.92) & body
     assert 0 < near_peak.sum() < body.sum() * 0.06

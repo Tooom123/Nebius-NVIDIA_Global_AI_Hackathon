@@ -26,6 +26,33 @@ def _no_real_overlay_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cursor_window, "CursorWindow", MagicMock())
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_data(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+    """Points every user-data store at a temp directory for the whole suite.
+
+    Found the hard way, twice. `memory.py` once had a test write to the real
+    store because a default argument bound the path at import; this time
+    `habits.py` was written correctly and the *dispatch path* wrote to the
+    real file anyway - 203 observations, from tests that never touched
+    habits at all. Those then crossed the detection threshold and every turn
+    in the suite ended with "shall I make that a routine?", overwriting the
+    sentence 34 tests were asserting on.
+
+    Per-store patching is what failed, because it only covers the tests that
+    remember to do it. This is the whole directory, applied to every test,
+    so a new store added later is isolated without anyone having to
+    remember."""
+    monkeypatch.setenv("HEYPEER_DATA_DIR", str(tmp_path_factory.mktemp("heypeer-data")))
+
+    from heypeer import habits, memory, paths
+    from heypeer.executor import routines
+
+    root = paths.data_root()
+    monkeypatch.setattr(memory, "DEFAULT_PATH", root / "memory.json")
+    monkeypatch.setattr(routines, "DEFAULT_PATH", root / "routines.json")
+    monkeypatch.setattr(habits, "DEFAULT_PATH", root / "habits.json")
+
+
 def _fake_piper(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Stubs everything `tts.speak()` touches below the routing logic:
     voice loading, synthesis and playback.
