@@ -4,7 +4,6 @@ Asserted on the image the renderer returns, since it owns no window: that
 is exactly what makes it checkable in a sandbox with no display.
 """
 
-from heypeer.tray.blob_render import PALETTE_CYAN
 from heypeer.tray.countdown_render import (
     HEIGHT,
     URGENT,
@@ -35,11 +34,55 @@ def test_the_pill_is_opaque_in_the_middle() -> None:
     assert image.getpixel((WIDTH // 2, HEIGHT // 2))[3] > 200
 
 
-def test_the_dial_warns_then_turns_urgent_as_time_runs_out() -> None:
-    assert arc_color(1.0) == PALETTE_CYAN
-    assert arc_color(0.5) == PALETTE_CYAN
+def test_the_dial_travels_the_palette_as_it_drains() -> None:
+    """Four steps rather than one flat colour then a jump: the dial now
+    moves through Apple Intelligence's palette as time runs out, which is
+    what stops it reading as a generic progress bar."""
+    from heypeer.tray.countdown_render import CALM, MID
+
+    assert arc_color(1.0) == CALM
+    assert arc_color(0.4) == MID
     assert arc_color(0.15) == WARNING
     assert arc_color(0.05) == URGENT
+    assert len({arc_color(f) for f in (1.0, 0.4, 0.15, 0.05)}) == 4
+
+
+def test_the_countdown_uses_the_same_palette_as_the_blob() -> None:
+    """Two of Hey Peer's own surfaces in unrelated colours read as two
+    applications."""
+    from heypeer.tray import blob_render, countdown_render
+
+    apple = {blob_render.APPLE_BLUE, blob_render.APPLE_PURPLE,
+             blob_render.APPLE_PINK, blob_render.APPLE_ORANGE}
+    assert {arc_color(f) for f in (1.0, 0.4, 0.15, 0.05)} <= apple
+
+
+def test_a_ringing_timer_shows_a_stop_button_instead_of_the_dial() -> None:
+    """The alarm replaces the countdown in the same place - the user was
+    already watching this pill, so that is where they look when it fires."""
+    from heypeer.tray.countdown_render import render as draw
+
+    running = draw("0:05", "les pâtes", 0.05).tobytes()
+    ringing = draw("0:00", "les pâtes", 0.0, ringing=True).tobytes()
+    assert running != ringing
+
+
+def test_the_stop_button_hit_area_matches_where_it_is_drawn() -> None:
+    """Drawing and hit-testing must come from one number, or the button
+    moves without its clickable area following."""
+    from heypeer.tray.countdown_render import HEIGHT, WIDTH, stop_button_rect
+
+    left, top, right, bottom = stop_button_rect()
+    assert 0 < left < right < WIDTH
+    assert 0 < top < bottom < HEIGHT
+    assert abs((top + bottom) // 2 - HEIGHT // 2) <= 1, "vertically centred"
+
+
+def test_a_ringing_timer_renders_with_and_without_a_label() -> None:
+    from heypeer.tray.countdown_render import render as draw
+
+    assert draw("0:00", "les pâtes", 0.0, ringing=True).size == (WIDTH, HEIGHT)
+    assert draw("0:00", "", 0.0, ringing=True).size == (WIDTH, HEIGHT)
 
 
 def test_a_finished_timer_still_renders() -> None:

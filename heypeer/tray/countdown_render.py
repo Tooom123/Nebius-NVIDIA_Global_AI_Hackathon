@@ -26,7 +26,7 @@ import math
 
 from PIL import Image, ImageDraw
 
-from heypeer.tray.blob_render import PALETTE_CYAN
+from heypeer.tray.blob_render import APPLE_BLUE, APPLE_ORANGE, APPLE_PINK, APPLE_PURPLE
 
 # Rendered at 2x and downsampled - PIL has no antialiased arc or rounded
 # rectangle, so the only way to get clean curves is to draw them big and
@@ -46,8 +46,16 @@ TRACK = (255, 255, 255, 34)  # the un-drained part of the arc
 TEXT = (245, 248, 252, 255)
 LABEL = (150, 162, 178, 255)
 
-URGENT = (248, 113, 113)  # last 10%
-WARNING = (251, 191, 36)  # last 20%
+# The dial's own colours, from Apple Intelligence's palette rather than the
+# old cyan/amber/red: the countdown and the blob are the same assistant, and
+# a timer in unrelated colours read as a different application's widget.
+# Urgency still reads, because the palette runs warm to cool - so counting
+# *down* it travels blue -> purple -> pink -> orange, which is the same
+# calm-to-alarming direction the old ramp had.
+URGENT = APPLE_ORANGE   # last 10%
+WARNING = APPLE_PINK    # last 20%
+CALM = APPLE_BLUE
+MID = APPLE_PURPLE
 
 # Below this fraction remaining, the arc turns amber, then red. Chosen so a
 # 10-minute timer warns with two minutes left, which is long enough to act
@@ -64,27 +72,45 @@ def arc_color(fraction_remaining: float) -> "tuple[int, int, int]":
         return URGENT
     if fraction_remaining <= WARNING_FRACTION:
         return WARNING
-    return PALETTE_CYAN
+    # A third step rather than one flat colour for the whole first 80%: the
+    # dial now moves through the palette as it drains instead of sitting on
+    # one hue and then jumping, which is what made the old one read as a
+    # progress bar rather than as part of Hey Peer.
+    if fraction_remaining <= 0.5:
+        return MID
+    return CALM
 
 
 def _font(size: int):
-    """A real font if one can be found, PIL's bitmap default otherwise.
+    """Helvetica bold, the same face as the transcript.
 
-    DejaVu ships with PIL itself, so this normally succeeds everywhere
-    including this Linux sandbox; the fallback exists because the default
-    font cannot be scaled and would make the countdown unreadable rather
-    than merely plain."""
-    from PIL import ImageFont
+    Shared deliberately: two of Hey Peer's own surfaces in two different
+    typefaces reads as two applications. `transcript_render._font` owns the
+    fallback chain (Helvetica, then Arial, then DejaVu which ships with
+    Pillow), so there is one list to keep right rather than two."""
+    from heypeer.tray.transcript_render import _font as helvetica
 
-    for name in ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf", "arialbd.ttf", "arial.ttf"):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
+    return helvetica(size)
 
 
-def render(clock_text: str, label: str, fraction_remaining: float) -> Image.Image:
+# The "stop" button shown once a timer has fired, in place of the dial. Its
+# rectangle is exported so the window can hit-test a click against it - the
+# drawing and the clickable area must come from one number, or the button
+# moves without its hit area following.
+STOP_SIZE = 52
+
+
+def stop_button_rect() -> "tuple[int, int, int, int]":
+    """`(left, top, right, bottom)` of the stop button inside the pill, in
+    pill-local pixels. Same geometry the ringing frame draws."""
+    pad = 20
+    top = (HEIGHT - STOP_SIZE) // 2
+    return (pad, top, pad + STOP_SIZE, top + STOP_SIZE)
+
+
+def render(
+    clock_text: str, label: str, fraction_remaining: float, ringing: bool = False
+) -> Image.Image:
     """One countdown frame.
 
     `clock_text` is already formatted ("4:37" - see
@@ -92,6 +118,11 @@ def render(clock_text: str, label: str, fraction_remaining: float) -> Image.Imag
     of its own, so what is drawn and what is spoken cannot drift apart.
     `fraction_remaining` drives the dial, clamped so a timer that has just
     fired, or one whose duration was zero, still renders something sane.
+
+    `ringing` swaps the dial for a stop button. The alarm replaces the
+    countdown in the same place rather than appearing elsewhere: the user
+    was already watching this pill, so that is where they will look when it
+    goes off.
     """
     fraction = min(1.0, max(0.0, fraction_remaining))
     s = SUPERSAMPLE
@@ -105,6 +136,9 @@ def render(clock_text: str, label: str, fraction_remaining: float) -> Image.Imag
         outline=BORDER,
         width=max(1, s),
     )
+
+    if ringing:
+        return _render_ringing(image, draw, label, s)
 
     # Dial, vertically centred on the left.
     pad = 20 * s
@@ -142,6 +176,39 @@ def render(clock_text: str, label: str, fraction_remaining: float) -> Image.Imag
             fill=TEXT,
         )
 
+    return image.resize((WIDTH, HEIGHT), Image.LANCZOS)
+
+
+def _render_ringing(image, draw, label: str, s: int):
+    """The fired state: a stop button where the dial was, and what the timer
+    was for where the clock was."""
+    left, top, right, bottom = (v * s for v in stop_button_rect())
+
+    # Filled circle in the urgent colour, with a square inside it - the
+    # universal stop glyph, and legible at this size where a cross or a
+    # "muet" label would not be.
+    draw.ellipse([(left, top), (right, bottom)], fill=URGENT + (255,))
+    inset = (right - left) * 0.32
+    draw.rounded_rectangle(
+        [(left + inset, top + inset), (right - inset, bottom - inset)],
+        radius=int(2 * s),
+        fill=(255, 255, 255, 255),
+    )
+
+    text_x = right + 16 * s
+    shown = _elide(label, 16) if label else ""
+    if shown:
+        draw.text((text_x, HEIGHT * s // 2 - 22 * s), "C'est l'heure", font=_font(19 * s), fill=TEXT)
+        draw.text((text_x, HEIGHT * s // 2 + 4 * s), shown, font=_font(15 * s), fill=LABEL)
+    else:
+        # Smaller without a label: at 21 the phrase ran past the pill's
+        # right edge, which the render showed immediately.
+        font = _font(18 * s)
+        bbox = draw.textbbox((0, 0), "C'est l'heure", font=font)
+        draw.text(
+            (text_x, (HEIGHT * s - (bbox[3] - bbox[1])) // 2 - bbox[1]),
+            "C'est l'heure", font=font, fill=TEXT,
+        )
     return image.resize((WIDTH, HEIGHT), Image.LANCZOS)
 
 

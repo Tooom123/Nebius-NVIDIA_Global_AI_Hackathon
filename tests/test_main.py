@@ -3125,3 +3125,82 @@ def test_a_current_model_produces_no_warning(capsys) -> None:
 
     _warn_about_retired_models(MagicMock(nemotron_model_id="nvidia/Nemotron-3_5-Lightning"))
     assert capsys.readouterr().out == ""
+
+
+def test_a_reminder_leaves_hey_peer_still_listening(tmp_path: Path) -> None:
+    """`_speak` mutes the listener for barge-in and leaves it muted - every
+    other caller is inside a turn that unmutes on the way out. A reminder
+    fires from its own timer thread with no turn around it, so nothing
+    unmuted it again and Hey Peer went permanently deaf after the first
+    alarm."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    listener = MagicMock()
+    peer._wake_listener = listener
+    reminder = MagicMock(label="les pâtes", language="fr")
+
+    with patch("heypeer.tray.tts.speak"), patch.object(peer, "_refresh_countdown"):
+        peer._on_reminder_due(reminder)
+
+    listener.unmute.assert_called_once()
+
+
+def test_a_due_reminder_rings_and_shows_a_stop_button(tmp_path: Path) -> None:
+    """The pill switches to its ringing state before the sound starts, so
+    the stop button is already there while the jingle plays."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    reminder = MagicMock(label="les pâtes", language="fr")
+    order = []
+
+    with patch.object(peer, "_speak"), patch.object(
+        peer, "_refresh_countdown", side_effect=lambda: order.append("pill")
+    ), patch.object(peer, "_play_alarm", side_effect=lambda: order.append("sound")):
+        peer._on_reminder_due(reminder)
+
+    assert order[0] == "pill", "the button must be there before the sound"
+    assert "sound" in order
+
+
+def test_stopping_the_alarm_silences_it_and_clears_the_pill(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._ringing_reminder = MagicMock()
+
+    with patch("heypeer.tray.audio_out.stop") as stop, patch.object(peer, "_refresh_countdown"):
+        peer.stop_alarm()
+
+    stop.assert_called_once()
+    assert peer._ringing_reminder is None
+
+
+def test_a_failed_alarm_sound_does_not_break_the_reminder(tmp_path: Path) -> None:
+    """A timer that fires silently is much better than one that raises out
+    of a daemon thread."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    reminder = MagicMock(label="x", language="fr")
+
+    with patch("heypeer.tray.alarm_sound.render", side_effect=RuntimeError("no audio")), patch.object(
+        peer, "_speak"
+    ) as speak, patch.object(peer, "_refresh_countdown"):
+        peer._on_reminder_due(reminder)
+
+    speak.assert_called_once(), "the spoken message must still happen"
+
+
+def test_a_missing_package_names_the_fix_rather_than_blaming_the_machine(
+    tmp_path: Path,
+) -> None:
+    """"I can't click on this machine" sent the user looking for a broken
+    feature when the real answer was a pip install."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+
+    with patch("platform.system", return_value="Windows"), patch(
+        "heypeer.executor.ui_elements.is_available", return_value=False
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_click_element("Envoyer", None, "fr")
+
+    assert "module" in speak.call_args.args[0]
+    assert "console" in speak.call_args.args[0]

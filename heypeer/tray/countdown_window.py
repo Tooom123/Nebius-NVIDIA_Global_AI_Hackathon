@@ -91,13 +91,13 @@ def _window_process(command_queue) -> None:
                 last_drawn = None
             continue
 
-        clock_text, label, fraction = shown
+        clock_text, label, fraction, ringing = shown
         # Only push a bitmap when something actually changed - the pill is
         # mostly static between second boundaries, and UpdateLayeredWindow
         # is the expensive part of this loop.
-        frame_key = (clock_text, label, round(fraction, 3))
+        frame_key = (clock_text, label, round(fraction, 3), ringing)
         if frame_key != last_drawn:
-            overlay.update(render(clock_text, label, fraction), x, y)
+            overlay.update(render(clock_text, label, fraction, ringing=ringing), x, y)
             last_drawn = frame_key
         if not visible:
             overlay.set_visible(True)
@@ -122,8 +122,10 @@ class CountdownWindow:
         except Exception:
             pass  # queue closed / process gone - never let the UI break a timer
 
-    def show(self, clock_text: str, label: str, fraction_remaining: float) -> None:
-        payload = (clock_text, label, float(fraction_remaining))
+    def show(
+        self, clock_text: str, label: str, fraction_remaining: float, ringing: bool = False
+    ) -> None:
+        payload = (clock_text, label, float(fraction_remaining), bool(ringing))
         if payload == self._last_sent:
             return  # nothing changed; don't wake the child to redraw the same frame
         self._last_sent = payload
@@ -151,10 +153,20 @@ class CountdownDriver:
         self._store = store
         self._window = window
 
-    def refresh(self) -> None:
+    def refresh(self, ringing=None) -> None:
         """Pushes the current state to the window. Called on a tick and
-        whenever a reminder is created or cancelled."""
+        whenever a reminder is created, cancelled or fires.
+
+        `ringing` is the reminder currently sounding, if any: it has already
+        been removed from the store by then, so it has to be passed in
+        rather than looked up."""
         from heypeer.executor.reminders import format_clock
+
+        if ringing is not None:
+            self._window.show(
+                format_clock(0), getattr(ringing, "label", ""), 0.0, ringing=True
+            )
+            return
 
         reminder = self._store.next_due()
         if reminder is None:
