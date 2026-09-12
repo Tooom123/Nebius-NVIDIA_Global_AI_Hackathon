@@ -2379,14 +2379,19 @@ def test_set_reminder_says_so_when_there_are_already_too_many(tmp_path: Path) ->
     peer._reminders.clear()
 
 
-def test_a_reminder_speaks_when_it_comes_due(tmp_path: Path) -> None:
-    """The whole point: it talks with no wake word and no exchange open."""
+def test_a_reminder_rings_rather_than_announcing_itself(tmp_path: Path) -> None:
+    """A timer going off is a sound, not an announcement - "c'est l'heure"
+    read aloud every time is the thing people turn alarms off to escape.
+    What it was for is on the pill, where they are already looking."""
     nemotron = MagicMock()
     peer = _peer(tmp_path, nemotron)
     reminder = MagicMock(label="les pâtes", language="fr")
-    with patch.object(peer, "_speak") as speak, patch.object(peer, "_refresh_countdown"):
+    with patch.object(peer, "_speak") as speak, patch.object(
+        peer, "_refresh_countdown"
+    ), patch.object(peer, "_play_alarm") as alarm:
         peer._on_reminder_due(reminder)
-    assert "les pâtes" in speak.call_args.args[0]
+    alarm.assert_called_once()
+    speak.assert_not_called()
 
 
 def test_a_due_reminder_does_not_leave_the_microphone_open(tmp_path: Path) -> None:
@@ -3181,12 +3186,25 @@ def test_a_failed_alarm_sound_does_not_break_the_reminder(tmp_path: Path) -> Non
     peer = _peer(tmp_path, nemotron)
     reminder = MagicMock(label="x", language="fr")
 
-    with patch("heypeer.tray.alarm_sound.render", side_effect=RuntimeError("no audio")), patch.object(
-        peer, "_speak"
-    ) as speak, patch.object(peer, "_refresh_countdown"):
-        peer._on_reminder_due(reminder)
+    import threading
 
-    speak.assert_called_once(), "the spoken message must still happen"
+    failed = threading.Event()
+
+    def boom(*a, **k):
+        failed.set()
+        raise RuntimeError("no audio")
+
+    with patch("heypeer.tray.alarm_sound.render", side_effect=boom), patch.object(
+        peer, "_refresh_countdown"
+    ) as refresh:
+        peer._on_reminder_due(reminder)
+        failed.wait(timeout=5)
+
+    refresh.assert_called(), "the pill must still show the timer fired"
+    # A machine with no working audio is exactly the one where the on-screen
+    # alarm is the only signal - clearing it would leave a fired timer with
+    # no trace at all.
+    assert peer._ringing_reminder is reminder
 
 
 def test_a_missing_package_names_the_fix_rather_than_blaming_the_machine(
@@ -3204,3 +3222,58 @@ def test_a_missing_package_names_the_fix_rather_than_blaming_the_machine(
 
     assert "module" in speak.call_args.args[0]
     assert "console" in speak.call_args.args[0]
+
+
+def test_the_alarm_keeps_ringing_until_stopped(tmp_path: Path) -> None:
+    """An alarm nobody acknowledged should still be audible when they come
+    back - that is the difference between an alarm and a notification."""
+    import threading
+
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._ringing_reminder = MagicMock()
+    plays = []
+    done = threading.Event()
+
+    def fake_play(*a, **k):
+        plays.append(1)
+        if len(plays) >= 3:
+            peer._ringing_reminder = None  # as stop_alarm would
+            done.set()
+        return True
+
+    with patch("heypeer.tray.audio_out.play", side_effect=fake_play), patch(
+        "heypeer.tray.alarm_sound.render", return_value=b"\x00\x00"
+    ), patch.object(peer, "_refresh_countdown"):
+        peer._play_alarm()
+        done.wait(timeout=5)
+
+    assert len(plays) >= 3, "it must repeat, not play once"
+
+
+def test_stopping_mid_burst_ends_the_alarm(tmp_path: Path) -> None:
+    """`audio_out.play` returning False means it was cut short - carrying on
+    to the next burst would make the stop button do nothing."""
+    import threading
+
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._ringing_reminder = MagicMock()
+    plays = []
+    done = threading.Event()
+
+    def cut_short(*a, **k):
+        plays.append(1)
+        done.set()
+        return False
+
+    with patch("heypeer.tray.audio_out.play", side_effect=cut_short), patch(
+        "heypeer.tray.alarm_sound.render", return_value=b"\x00\x00"
+    ), patch.object(peer, "_refresh_countdown"):
+        peer._play_alarm()
+        done.wait(timeout=5)
+
+    import time
+
+    time.sleep(0.1)
+    assert len(plays) == 1

@@ -878,3 +878,56 @@ def test_a_pause_mid_sentence_does_not_truncate_the_instruction(toy_model: Path)
 
     chunks_recorded = len(audio) // CHUNK_SAMPLES
     assert chunks_recorded > len(first_half) + len(pause), "cut off at the pause"
+
+
+def test_a_keystroke_does_not_look_like_speech() -> None:
+    """The user reported typing setting Hey Peer off. A keystroke is a
+    click: almost all its energy in one or two chunks, then gone."""
+    from heypeer.wakeword.listener import CHUNK_SAMPLES, looks_like_speech
+
+    quiet = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+    spike = (np.random.default_rng(1).standard_normal(CHUNK_SAMPLES) * 8000).astype(np.int16)
+    prebuffer = [quiet] * 10 + [spike] + [quiet] * 4
+    assert looks_like_speech(prebuffer, noise_floor_dbfs=-60.0) is False
+
+
+def test_a_spoken_wake_word_does_look_like_speech() -> None:
+    """"Hey Peer" is a syllable and a half - sustained across many chunks."""
+    from heypeer.wakeword.listener import CHUNK_SAMPLES, looks_like_speech
+
+    rng = np.random.default_rng(2)
+    quiet = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+    speech = [(rng.standard_normal(CHUNK_SAMPLES) * 4000).astype(np.int16) for _ in range(8)]
+    assert looks_like_speech([quiet] * 5 + speech, noise_floor_dbfs=-60.0) is True
+
+
+def test_an_empty_prebuffer_is_not_rejected() -> None:
+    """Nothing to judge on - let the transcript check decide rather than
+    dropping a possibly-real activation."""
+    from heypeer.wakeword.listener import looks_like_speech
+
+    assert looks_like_speech([], noise_floor_dbfs=-60.0) is True
+
+
+def test_two_keystrokes_in_a_row_are_still_rejected() -> None:
+    """The filter must not be defeated by typing slightly faster - two
+    spikes is still two spikes, not a syllable and a half."""
+    from heypeer.wakeword.listener import CHUNK_SAMPLES, looks_like_speech
+
+    rng = np.random.default_rng(4)
+    quiet = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+    spike = (rng.standard_normal(CHUNK_SAMPLES) * 8000).astype(np.int16)
+    prebuffer = [quiet] * 6 + [spike] + [quiet] * 3 + [spike] + [quiet] * 2
+    assert looks_like_speech(prebuffer, noise_floor_dbfs=-60.0) is False
+
+
+def test_steady_background_noise_is_not_mistaken_for_an_impulse() -> None:
+    """Judged against the audio's own peak rather than the room's floor:
+    when everything is loud, nothing clears a floor-relative bar, and
+    continuous sound was being rejected as a click. Found by the existing
+    tests, whose fake microphone is exactly that case."""
+    from heypeer.wakeword.listener import CHUNK_SAMPLES, looks_like_speech
+
+    rng = np.random.default_rng(3)
+    room = [(rng.standard_normal(CHUNK_SAMPLES) * 500).astype(np.int16) for _ in range(15)]
+    assert looks_like_speech(room, noise_floor_dbfs=-30.0) is True

@@ -41,6 +41,18 @@ TAIL_SECONDS = 0.9
 
 AMPLITUDE = 0.28  # room to be heard, well below clipping
 
+# How many arpeggios go into one playable buffer, and how many of those
+# buffers play before the alarm gives up on its own. Together about ninety
+# seconds - long enough to be heard from another room, bounded so a timer
+# nobody is there for does not ring until the machine is switched off.
+#
+# Built as bursts rather than one long buffer because `audio_out.play`
+# checks for a stop between chunks: a burst is the granularity at which
+# "stopped between sounds" is noticed, and three arpeggios is short enough
+# that pressing stop feels immediate.
+REPEATS_PER_BURST = 3
+MAX_BURSTS = 10
+
 
 def _envelope(n: int, total: int) -> float:
     """Attack-decay shape for one note, 0 at both ends.

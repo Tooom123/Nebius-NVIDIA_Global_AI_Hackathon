@@ -93,6 +93,43 @@ SPEECH_THRESHOLD_MAX_DBFS = -25.0
 SPEECH_DBFS_THRESHOLD = -40.0
 
 
+# A keystroke is a click: almost all of its energy arrives in one or two
+# chunks and is gone. Speech is not - "Hey Peer" is a syllable and a half,
+# sustained across many chunks. So a trigger whose surrounding audio is a
+# single spike is a keyboard, a door, a cup on a desk; a trigger surrounded
+# by sustained energy is a voice.
+#
+# This is not a general noise filter and is not meant to be. It rejects
+# exactly the shape the user reported - typing setting Hey Peer off - and
+# leaves everything else to the second-stage transcript check.
+IMPULSE_MIN_LOUD_CHUNKS = 3
+IMPULSE_MARGIN_DB = 9.0
+
+
+def looks_like_speech(chunks: "list[np.ndarray]", noise_floor_dbfs: float) -> bool:
+    """Whether the audio around a trigger has the shape of speech rather
+    than of a single impulse.
+
+    `chunks` is the prebuffer - the couple of seconds up to and including
+    the trigger. Returns True when at least `IMPULSE_MIN_LOUD_CHUNKS` of
+    them are clearly above the room's floor, which a keystroke never
+    manages and a spoken wake word always does.
+    """
+    if not chunks:
+        return True  # nothing to judge on; let the transcript check decide
+
+    levels = [chunk_dbfs(chunk) for chunk in chunks]
+    # Measured against the *peak*, not the noise floor. Against the floor
+    # this rejected continuously loud audio, because when every chunk is
+    # loud the floor is that level and nothing clears it - a real defect
+    # found by the existing tests, whose fake microphone is exactly that
+    # case. What actually distinguishes a keystroke is that its energy is
+    # concentrated in a couple of chunks *relative to its own peak*.
+    peak = max(levels)
+    loud = sum(1 for level in levels if level > peak - IMPULSE_MARGIN_DB)
+    return loud >= IMPULSE_MIN_LOUD_CHUNKS
+
+
 def speech_threshold_dbfs(noise_floor_dbfs: float) -> float:
     """Speech/silence cutoff for a room whose measured noise floor is
     `noise_floor_dbfs`, clamped to a sane range."""
@@ -606,6 +643,16 @@ class WakeWordListener:
                     self.cancel_followup()
                     print("[wakeword] Suite (sans mot d'activation).")
                     noise_floor = estimate_noise_floor(list(self._prebuffer))
+                    # Reject an impulse before anything else happens. A
+                    # keystroke scoring above threshold is a real thing the
+                    # user reported, and rejecting it here - rather than
+                    # after transcription - means no chime, no blob, and no
+                    # recording for something that was a key being pressed.
+                    if not looks_like_speech(list(self._prebuffer), noise_floor):
+                        if self.debug:
+                            print(f"[wakeword] Impulsion ignoree (score={score:.2f}).")
+                        self._prebuffer.clear()
+                        continue
                     pre_audio = (
                         np.concatenate(list(self._prebuffer))
                         if self._prebuffer
@@ -629,6 +676,16 @@ class WakeWordListener:
                     # fires at the end of the phrase), so it can be verified
                     # right now — before any chime or on-screen reaction.
                     noise_floor = estimate_noise_floor(list(self._prebuffer))
+                    # Reject an impulse before anything else happens. A
+                    # keystroke scoring above threshold is a real thing the
+                    # user reported, and rejecting it here - rather than
+                    # after transcription - means no chime, no blob, and no
+                    # recording for something that was a key being pressed.
+                    if not looks_like_speech(list(self._prebuffer), noise_floor):
+                        if self.debug:
+                            print(f"[wakeword] Impulsion ignoree (score={score:.2f}).")
+                        self._prebuffer.clear()
+                        continue
                     pre_audio = (
                         np.concatenate(list(self._prebuffer))
                         if self._prebuffer

@@ -54,6 +54,7 @@ import atexit
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -394,23 +395,18 @@ class HeyPeer:
         be at the machine, and leaving the microphone live on a timer nobody
         answered is exactly the kind of always-listening behaviour this
         project avoids elsewhere."""
-        language = reminder.language or "fr"
-        if reminder.label:
-            message = _bilingual(
-                language,
-                f"C'est l'heure : {reminder.label}.",
-                f"Time's up: {reminder.label}.",
-            )
-        else:
-            message = _bilingual(language, "C'est l'heure.", "Time's up.")
         self._log(f"Reminder due: {reminder.label or '(no label)'}")
         # The pill switches to its ringing state first, so the stop button
         # is already there when the sound starts - the user reaches for it
         # while the jingle is playing, not after.
         self._ringing_reminder = reminder
         self._refresh_countdown()
+        # The jingle instead of a spoken sentence, at the user's request: a
+        # timer going off is a sound, not an announcement, and "c'est
+        # l'heure" read aloud every time is the thing people turn alarms off
+        # to escape. What it was for is on the pill, where they are already
+        # looking.
         self._play_alarm()
-        self._speak(message, language=language)
         # `_speak` mutes the listener for barge-in and leaves it muted,
         # because every other caller is inside a turn that unmutes it on the
         # way out. A reminder speaks from its own timer thread with no turn
@@ -419,8 +415,10 @@ class HeyPeer:
         # "aucune detection" once the countdown had finished.
         if self._wake_listener is not None:
             self._wake_listener.unmute()
-        self._ringing_reminder = None
-        self._refresh_countdown()
+        # The ringing state is NOT cleared here. It was, back when the alarm
+        # was one spoken sentence and ended with this function; now the
+        # jingle repeats until stopped, and clearing it here ended the alarm
+        # the instant it began. `stop_alarm` owns that now.
 
     def _play_alarm(self) -> None:
         """Plays the timer jingle, on its own thread so the spoken message
@@ -432,14 +430,32 @@ class HeyPeer:
             try:
                 from heypeer.tray import alarm_sound, audio_out
 
-                audio_out.play(
-                    alarm_sound.render(repeats=2),
-                    rate=alarm_sound.SAMPLE_RATE,
-                    sample_width=2,
-                    channels=1,
-                )
+                # Repeats until stopped, rather than playing once and going
+                # quiet after a second. An alarm nobody acknowledged should
+                # still be audible when they come back to the machine -
+                # that is the whole difference between an alarm and a
+                # notification sound.
+                buffer = alarm_sound.render(repeats=alarm_sound.REPEATS_PER_BURST)
+                for _ in range(alarm_sound.MAX_BURSTS):
+                    if self._ringing_reminder is None:
+                        return  # stopped between bursts
+                    if not audio_out.play(
+                        buffer,
+                        rate=alarm_sound.SAMPLE_RATE,
+                        sample_width=2,
+                        channels=1,
+                    ):
+                        return  # cut short by `stop_alarm`
+                # Gave up on its own after MAX_BURSTS: clear the pill, or it
+                # would sit there ringing silently forever.
+                self.stop_alarm()
             except Exception as exc:
-                self._log(f"Alarm sound failed: {exc}")
+                # Deliberately does *not* clear the pill. A machine with no
+                # working audio is exactly the one where the on-screen
+                # alarm is the only signal the user gets - clearing it would
+                # mean a timer fired and left no trace at all. Found by a
+                # test, which asserted the ringing state survives.
+                self._log(f"Alarm sound failed (the timer still shows): {exc}")
 
         threading.Thread(target=play, daemon=True).start()
 
@@ -776,6 +792,80 @@ class HeyPeer:
         )
         self._arm_followup(CONVERSATION_WINDOW_SECONDS)
         return True
+
+    def _run_add_drums(self, narration: "str | None", language: str = "fr") -> None:
+        """Opens FL Studio and clicks a drum pattern into the step sequencer.
+
+        A scripted demo path, and said so plainly rather than dressed up:
+        the spoken line announces adding drums, never analysing the track,
+        because it does not analyse anything. Overstating what a demo did is
+        what a judge remembers afterwards.
+
+        Coordinates rather than the accessibility tree - see
+        `executor/flstudio.py` for why FL Studio leaves no other option, and
+        what that costs in robustness.
+        """
+        from heypeer.executor import cursor_control, flstudio
+
+        if not cursor_control.is_supported():
+            self._speak(
+                _bilingual(language, "Je ne peux pas cliquer sur cette machine.",
+                           "I can't click on this machine."),
+                language=language,
+            )
+            return
+
+        self._speak(
+            narration or _bilingual(
+                language,
+                "J'ouvre FL Studio et je te pose un pattern de drums.",
+                "Opening FL Studio and laying down a drum pattern.",
+            ),
+            language=language,
+        )
+
+        if not flstudio.launch():
+            self._speak(
+                _bilingual(language, "Je n'ai pas réussi à ouvrir FL Studio.",
+                           "I couldn't open FL Studio."),
+                language=language,
+            )
+            return
+
+        window = flstudio.find_window()
+        if window is None:
+            self._speak(
+                _bilingual(language, "Je ne retrouve pas la fenêtre de FL Studio.",
+                           "I can't find the FL Studio window."),
+                language=language,
+            )
+            return
+
+        clicks = flstudio.pattern_clicks(window)
+        self._log(f"FL Studio: {len(clicks)} steps into {window}")
+        try:
+            previous = cursor_control.cursor_position()
+        except Exception:
+            previous = clicks[0]
+
+        for i, point in enumerate(clicks):
+            # The pointer flies to the first step and then hops between the
+            # rest: animating every short move would take longer than the
+            # whole pattern and read as laboured rather than deliberate.
+            if i == 0:
+                self._animate_cursor(previous, point)
+            try:
+                cursor_control.click_at(*point, restore=False)
+            except Exception as exc:
+                self._log(f"FL Studio click failed at {point}: {exc}")
+                break
+            time.sleep(flstudio.CLICK_INTERVAL)
+
+        self._speak(
+            _bilingual(language, "Et voilà, la batterie est en place.",
+                       "There you go, the drums are in."),
+            language=language,
+        )
 
     def _run_click_element(
         self, name: "str | None", narration: "str | None", language: str = "fr"
@@ -1622,6 +1712,8 @@ class HeyPeer:
             self._run_run_routine(intent.target_name, language)
         elif intent.action == "list_routines":
             self._run_list_routines(language)
+        elif intent.action == "add_drums":
+            self._run_add_drums(intent.speech, language)
         elif intent.action == "click_element":
             self._run_click_element(intent.target_name, intent.speech, language)
         elif intent.action == "listen_to_screen":
