@@ -234,6 +234,9 @@ class HeyPeer:
         # on first use, like the other overlays.
         self._glow_window = None
         self._glow_failed = False
+        # The reminder currently sounding, if any - drives the countdown
+        # pill's ringing state and its stop button.
+        self._ringing_reminder = None
         # At most one habit suggestion per run, and the one currently
         # awaiting an answer - see `_maybe_suggest_habit`.
         self._habit_suggested = False
@@ -376,7 +379,9 @@ class HeyPeer:
         try:
             from heypeer.tray.countdown_window import CountdownDriver
 
-            CountdownDriver(self._reminders, self._countdown_window).refresh()
+            CountdownDriver(self._reminders, self._countdown_window).refresh(
+                ringing=self._ringing_reminder
+            )
         except Exception:
             pass
 
@@ -399,7 +404,53 @@ class HeyPeer:
         else:
             message = _bilingual(language, "C'est l'heure.", "Time's up.")
         self._log(f"Reminder due: {reminder.label or '(no label)'}")
+        # The pill switches to its ringing state first, so the stop button
+        # is already there when the sound starts - the user reaches for it
+        # while the jingle is playing, not after.
+        self._ringing_reminder = reminder
+        self._refresh_countdown()
+        self._play_alarm()
         self._speak(message, language=language)
+        # `_speak` mutes the listener for barge-in and leaves it muted,
+        # because every other caller is inside a turn that unmutes it on the
+        # way out. A reminder speaks from its own timer thread with no turn
+        # around it, so nothing ever unmuted it again - Hey Peer went
+        # permanently deaf after the first alarm, which the user reported as
+        # "aucune detection" once the countdown had finished.
+        if self._wake_listener is not None:
+            self._wake_listener.unmute()
+        self._ringing_reminder = None
+        self._refresh_countdown()
+
+    def _play_alarm(self) -> None:
+        """Plays the timer jingle, on its own thread so the spoken message
+        follows immediately rather than waiting three seconds behind it.
+
+        Best-effort like every other sound here: a timer that fires silently
+        is much better than one that raises out of a daemon thread."""
+        def play() -> None:
+            try:
+                from heypeer.tray import alarm_sound, audio_out
+
+                audio_out.play(
+                    alarm_sound.render(repeats=2),
+                    rate=alarm_sound.SAMPLE_RATE,
+                    sample_width=2,
+                    channels=1,
+                )
+            except Exception as exc:
+                self._log(f"Alarm sound failed: {exc}")
+
+        threading.Thread(target=play, daemon=True).start()
+
+    def stop_alarm(self) -> None:
+        """Silences a ringing timer - what the countdown's stop button
+        calls. Public because the click arrives from the countdown window's
+        own process, not from a turn."""
+        from heypeer.tray import audio_out
+
+        audio_out.stop()
+        self._ringing_reminder = None
         self._refresh_countdown()
 
     def _run_set_reminder(
@@ -533,15 +584,30 @@ class HeyPeer:
         from heypeer.executor import system_audio
 
         if not system_audio.is_available():
-            self._log("System audio capture unavailable.")
-            self._speak(
-                _bilingual(
-                    language,
-                    "Je ne peux pas écouter le son de l'ordinateur sur cette machine.",
-                    "I can't listen to this computer's audio on this machine.",
-                ),
-                language=language,
-            )
+            import platform
+
+            if platform.system() == "Windows":
+                self._log("System audio needs: pip install pyaudiowpatch")
+                self._speak(
+                    _bilingual(
+                        language,
+                        "Il me manque un module pour entendre le son. "
+                        "La commande est dans la console.",
+                        "I'm missing a module for hearing the audio. "
+                        "The command is in the console.",
+                    ),
+                    language=language,
+                )
+            else:
+                self._log("System audio capture unavailable: not Windows.")
+                self._speak(
+                    _bilingual(
+                        language,
+                        "Je ne peux pas écouter le son de l'ordinateur sur cette machine.",
+                        "I can't listen to this computer's audio on this machine.",
+                    ),
+                    language=language,
+                )
             return
 
         self._speak(
@@ -735,15 +801,37 @@ class HeyPeer:
             return
 
         if not ui_elements.is_available() or not cursor_control.is_supported():
-            self._log("Clicking unavailable: needs Windows and the uiautomation package.")
-            self._speak(
-                _bilingual(
-                    language,
-                    "Je ne peux pas cliquer sur cette machine.",
-                    "I can't click on this machine.",
-                ),
-                language=language,
-            )
+            # Two very different causes behind one old message. On Windows
+            # it is almost always a missing `pip install uiautomation`, and
+            # "I can't click on this machine" sent the user looking for a
+            # broken feature rather than an absent package - they reported
+            # exactly that. Name the fix when there is one.
+            import platform
+
+            if platform.system() == "Windows" and not ui_elements.is_available():
+                self._log("Clicking needs: pip install uiautomation")
+                # The command goes in the console, not the speech: a package
+                # name read aloud by a French voice is noise, which the
+                # pronunciation guard caught immediately. Spoken, it says
+                # what is missing; printed, it says how to fix it.
+                self._speak(
+                    _bilingual(
+                        language,
+                        "Il me manque un module pour cliquer. La commande est dans la console.",
+                        "I'm missing a module for clicking. The command is in the console.",
+                    ),
+                    language=language,
+                )
+            else:
+                self._log("Clicking unavailable: not Windows.")
+                self._speak(
+                    _bilingual(
+                        language,
+                        "Je ne peux pas cliquer sur cette machine.",
+                        "I can't click on this machine.",
+                    ),
+                    language=language,
+                )
             return
 
         element = ui_elements.find(name)
