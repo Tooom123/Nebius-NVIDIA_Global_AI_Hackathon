@@ -469,6 +469,14 @@ Envoyer", "appuie sur Enregistrer", "clique sur le bouton Annuler"):
   say. A task that needs several steps in a browser is "general_task", not
   this: this clicks one named thing, once.
 
+- Add a drum pattern to the FL Studio project that is open (e.g. "analyse \
+cette prod et rajoute des drums", "mets-moi une batterie la-dessus", "add \
+some drums to this track"):
+  {"action": "add_drums", "speech": null, "end_turn": true}
+  Only for FL Studio and only for adding drums - anything else about music
+  production has no action and is "reply". Leave "speech" null: what is
+  about to happen is announced by the action itself as it runs.
+
 - Carry out a general, multi-step task with no action above for it, that a \
 capable assistant with broader tools (web research, scheduling, browsing \
 and interacting with a website - clicking, filling a form, navigating - or \

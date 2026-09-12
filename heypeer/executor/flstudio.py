@@ -1,0 +1,145 @@
+"""Laying a drum pattern into FL Studio's step sequencer, by clicking it.
+
+## What this is, and what it is not
+
+A scripted demo path, and deliberately labelled as one. It opens FL Studio
+and clicks a fixed set of steps in the sequencer grid. It does not read the
+project, does not know what is already in it, and does not decide what
+would suit the track - so nothing here claims to.
+
+That honesty matters in the spoken line too: Hey Peer says it is adding a
+drum pattern, never that it analysed anything. A demo that overstates what
+it did is the one thing a judge will remember afterwards.
+
+## Why coordinates, when every other click goes through UI Automation
+
+`executor/ui_elements.py` finds controls by name in the accessibility tree,
+which is exact and survives a window moving. FL Studio exposes almost none
+of itself that way: it draws its own interface, so the tree has a window
+and little else. The choice is between clicking coordinates and not
+clicking at all.
+
+So this is the fragile path, and it is fragile in a specific, testable way:
+the grid's position depends on the window being maximised at a known
+resolution. `GRID` below is expressed as *fractions of the window*, not
+pixels, so a different screen scales rather than misses entirely - but a
+different FL Studio layout, a collapsed browser panel or a moved sequencer
+will put the clicks somewhere wrong.
+
+## The pattern
+
+A four-on-the-floor kick, backbeat snare, eighth-note hats: the most
+recognisable drum pattern there is, which is the right choice for a demo
+where the audience has three seconds to understand what happened. Written
+as steps-per-row rather than as coordinates so it reads as music.
+"""
+
+import time
+
+# Rows in FL Studio's default channel rack, top to bottom. The stock
+# template opens with exactly these four, in this order - which is the
+# assumption this whole module rests on and the first thing to check if the
+# clicks land on the wrong instruments.
+ROW_KICK = 0
+ROW_CLAP = 1
+ROW_HAT = 2
+ROW_SNARE = 3
+
+# Which of the 16 steps to switch on, per row. Four-on-the-floor kick,
+# backbeat snare, eighths on the hat - deliberately the most legible
+# pattern possible rather than an interesting one.
+PATTERN = {
+    ROW_KICK: (0, 4, 8, 12),
+    ROW_SNARE: (4, 12),
+    ROW_HAT: (0, 2, 4, 6, 8, 10, 12, 14),
+}
+
+# The step grid's position, as fractions of the window rather than pixels,
+# so a different resolution scales instead of missing. Measured from FL
+# Studio's default channel rack layout.
+GRID = {
+    "left": 0.2280,   # centre of the first step button
+    "top": 0.2150,    # centre of the first row
+    "step_dx": 0.0246,  # horizontal spacing between steps
+    "row_dy": 0.0340,   # vertical spacing between rows
+}
+
+# Between clicks. Fast enough to look deliberate rather than laboured,
+# slow enough that FL Studio registers each one - a burst of clicks faster
+# than its own UI loop drops some, which shows up as a pattern with holes.
+CLICK_INTERVAL = 0.12
+
+# How long to wait for FL Studio to come up before clicking into it.
+# Generous: it loads plugins on startup, and clicking into a window that is
+# still initialising does nothing at best.
+LAUNCH_WAIT_SECONDS = 6.0
+
+
+def step_position(
+    step: int, row: int, window: "tuple[int, int, int, int]"
+) -> "tuple[int, int]":
+    """Screen pixels for one step button, given the FL Studio window as
+    `(left, top, width, height)`.
+
+    Pure, so the arithmetic can be checked without FL Studio - which is the
+    only part of this module that can be tested at all.
+    """
+    left, top, width, height = window
+    x = left + width * (GRID["left"] + step * GRID["step_dx"])
+    y = top + height * (GRID["top"] + row * GRID["row_dy"])
+    return (round(x), round(y))
+
+
+def pattern_clicks(window: "tuple[int, int, int, int]") -> "list[tuple[int, int]]":
+    """Every click the pattern needs, in the order to make them.
+
+    Ordered row by row rather than step by step: the pointer travels along
+    each instrument's line instead of zig-zagging down the grid, which reads
+    as laying down a part rather than as scattering dots.
+    """
+    clicks = []
+    for row in (ROW_KICK, ROW_SNARE, ROW_HAT):
+        for step in PATTERN[row]:
+            clicks.append(step_position(step, row, window))
+    return clicks
+
+
+def find_window() -> "tuple[int, int, int, int] | None":
+    """FL Studio's window rectangle, or None if it is not open.
+
+    Matched on the title containing "FL Studio", which is how the
+    application names every one of its windows regardless of the project.
+    """
+    try:
+        import uiautomation as auto
+
+        window = auto.WindowControl(searchDepth=1, SubName="FL Studio")
+        if not window.Exists(maxSearchSeconds=1):
+            return None
+        rect = window.BoundingRectangle
+        return (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+    except Exception:
+        return None
+
+
+def launch() -> bool:
+    """Starts FL Studio if it is not already running, and returns whether a
+    window is there to click into afterwards."""
+    if find_window() is not None:
+        return True
+    try:
+        from heypeer.executor import apps
+
+        app = apps.resolve_app("fl studio")
+        if app is None:
+            return False
+        apps.launch(app)
+    except Exception:
+        return False
+
+    deadline = time.time() + LAUNCH_WAIT_SECONDS
+    while time.time() < deadline:
+        if find_window() is not None:
+            return True
+        time.sleep(0.4)
+    return False
