@@ -394,23 +394,18 @@ class HeyPeer:
         be at the machine, and leaving the microphone live on a timer nobody
         answered is exactly the kind of always-listening behaviour this
         project avoids elsewhere."""
-        language = reminder.language or "fr"
-        if reminder.label:
-            message = _bilingual(
-                language,
-                f"C'est l'heure : {reminder.label}.",
-                f"Time's up: {reminder.label}.",
-            )
-        else:
-            message = _bilingual(language, "C'est l'heure.", "Time's up.")
         self._log(f"Reminder due: {reminder.label or '(no label)'}")
         # The pill switches to its ringing state first, so the stop button
         # is already there when the sound starts - the user reaches for it
         # while the jingle is playing, not after.
         self._ringing_reminder = reminder
         self._refresh_countdown()
+        # The jingle instead of a spoken sentence, at the user's request: a
+        # timer going off is a sound, not an announcement, and "c'est
+        # l'heure" read aloud every time is the thing people turn alarms off
+        # to escape. What it was for is on the pill, where they are already
+        # looking.
         self._play_alarm()
-        self._speak(message, language=language)
         # `_speak` mutes the listener for barge-in and leaves it muted,
         # because every other caller is inside a turn that unmutes it on the
         # way out. A reminder speaks from its own timer thread with no turn
@@ -419,8 +414,10 @@ class HeyPeer:
         # "aucune detection" once the countdown had finished.
         if self._wake_listener is not None:
             self._wake_listener.unmute()
-        self._ringing_reminder = None
-        self._refresh_countdown()
+        # The ringing state is NOT cleared here. It was, back when the alarm
+        # was one spoken sentence and ended with this function; now the
+        # jingle repeats until stopped, and clearing it here ended the alarm
+        # the instant it began. `stop_alarm` owns that now.
 
     def _play_alarm(self) -> None:
         """Plays the timer jingle, on its own thread so the spoken message
@@ -432,14 +429,32 @@ class HeyPeer:
             try:
                 from heypeer.tray import alarm_sound, audio_out
 
-                audio_out.play(
-                    alarm_sound.render(repeats=2),
-                    rate=alarm_sound.SAMPLE_RATE,
-                    sample_width=2,
-                    channels=1,
-                )
+                # Repeats until stopped, rather than playing once and going
+                # quiet after a second. An alarm nobody acknowledged should
+                # still be audible when they come back to the machine -
+                # that is the whole difference between an alarm and a
+                # notification sound.
+                buffer = alarm_sound.render(repeats=alarm_sound.REPEATS_PER_BURST)
+                for _ in range(alarm_sound.MAX_BURSTS):
+                    if self._ringing_reminder is None:
+                        return  # stopped between bursts
+                    if not audio_out.play(
+                        buffer,
+                        rate=alarm_sound.SAMPLE_RATE,
+                        sample_width=2,
+                        channels=1,
+                    ):
+                        return  # cut short by `stop_alarm`
+                # Gave up on its own after MAX_BURSTS: clear the pill, or it
+                # would sit there ringing silently forever.
+                self.stop_alarm()
             except Exception as exc:
-                self._log(f"Alarm sound failed: {exc}")
+                # Deliberately does *not* clear the pill. A machine with no
+                # working audio is exactly the one where the on-screen
+                # alarm is the only signal the user gets - clearing it would
+                # mean a timer fired and left no trace at all. Found by a
+                # test, which asserted the ringing state survives.
+                self._log(f"Alarm sound failed (the timer still shows): {exc}")
 
         threading.Thread(target=play, daemon=True).start()
 

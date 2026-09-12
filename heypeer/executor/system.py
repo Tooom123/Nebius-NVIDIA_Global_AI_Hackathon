@@ -109,6 +109,13 @@ def _run_powershell(script: str) -> "str | None":
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
+            # Explicit, because Python defaults to the console's
+            # locale encoding - cp1252 on a French Windows - and
+            # that raises UnicodeDecodeError on any byte above
+            # 0x7f. Seen for real: a subprocess reader thread died
+            # on 0x8f mid-output, losing the rest of the result.
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=True,
         )
