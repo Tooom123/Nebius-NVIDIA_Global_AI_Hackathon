@@ -104,6 +104,31 @@ def pattern_clicks(window: "tuple[int, int, int, int]") -> "list[tuple[int, int]
     return clicks
 
 
+def focus_window() -> bool:
+    """Brings FL Studio to the front, and returns whether it worked.
+
+    Clicking into a window that is not focused is not reliable: the first
+    click is frequently consumed activating the window rather than pressing
+    what is under the pointer, and on a second monitor the foreground window
+    is usually somewhere else entirely. Both of those look exactly like the
+    click going to the wrong place, which is what the user saw.
+    """
+    try:
+        import uiautomation as auto
+
+        window = auto.WindowControl(searchDepth=1, SubName="FL Studio")
+        if not window.Exists(maxSearchSeconds=1):
+            return False
+        window.SetActive()
+        # A beat for the activation to actually take effect - SetActive
+        # returns before Windows has finished raising the window, and
+        # clicking into the gap is the very problem this avoids.
+        time.sleep(0.35)
+        return True
+    except Exception:
+        return False
+
+
 def find_window() -> "tuple[int, int, int, int] | None":
     """FL Studio's window rectangle, or None if it is not open.
 
@@ -143,3 +168,46 @@ def launch() -> bool:
             return True
         time.sleep(0.4)
     return False
+
+
+def diagnose() -> str:
+    """A report of what this module currently sees, for when the clicks land
+    somewhere wrong.
+
+    Printed rather than logged because it is run by hand, on the machine
+    that has the problem:
+
+        python -c "from heypeer.executor import flstudio; print(flstudio.diagnose())"
+
+    Multi-monitor coordinate bugs are almost impossible to reason about from
+    a description - "the click went to the other screen" has several
+    distinct causes - and this separates them: whether the window rectangle
+    is right, whether the virtual desktop spans both screens, and where the
+    first click would actually land.
+    """
+    lines = []
+
+    window = find_window()
+    lines.append(f"FL Studio window: {window}")
+    if window is None:
+        lines.append("  -> not open, or uiautomation is not installed.")
+        return "\n".join(lines)
+
+    try:
+        from heypeer.executor import cursor_control
+
+        screen = cursor_control.virtual_screen()
+        lines.append(f"Virtual desktop:  {screen}  (left, top, width, height)")
+        if window[0] < screen[0] or window[0] + window[2] > screen[0] + screen[2]:
+            lines.append("  -> the window is OUTSIDE the reported desktop:")
+            lines.append("     the process is probably not DPI-aware.")
+
+        first = pattern_clicks(window)[0]
+        lines.append(f"First click:      {first}")
+        lines.append(f"Absolute coords:  {cursor_control.to_absolute(*first, screen)}")
+        lines.append(f"Cursor now at:    {cursor_control.cursor_position()}")
+    except Exception as exc:
+        lines.append(f"  -> could not read screen metrics: {exc}")
+
+    lines.append(f"Steps to click:   {len(pattern_clicks(window))}")
+    return "\n".join(lines)

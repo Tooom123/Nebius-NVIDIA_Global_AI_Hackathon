@@ -832,6 +832,12 @@ class HeyPeer:
             )
             return
 
+        # Raise it before measuring or clicking: an unfocused window eats
+        # the first click activating itself, and on a second monitor the
+        # foreground window is usually on the other screen entirely. Both
+        # look identical to the click landing somewhere wrong.
+        flstudio.focus_window()
+
         window = flstudio.find_window()
         if window is None:
             self._speak(
@@ -2668,7 +2674,50 @@ def _configure_console() -> None:
             pass  # not a real console, or an older stream object - harmless
 
 
+def _declare_dpi_awareness() -> None:
+    """Tells Windows this process handles physical pixels itself.
+
+    Without it, a process is "DPI virtualised": Windows reports every
+    coordinate scaled to the *primary* monitor's DPI and silently rescales
+    anything sent back. On a single screen that is invisible. On two screens
+    at different scaling it is not - the user saw the pointer travel to the
+    right place on their second monitor while the click landed on the first,
+    because the drawn overlay used real coordinates and SendInput's were
+    being rewritten underneath it.
+
+    PER_MONITOR_AWARE_V2 is what fixes it, and it has to be set before any
+    window exists or any metric is read - hence the very first line of
+    `main`, ahead of even the console setup.
+
+    Every failure is ignored: older Windows lacks the newer call, and a
+    process that cannot declare awareness still runs, just with the bug this
+    prevents.
+    """
+    import ctypes
+
+    # -4 is DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2. Tried first because
+    # it is the only mode that is correct on a mixed-DPI desktop; the two
+    # fallbacks are for Windows versions that do not have it.
+    try:
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()  # system-wide, Vista era
+    except Exception:
+        pass
+
+
 def main() -> None:
+    # Before anything else, including the console setup: this has to be
+    # declared before a window exists or a screen metric is read.
+    _declare_dpi_awareness()
     _configure_console()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
