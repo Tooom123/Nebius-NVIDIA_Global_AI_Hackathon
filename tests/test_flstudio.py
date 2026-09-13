@@ -74,3 +74,31 @@ def test_no_window_is_reported_rather_than_raising(monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "uiautomation", None)
     assert flstudio.find_window() is None
+
+
+def test_diagnose_reports_rather_than_raising_when_nothing_is_open(monkeypatch) -> None:
+    """It is run by hand on a machine that already has a problem - raising
+    would tell the user less than the report does."""
+    monkeypatch.setattr(flstudio, "find_window", lambda: None)
+    report = flstudio.diagnose()
+    assert "not open" in report
+
+
+def test_diagnose_names_where_the_first_click_would_land(monkeypatch) -> None:
+    """"The click went to the other screen" has several distinct causes;
+    the report separates them."""
+    monkeypatch.setattr(flstudio, "find_window", lambda: (1920, 0, 1920, 1080))
+    report = flstudio.diagnose()
+    assert "FL Studio window" in report
+    assert "(1920, 0, 1920, 1080)" in report
+    # The screen-metric lines need ctypes.windll, which only exists on
+    # Windows - the report degrades to saying so rather than failing, which
+    # is itself the behaviour worth pinning.
+    assert "Steps to click" in report
+
+
+def test_focus_failure_is_reported_rather_than_raised(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "uiautomation", None)
+    assert flstudio.focus_window() is False
