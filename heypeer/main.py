@@ -847,6 +847,13 @@ class HeyPeer:
             )
             return
 
+        # A beat of "thinking" before anything moves, at the user's
+        # request: the pattern appearing straight out of the sentence reads
+        # as a macro, where a pause reads as a decision.
+        if self.debug_window is not None:
+            self.debug_window.set_state("thinking")
+        time.sleep(flstudio.THINKING_SECONDS)
+
         clicks = flstudio.pattern_clicks(window)
         self._log(f"FL Studio: {len(clicks)} steps into {window}")
         try:

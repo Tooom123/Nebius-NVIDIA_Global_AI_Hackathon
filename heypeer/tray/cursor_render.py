@@ -69,10 +69,11 @@ ARROW_PIXELS = [
 
 GRID = len(ARROW_PIXELS)
 
-# How many screen pixels one art pixel occupies. 3 keeps the pointer close
-# to a real cursor's size (36px) while leaving the blocks unmistakably
-# square.
-PIXEL_SCALE = 3
+# How many screen pixels one art pixel occupies. 2 puts the arrow at 24px
+# tall, which is about a real Windows cursor - 3 made it 36px, and the user
+# reported it as "enorme". The blocks stay unmistakably square at 2; going
+# to 1 would lose the pixel-art read entirely, which is the point of it.
+PIXEL_SCALE = 2
 
 # Drawing surface, in art pixels. Wider than the arrow to leave room for the
 # click burst, which extends past the arrowhead on every side.

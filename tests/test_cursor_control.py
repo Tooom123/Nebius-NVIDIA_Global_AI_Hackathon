@@ -129,3 +129,30 @@ def test_move_to_does_not_press_anything(monkeypatch) -> None:
         cc.move_to(50, 60)
     assert send.call_count == 1
     assert send.call_args.args[0] & cc.MOUSEEVENTF_MOVE
+
+
+def test_absolute_moves_are_relative_to_the_whole_desktop(monkeypatch) -> None:
+    """Without MOUSEEVENTF_VIRTUALDESK, Windows resolves absolute
+    coordinates against the *primary monitor* - so a point mapped against a
+    3840-wide desktop lands at a fraction of where it should. The user saw
+    exactly that: the pointer reached their second monitor, the click
+    appeared on the first."""
+    _fake_windll(monkeypatch)
+    with patch.object(cc, "_send") as send:
+        cc.click_at(-1482, 222, restore=False)
+
+    move_flags = [c.args[0] for c in send.call_args_list if c.args[0] & cc.MOUSEEVENTF_MOVE]
+    assert move_flags, "a click has to move the pointer first"
+    for flags in move_flags:
+        assert flags & cc.MOUSEEVENTF_VIRTUALDESK
+        assert flags & cc.MOUSEEVENTF_ABSOLUTE
+
+
+def test_restoring_the_pointer_also_spans_the_desktop(monkeypatch) -> None:
+    """Otherwise the user's cursor would be handed back to the wrong screen."""
+    _fake_windll(monkeypatch, cursor_at=(-900, 400))
+    with patch.object(cc, "_send") as send:
+        cc.click_at(100, 100, restore=True)
+
+    last = send.call_args_list[-1].args[0]
+    assert last & cc.MOUSEEVENTF_VIRTUALDESK
