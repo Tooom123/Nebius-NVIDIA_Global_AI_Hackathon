@@ -36,14 +36,16 @@ as steps-per-row rather than as coordinates so it reads as music.
 
 import time
 
-# Rows in FL Studio's default channel rack, top to bottom. The stock
-# template opens with exactly these four, in this order - which is the
-# assumption this whole module rests on and the first thing to check if the
-# clicks land on the wrong instruments.
-ROW_KICK = 0
-ROW_CLAP = 1
-ROW_HAT = 2
-ROW_SNARE = 3
+# Rows in the channel rack, top to bottom, as they exist in the user's own
+# project - read off a screenshot of it rather than assumed from a stock
+# template, which is what the first version got wrong.
+#
+# Their project has two channels, not four: a sample and FL Keys. So the
+# pattern is laid into those two rows rather than into kick/clap/hat/snare
+# that are not there. Naming them by position is the honest description -
+# what they *contain* is the user's business, and the demo is muted anyway.
+ROW_FIRST = 0
+ROW_SECOND = 1
 
 # Which of the 16 steps to switch on, per row.
 #
@@ -58,20 +60,28 @@ ROW_SNARE = 3
 # the three and the snare pickup into the four are what an actual person
 # would put there, rather than a metronome.
 PATTERN = {
-    ROW_KICK: (0, 4, 7, 8, 12),
-    ROW_SNARE: (4, 12, 14),
-    ROW_HAT: (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
-    ROW_CLAP: (2, 6, 10, 14),
+    ROW_FIRST: (0, 4, 7, 8, 12),
+    ROW_SECOND: (2, 6, 10, 14),
 }
 
 # The step grid's position, as fractions of the window rather than pixels,
 # so a different resolution scales instead of missing. Measured from FL
 # Studio's default channel rack layout.
+# Measured off a real screenshot of the user's FL Studio at 1920x1080, not
+# estimated. The first version was guessed and every number was wrong -
+# step_dx especially, at 0.0246 against the real 0.0083, so the clicks
+# walked three times too far right and left the grid entirely after a few
+# steps. That is what put them in the playlist, where a left click paints
+# with the selected pattern - hence the copies of the user's first clip.
+#
+# Still fractions of the window rather than pixels, so another resolution
+# scales. What this cannot survive is a different FL Studio layout: these
+# numbers describe the channel rack docked top-left at its default size.
 GRID = {
-    "left": 0.2280,   # centre of the first step button
-    "top": 0.2150,    # centre of the first row
-    "step_dx": 0.0246,  # horizontal spacing between steps
-    "row_dy": 0.0340,   # vertical spacing between rows
+    "left": 0.2250,     # centre of step 1
+    "top": 0.1343,      # centre of row 1
+    "step_dx": 0.0083,  # horizontal spacing between steps
+    "row_dy": 0.0278,   # vertical spacing between rows
 }
 
 # Between clicks. Fast enough to look deliberate rather than laboured,
@@ -114,7 +124,7 @@ def pattern_clicks(window: "tuple[int, int, int, int]") -> "list[tuple[int, int]
     as laying down a part rather than as scattering dots.
     """
     clicks = []
-    for row in (ROW_KICK, ROW_SNARE, ROW_HAT, ROW_CLAP):
+    for row in (ROW_FIRST, ROW_SECOND):
         for step in PATTERN[row]:
             clicks.append(step_position(step, row, window))
     return clicks
