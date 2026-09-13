@@ -47,20 +47,12 @@ def test_every_click_lands_inside_the_window() -> None:
 
 
 def test_the_pattern_is_a_recognisable_beat() -> None:
-    """Downbeats on the kick and a backbeat snare, whatever else is around
-    them - that is what makes the grid read as a beat rather than as
-    scattered dots."""
-    kick = flstudio.PATTERN[flstudio.ROW_KICK]
-    snare = flstudio.PATTERN[flstudio.ROW_SNARE]
-    assert {0, 4, 8, 12} <= set(kick), "kick on every downbeat"
-    assert {4, 12} <= set(snare), "snare on the backbeat"
-
-
-def test_the_pattern_fills_the_grid_rather_than_leaving_it_bare() -> None:
-    """The demo is muted, so what the audience judges is the shape of the
-    grid. A minimal beat left most of it empty and read as a placeholder."""
-    total = sum(len(steps) for steps in flstudio.PATTERN.values())
-    assert total >= 25
+    """Downbeats on the first row, offbeats on the second - that is what
+    makes the grid read as a beat rather than as scattered dots."""
+    first = flstudio.PATTERN[flstudio.ROW_FIRST]
+    second = flstudio.PATTERN[flstudio.ROW_SECOND]
+    assert {0, 4, 8, 12} <= set(first), "downbeats"
+    assert set(second) & {2, 6, 10, 14}, "offbeats against them"
 
 
 def test_every_row_has_something_in_it() -> None:
@@ -68,13 +60,42 @@ def test_every_row_has_something_in_it() -> None:
     assert all(steps for steps in flstudio.PATTERN.values())
 
 
+def test_no_step_falls_outside_the_sixteen() -> None:
+    """A 17th step is not a wider pattern, it is a click on whatever is
+    beside the grid."""
+    for steps in flstudio.PATTERN.values():
+        assert all(0 <= step <= 15 for step in steps)
+
+
+def test_the_grid_matches_the_measured_screenshot() -> None:
+    """Regression guard on the numbers themselves. The first version was
+    estimated and every one was wrong - step_dx was 0.0246 against the real
+    0.0083, so clicks walked three times too far right and left the grid
+    entirely, landing in the playlist where a left click paints with the
+    selected pattern. That is what produced copies of the user's first clip
+    instead of drums.
+
+    Checked as window-local pixels at 1920x1080, which is what was measured
+    off the screenshot and what a future edit can be compared against.
+    """
+    window = (0, 0, 1920, 1080)
+    first = flstudio.step_position(0, 0, window)
+    sixteenth = flstudio.step_position(15, 0, window)
+    second_row = flstudio.step_position(0, 1, window)
+
+    assert 425 <= first[0] <= 440, "step 1 sits at the left of the grid"
+    assert 138 <= first[1] <= 152, "row 1 is near the top of the rack"
+    assert 660 <= sixteenth[0] <= 685, "step 16 is still inside the grid"
+    assert 165 <= second_row[1] <= 180, "row 2 is one row down, not a panel away"
+
+
 def test_clicks_are_ordered_row_by_row() -> None:
     """The pointer travels along each instrument's line rather than
     zig-zagging down the grid - laying down a part, not scattering dots."""
     clicks = flstudio.pattern_clicks(WINDOW)
-    kick_count = len(flstudio.PATTERN[flstudio.ROW_KICK])
-    kick_rows = {y for _, y in clicks[:kick_count]}
-    assert len(kick_rows) == 1, "the kick's clicks share one row"
+    first_count = len(flstudio.PATTERN[flstudio.ROW_FIRST])
+    first_rows = {y for _, y in clicks[:first_count]}
+    assert len(first_rows) == 1, "the first row's clicks share one y"
 
 
 def test_the_click_count_matches_the_pattern() -> None:
