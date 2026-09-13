@@ -46,6 +46,18 @@ MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_ABSOLUTE = 0x8000
+# Without this, ABSOLUTE coordinates are interpreted against the *primary
+# monitor* rather than the whole virtual desktop - so 0..65535 spans one
+# screen, and everything mapped against the desktop's width lands at a
+# fraction of where it should. That is exactly what the user saw: the drawn
+# pointer reached the right spot on their second monitor and the click
+# appeared on the first.
+#
+# The diagnose() output made it unambiguous. The target (-1482, 222) mapped
+# to absolute (7475, 13471), which is correct *for a 3840-wide desktop* -
+# and lands at x=218 y=222 when Windows resolves it against a 1920-wide
+# primary screen instead. Right arithmetic, wrong frame of reference.
+MOUSEEVENTF_VIRTUALDESK = 0x4000
 
 # SendInput's absolute coordinates are not pixels: the virtual desktop is
 # mapped onto 0..65535 in each axis regardless of resolution.
@@ -168,14 +180,14 @@ def click_at(x: int, y: int, button: str = "left", restore: bool = True) -> None
     screen = virtual_screen()
     ax, ay = to_absolute(x, y, screen)
 
-    _send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay)
+    _send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, ax, ay)
     _send(down)
     time.sleep(CLICK_HOLD_SECONDS)
     _send(up)
 
     if previous is not None:
         px, py = to_absolute(previous[0], previous[1], screen)
-        _send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, px, py)
+        _send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, px, py)
 
 
 def move_to(x: int, y: int) -> None:
@@ -185,4 +197,4 @@ def move_to(x: int, y: int) -> None:
     if not is_supported():
         raise ClickUnavailable("moving the pointer is only implemented for Windows")
     ax, ay = to_absolute(x, y, virtual_screen())
-    _send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay)
+    _send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, ax, ay)

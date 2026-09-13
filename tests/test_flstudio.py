@@ -47,10 +47,25 @@ def test_every_click_lands_inside_the_window() -> None:
 
 
 def test_the_pattern_is_a_recognisable_beat() -> None:
-    """Four-on-the-floor kick and a backbeat snare: the point of a demo
-    pattern is that the audience understands it in three seconds."""
-    assert flstudio.PATTERN[flstudio.ROW_KICK] == (0, 4, 8, 12)
-    assert flstudio.PATTERN[flstudio.ROW_SNARE] == (4, 12)
+    """Downbeats on the kick and a backbeat snare, whatever else is around
+    them - that is what makes the grid read as a beat rather than as
+    scattered dots."""
+    kick = flstudio.PATTERN[flstudio.ROW_KICK]
+    snare = flstudio.PATTERN[flstudio.ROW_SNARE]
+    assert {0, 4, 8, 12} <= set(kick), "kick on every downbeat"
+    assert {4, 12} <= set(snare), "snare on the backbeat"
+
+
+def test_the_pattern_fills_the_grid_rather_than_leaving_it_bare() -> None:
+    """The demo is muted, so what the audience judges is the shape of the
+    grid. A minimal beat left most of it empty and read as a placeholder."""
+    total = sum(len(steps) for steps in flstudio.PATTERN.values())
+    assert total >= 25
+
+
+def test_every_row_has_something_in_it() -> None:
+    """An empty row is a channel that looks forgotten."""
+    assert all(steps for steps in flstudio.PATTERN.values())
 
 
 def test_clicks_are_ordered_row_by_row() -> None:

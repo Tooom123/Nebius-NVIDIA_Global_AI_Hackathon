@@ -45,13 +45,23 @@ ROW_CLAP = 1
 ROW_HAT = 2
 ROW_SNARE = 3
 
-# Which of the 16 steps to switch on, per row. Four-on-the-floor kick,
-# backbeat snare, eighths on the hat - deliberately the most legible
-# pattern possible rather than an interesting one.
+# Which of the 16 steps to switch on, per row.
+#
+# Chosen to look right rather than to sound right, which is the honest way
+# round here: the demo is muted and music is added in post, so what the
+# audience judges is the *shape* of the grid. A four-on-the-floor kick with
+# a ghost note, a backbeat snare with a pickup, sixteenth hats and claps on
+# the offbeats fills the grid the way a real pattern does - where the
+# minimal version left most of it empty and read as a placeholder.
+#
+# It is also a pattern a producer would not wince at: the ghost kick before
+# the three and the snare pickup into the four are what an actual person
+# would put there, rather than a metronome.
 PATTERN = {
-    ROW_KICK: (0, 4, 8, 12),
-    ROW_SNARE: (4, 12),
-    ROW_HAT: (0, 2, 4, 6, 8, 10, 12, 14),
+    ROW_KICK: (0, 4, 7, 8, 12),
+    ROW_SNARE: (4, 12, 14),
+    ROW_HAT: (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+    ROW_CLAP: (2, 6, 10, 14),
 }
 
 # The step grid's position, as fractions of the window rather than pixels,
@@ -67,7 +77,13 @@ GRID = {
 # Between clicks. Fast enough to look deliberate rather than laboured,
 # slow enough that FL Studio registers each one - a burst of clicks faster
 # than its own UI loop drops some, which shows up as a pattern with holes.
-CLICK_INTERVAL = 0.12
+CLICK_INTERVAL = 0.055
+
+# A beat before the first click. The user asked for Hey Peer to "think for
+# a second" and then have the pattern appear: without it the clicks start
+# while it is still speaking, which reads as a macro firing rather than as
+# an assistant deciding something.
+THINKING_SECONDS = 1.2
 
 # How long to wait for FL Studio to come up before clicking into it.
 # Generous: it loads plugins on startup, and clicking into a window that is
@@ -98,7 +114,7 @@ def pattern_clicks(window: "tuple[int, int, int, int]") -> "list[tuple[int, int]
     as laying down a part rather than as scattering dots.
     """
     clicks = []
-    for row in (ROW_KICK, ROW_SNARE, ROW_HAT):
+    for row in (ROW_KICK, ROW_SNARE, ROW_HAT, ROW_CLAP):
         for step in PATTERN[row]:
             clicks.append(step_position(step, row, window))
     return clicks
