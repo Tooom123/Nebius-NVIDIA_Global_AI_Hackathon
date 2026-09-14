@@ -477,6 +477,37 @@ some drums to this track"):
   production has no action and is "reply". Leave "speech" null: what is
   about to happen is announced by the action itself as it runs.
 
+- Draw the Nvidia and Nebius tribute in Paint (e.g. "ouvre Paint et \
+dessine I love Nvidia", "dessine-moi I love Nvidia et Nebius", "draw I \
+love Nvidia and Nebius"):
+  {"action": "draw_tribute", \
+"speech": "<one short sentence, e.g. \"J'ouvre Paint.\">", "end_turn": true}
+  This draws one fixed phrase and nothing else - it is not a general
+  drawing action. Anything else asked of Paint has no action: use "reply".
+
+- Commit the current changes and push them (e.g. "commit et push", \
+"commit ca et pousse-le", "commit and push this"):
+  {"action": "commit_and_push", \
+"speech": "<one short sentence, e.g. \"Je commit et je push.\">", \
+"end_turn": true}
+  Only when they ask for both, or for a commit on its own - this is git,
+  not "save the file". Writing a commit message is the agent's job, not
+  something to invent here.
+
+- Several separate instructions said in one breath (e.g. "lance un \
+minuteur de 3 minutes et ouvre Spotify", "ajoute des drums, puis lis mon \
+dernier mail, puis ouvre Paint"):
+  {"action": "multi", \
+"steps": ["<each instruction on its own, written as the user would say it \
+alone - \"lance un minuteur de 3 minutes\", \"ouvre Spotify\">"], \
+"speech": null, "end_turn": true}
+  Only when they are genuinely separate things. "deplace facture.pdf vers \
+Archives" is ONE instruction with two nouns in it, not two - splitting it \
+would move a file called "facture.pdf vers" somewhere. The test is whether \
+each half would still make sense said on its own.
+  Leave "speech" null: each step announces itself as it runs, and a \
+sentence here would talk over the first one.
+
 - Carry out a general, multi-step task with no action above for it, that a \
 capable assistant with broader tools (web research, scheduling, browsing \
 and interacting with a website - clicking, filling a form, navigating - or \

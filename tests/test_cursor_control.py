@@ -156,3 +156,49 @@ def test_restoring_the_pointer_also_spans_the_desktop(monkeypatch) -> None:
 
     last = send.call_args_list[-1].args[0]
     assert last & cc.MOUSEEVENTF_VIRTUALDESK
+
+
+def test_a_drag_holds_the_button_across_the_whole_path(monkeypatch) -> None:
+    """A drag is not a click with extra moves: the button stays down across
+    the moves, or the application draws nothing."""
+    _fake_windll(monkeypatch)
+    with patch.object(cc, "_send") as send:
+        cc.drag_path([(0, 0), (10, 10), (20, 20), (30, 30)], hold_seconds=0)
+
+    flags = [c.args[0] for c in send.call_args_list]
+    assert cc.MOUSEEVENTF_LEFTDOWN in flags
+    assert flags.index(cc.MOUSEEVENTF_LEFTDOWN) < flags.index(cc.MOUSEEVENTF_LEFTUP)
+    moves_between = [
+        f for f in flags[flags.index(cc.MOUSEEVENTF_LEFTDOWN) + 1 : flags.index(cc.MOUSEEVENTF_LEFTUP)]
+        if f & cc.MOUSEEVENTF_MOVE
+    ]
+    assert len(moves_between) == 3, "every point after the first is its own move"
+
+
+def test_the_button_is_released_even_if_the_path_fails(monkeypatch) -> None:
+    """A stroke that raises mid-path with the button still down leaves the
+    user's mouse stuck down - much worse than a half-drawn line."""
+    _fake_windll(monkeypatch)
+    calls = []
+
+    def fail_on_third(flags, ax=0, ay=0):
+        calls.append(flags)
+        if len(calls) == 3:
+            raise RuntimeError("blocked")
+
+    with patch.object(cc, "_send", side_effect=fail_on_third):
+        try:
+            cc.drag_path([(0, 0), (10, 10), (20, 20)], hold_seconds=0)
+        except RuntimeError:
+            pass
+
+    assert cc.MOUSEEVENTF_LEFTUP in calls
+
+
+def test_a_one_point_path_draws_nothing(monkeypatch) -> None:
+    """A single point is a click, not a stroke - it would press whatever is
+    under it."""
+    _fake_windll(monkeypatch)
+    with patch.object(cc, "_send") as send:
+        cc.drag_path([(5, 5)])
+    send.assert_not_called()

@@ -3277,3 +3277,105 @@ def test_stopping_mid_burst_ends_the_alarm(tmp_path: Path) -> None:
 
     time.sleep(0.1)
     assert len(plays) == 1
+
+
+def test_stacked_instructions_run_in_order(tmp_path: Path) -> None:
+    """The demo is a sequence said in one breath - each step has to reach
+    dispatch as though it had been said alone."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    steps = ["lance un minuteur de 3 minutes", "ouvre Spotify"]
+
+    with patch.object(peer, "_interpret") as interpret, patch.object(
+        peer, "_dispatch_intent"
+    ) as dispatch:
+        peer._run_multi(steps, "fr")
+
+    assert [c.args[0] for c in interpret.call_args_list] == steps
+    assert dispatch.call_count == 2
+
+
+def test_a_failing_step_does_not_abandon_the_demo(tmp_path: Path) -> None:
+    """On stage especially, the remaining instructions are the demo."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+
+    with patch.object(
+        peer, "_interpret", side_effect=[RuntimeError("boom"), MagicMock(), MagicMock()]
+    ), patch.object(peer, "_dispatch_intent") as dispatch:
+        peer._run_multi(["a", "b", "c"], "fr")
+
+    assert dispatch.call_count == 2
+
+
+def test_multi_cannot_nest(tmp_path: Path) -> None:
+    """"multi" inside "multi" is the same unbounded loop a routine calling
+    itself would be."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    peer._in_routine = True
+
+    with patch.object(peer, "_interpret") as interpret:
+        peer._run_multi(["a", "b"], "fr")
+
+    interpret.assert_not_called()
+
+
+def test_the_multi_guard_is_released_afterwards(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch.object(peer, "_interpret"), patch.object(peer, "_dispatch_intent"):
+        peer._run_multi(["a"], "fr")
+    assert peer._in_routine is False
+
+
+def test_the_commit_prompt_pins_the_co_author_trailer(tmp_path: Path) -> None:
+    """The trailer is the point of the feature, and a prompt that merely
+    mentions it gets it right most of the time - which is not the same."""
+    from heypeer.main import HeyPeer
+
+    assert "Co-Authored-By: Hey Peer" in HeyPeer.COMMIT_PROMPT
+    assert "exactly" in HeyPeer.COMMIT_PROMPT
+
+
+def test_commit_says_so_when_the_agent_is_missing(tmp_path: Path) -> None:
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    with patch("heypeer.executor.coding_agent.is_available", return_value=False), patch.object(
+        peer, "_speak"
+    ) as speak:
+        peer._run_commit_and_push(None, "fr")
+    assert "agent" in speak.call_args.args[0].lower()
+
+
+def test_drawing_needs_a_paint_window(tmp_path: Path) -> None:
+    """Drawing into a window that is not there lands on the desktop."""
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+
+    with patch("heypeer.executor.cursor_control.is_supported", return_value=True), patch(
+        "heypeer.executor.paint.find_window", return_value=None
+    ), patch("heypeer.executor.apps.resolve_app", return_value=None), patch(
+        "time.sleep"
+    ), patch.object(peer, "_speak") as speak:
+        peer._run_draw_tribute(None, "fr")
+
+    assert "Paint" in speak.call_args.args[0]
+
+
+def test_drawing_strokes_the_whole_phrase(tmp_path: Path) -> None:
+    from heypeer.executor import paint as paint_mod
+
+    nemotron = MagicMock()
+    peer = _peer(tmp_path, nemotron)
+    window = (0, 0, 1920, 1080)
+    expected = len(paint_mod.layout(paint_mod.canvas_area(window)))
+
+    with patch("heypeer.executor.cursor_control.is_supported", return_value=True), patch(
+        "heypeer.executor.paint.find_window", return_value=window
+    ), patch("heypeer.executor.paint.focus_window", return_value=True), patch(
+        "heypeer.executor.cursor_control.drag_path"
+    ) as drag, patch("time.sleep"), patch.object(peer, "_speak"):
+        peer._run_draw_tribute(None, "fr")
+
+    assert drag.call_count == expected

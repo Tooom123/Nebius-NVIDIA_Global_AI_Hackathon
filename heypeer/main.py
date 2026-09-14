@@ -793,6 +793,181 @@ class HeyPeer:
         self._arm_followup(CONVERSATION_WINDOW_SECONDS)
         return True
 
+    # What the coding agent is told to do for "commit et push". Spelled out
+    # here rather than left to the model to phrase: the co-author trailer is
+    # the point of the feature, and a prompt that merely *mentions* it gets
+    # it right most of the time, which is not the same thing.
+    COMMIT_PROMPT = (
+        "Stage the current changes, write a commit message describing what "
+        "they actually do, and push. End the commit message with this "
+        "trailer, exactly:\n\n"
+        "Co-Authored-By: Hey Peer <noreply@heypeer.local>\n\n"
+        "If there is nothing staged and nothing modified, say so and do not "
+        "create an empty commit."
+    )
+
+    def _run_draw_tribute(self, narration: "str | None", language: str = "fr") -> None:
+        """Opens Paint and draws the phrase, stroke by stroke.
+
+        The drawing is the point - the user chose strokes over the text
+        tool precisely so there is something to watch - so this makes no
+        attempt to be quick about it.
+        """
+        from heypeer.executor import cursor_control, paint
+
+        if not cursor_control.is_supported():
+            self._speak(
+                _bilingual(language, "Je ne peux pas dessiner sur cette machine.",
+                           "I can't draw on this machine."),
+                language=language,
+            )
+            return
+
+        self._speak(
+            narration or _bilingual(language, "J'ouvre Paint.", "Opening Paint."),
+            language=language,
+        )
+
+        if paint.find_window() is None:
+            try:
+                from heypeer.executor import apps
+
+                app = apps.resolve_app("paint")
+                if app is not None:
+                    apps.launch(app)
+            except Exception as exc:
+                self._log(f"Could not launch Paint: {exc}")
+            # Paint starts fast, but not instantly - and drawing into a
+            # window that is still opening lands on the desktop.
+            deadline = time.time() + 8.0
+            while time.time() < deadline and paint.find_window() is None:
+                time.sleep(0.4)
+
+        paint.focus_window()
+        window = paint.find_window()
+        if window is None:
+            self._speak(
+                _bilingual(language, "Je ne retrouve pas la fenêtre de Paint.",
+                           "I can't find the Paint window."),
+                language=language,
+            )
+            return
+
+        strokes = paint.layout(paint.canvas_area(window))
+        self._log(f"Paint: {len(strokes)} strokes into {window}")
+
+        for stroke in strokes:
+            if len(stroke) < 2:
+                continue
+            try:
+                cursor_control.drag_path(stroke, hold_seconds=paint.POINT_INTERVAL)
+            except Exception as exc:
+                self._log(f"Paint stroke failed: {exc}")
+                break
+            time.sleep(paint.STROKE_PAUSE)
+
+        self._speak(
+            _bilingual(language, "Et voilà.", "There you go."),
+            language=language,
+        )
+
+    def _run_commit_and_push(self, narration: "str | None", language: str = "fr") -> None:
+        """Hands the commit to the coding agent, in whatever project the
+        watched directory points at.
+
+        The agent writes the message - it has just read the diff and Hey
+        Peer has not. What is fixed here is the co-author trailer, because
+        that is the part the user asked for and the part a model will
+        paraphrase if left to itself.
+        """
+        from heypeer.executor import coding_agent
+
+        if not coding_agent.is_available():
+            self._log("Coding agent unavailable: 'claude' not found on PATH.")
+            self._speak(
+                _bilingual(
+                    language,
+                    "L'agent de code n'est pas installé.",
+                    "The coding agent isn't installed.",
+                ),
+                language=language,
+            )
+            return
+
+        self._speak(
+            narration or _bilingual(language, "Je commit et je push.",
+                                    "Committing and pushing."),
+            language=language,
+        )
+
+        cwd = self.watched_dir or Path.home()
+        self.tray.set_status(Status.EXECUTING)
+        try:
+            output = coding_agent.run(self.COMMIT_PROMPT, cwd)
+        except coding_agent.CodingAgentTimedOut:
+            self._log("Coding agent timed out on the commit.")
+            self._speak(
+                _bilingual(language, "Ça prend trop de temps, j'abandonne.",
+                           "That's taking too long, I'm giving up."),
+                language=language,
+            )
+            return
+        except Exception as exc:
+            self._log(f"Commit failed: {exc}")
+            self._speak(
+                _bilingual(language, "Je n'ai pas réussi à commit.",
+                           "I couldn't commit."),
+                language=language,
+            )
+            return
+        finally:
+            self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
+
+        try:
+            summary = self.nemotron.summarize_for_speech(output, language) if output else ""
+        except Exception:
+            summary = ""
+        self._speak(
+            summary or _bilingual(language, "C'est commit et poussé.",
+                                  "Committed and pushed."),
+            language=language,
+        )
+
+    def _run_multi(self, steps: "list[str] | None", language: str = "fr") -> None:
+        """Carries out several instructions said in one breath, in order.
+
+        Each step goes back through the ordinary interpret-and-dispatch
+        path, exactly as a named routine's steps do - so a step means what
+        it would mean said alone, and nothing here needs to know what any
+        of them are.
+
+        Reuses `_in_routine` as the recursion guard rather than adding a
+        second flag: "multi" inside "multi" is the same unbounded loop, and
+        one flag that means "already running a sequence" is easier to reason
+        about than two that must agree.
+        """
+        if not steps:
+            return
+
+        if getattr(self, "_in_routine", False):
+            self._log("Refusing to nest a multi-instruction turn.")
+            return
+
+        self._log(f"Multi: {len(steps)} instructions")
+        self._in_routine = True
+        try:
+            for step in steps:
+                self._log(f"  step: {step}")
+                try:
+                    intent = self._interpret(step)
+                    self._dispatch_intent(intent, step)
+                except Exception as exc:
+                    # One failed step must not abandon the rest - on stage
+                    # especially, the remaining instructions are the demo.
+                    self._log(f"  step failed: {exc}")
+        finally:
+            self._in_routine = False
+
     def _run_add_drums(self, narration: "str | None", language: str = "fr") -> None:
         """Opens FL Studio and clicks a drum pattern into the step sequencer.
 
@@ -1725,6 +1900,12 @@ class HeyPeer:
             self._run_run_routine(intent.target_name, language)
         elif intent.action == "list_routines":
             self._run_list_routines(language)
+        elif intent.action == "draw_tribute":
+            self._run_draw_tribute(intent.speech, language)
+        elif intent.action == "commit_and_push":
+            self._run_commit_and_push(intent.speech, language)
+        elif intent.action == "multi":
+            self._run_multi(intent.steps, language)
         elif intent.action == "add_drums":
             self._run_add_drums(intent.speech, language)
         elif intent.action == "click_element":

@@ -190,6 +190,46 @@ def click_at(x: int, y: int, button: str = "left", restore: bool = True) -> None
         _send(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, px, py)
 
 
+def drag_path(points: "list[tuple[int, int]]", hold_seconds: float = 0.004) -> None:
+    """Presses at the first point, moves through the rest, releases at the
+    last - one continuous stroke.
+
+    Separate from `click_at` because a drag is not a click with extra moves:
+    the button has to stay down *across* the moves, and every intermediate
+    position has to be delivered as its own event. An application that
+    tracks the mouse - a paint canvas, a fader, a selection box - follows
+    the path it was given, so skipping points draws a straight line between
+    them rather than a curve.
+
+    `hold_seconds` between points. Small but not zero: Windows coalesces
+    mouse moves that arrive faster than the receiving application polls,
+    and a stroke delivered in one burst arrives as a single jump.
+    """
+    if not is_supported():
+        raise ClickUnavailable("dragging is only implemented for Windows")
+    if len(points) < 2:
+        return
+
+    screen = virtual_screen()
+    flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+
+    first = to_absolute(*points[0], screen)
+    _send(flags, *first)
+    time.sleep(CLICK_HOLD_SECONDS)
+    _send(MOUSEEVENTF_LEFTDOWN)
+    time.sleep(CLICK_HOLD_SECONDS)
+
+    try:
+        for point in points[1:]:
+            _send(flags, *to_absolute(*point, screen))
+            time.sleep(hold_seconds)
+    finally:
+        # Released in a finally: a stroke that raises mid-path with the
+        # button still down leaves the user's mouse stuck down, which is
+        # much worse than a half-drawn line.
+        _send(MOUSEEVENTF_LEFTUP)
+
+
 def move_to(x: int, y: int) -> None:
     """Moves the system pointer without pressing anything. Not used by the
     animated cursor - that one draws itself and leaves the real pointer

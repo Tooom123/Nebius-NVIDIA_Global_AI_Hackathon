@@ -59,6 +59,12 @@ import re
 # speaker says them.
 RESPELLINGS = {
     "spotify": "spo-ti-faï",
+    # "Paint" reads as "pinte" through a French voice - respelled for the
+    # same reason Spotify was. Nvidia and Nebius were tried here too and
+    # removed: the guard below checks each entry against espeak and said
+    # both already survive in French, so respelling them would have been
+    # fixing something that was not broken.
+    "paint": "peïnte",
     "windows": "ouinedôze",
     "whatsapp": "ouatsape",
     "downloads": "daoune-lôdz",

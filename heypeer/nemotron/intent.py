@@ -37,6 +37,9 @@ ACTIONS = (
     "listen_to_screen",  # "qu'est-ce qu'elle dit dans cette video ?" - captures system audio
     "click_element",  # "clique sur Envoyer" - target_name is the control's name
     "add_drums",  # "analyse cette prod et ajoute des drums" - scripted FL Studio demo path
+    "multi",  # several instructions in one breath - steps holds them, run in order
+    "commit_and_push",  # "commit et push" - dispatched to the coding agent
+    "draw_tribute",  # "dessine I love Nvidia dans Paint" - scripted demo path
     "reply",  # nothing to do on the computer: just say `speech` back
     "ask",  # the instruction was almost understood; `question` says what's missing
     "unknown",
@@ -95,6 +98,9 @@ ACTION_DESCRIPTIONS = {
     "listen_to_screen": "listen to what the computer is playing",
     "click_element": "click a button on screen",
     "add_drums": "add a drum pattern in FL Studio",
+    "multi": "carry out several instructions in a row",
+    "commit_and_push": "commit and push the changes",
+    "draw_tribute": "draw in Paint",
 }
 
 
