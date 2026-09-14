@@ -669,6 +669,35 @@ Respond with ONLY a JSON object: {"answer": "<what to say out loud>"}.
 """
 
 
+COMPOSE_DRUMS_SYSTEM_PROMPT = """\
+You are writing a drum pattern for a music producer, as sixteen steps of
+one bar.
+
+You are told the tempo and, when the user said one, a style. Write a
+pattern that suits them: a house track at 126 needs four-on-the-floor and
+offbeat hats, a trap track at 140 needs sparse kicks and rolling hi-hats,
+a boom-bap beat at 90 needs a swung kick and a heavy backbeat snare. The
+tempo alone tells you a great deal - use it.
+
+Two rows are available and no more, because that is what the project has
+open. Put the low end - kick, and anything that anchors the bar - on row 0,
+and the rhythm on top - hats, claps, snare - on row 1.
+
+Rules that make the difference between a pattern and a list of numbers:
+- Step 0 is beat one. Steps 0, 4, 8 and 12 are the four downbeats.
+- Something has to land on step 0, or the bar has no start.
+- Rows must not be identical, and neither may be empty.
+- Between 4 and 12 steps per row. Fewer reads as unfinished, more as noise.
+- Put at least one step somewhere other than a downbeat, or it is a
+  metronome rather than a groove.
+
+Answer with the JSON object and nothing else. Do not reason, do not work
+through it, do not explain - the first character you write is "{".
+
+{"row0": [0, 4, 8, 12], "row1": [2, 6, 10, 14]}
+"""
+
+
 SUMMARIZE_SYSTEM_PROMPT = """\
 You turn a block of text into something worth saying out loud. The text
 came from the clipboard or a document Hey Peer read for the user; you were
@@ -791,6 +820,57 @@ def _positive_number(value) -> "float | None":
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value) if value > 0 else None
+
+
+def _first_json_object(raw: "str | None") -> dict:
+    """The first JSON object in `raw`, or `{}`.
+
+    json_object mode is not a guarantee on this deployment: asked for a
+    drum pattern, the model sometimes answers "Here's a thinking
+    process:..." and *then* the JSON. That was measured, not assumed - two
+    styles out of four came back empty for exactly this reason while a
+    third worked. Telling it not to reason fixed most of it; salvaging the
+    object fixes the rest, and costs a brace scan.
+    """
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    if start < 0:
+        return {}
+    depth = 0
+    for i in range(start, len(raw)):
+        if raw[i] == "{":
+            depth += 1
+        elif raw[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(raw[start : i + 1])
+                except json.JSONDecodeError:
+                    return {}
+    return {}
+
+
+def _step_list(value) -> "list[int]":
+    """A row of step indices from the model, cleaned.
+
+    Anything outside 0-15 is dropped rather than clamped: a 17th step is
+    not a wider bar, it is the model having lost count, and clamping it to
+    15 would double a step that is already there. Deduplicated and sorted
+    because the same step twice is one click either way, and a caller
+    walking them left to right reads as laying down a part.
+    """
+    if not isinstance(value, list):
+        return []
+    steps = {
+        int(v) for v in value
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= int(v) <= 15
+    }
+    return sorted(steps)
 
 
 def _plain_punctuation(text: "str | None") -> "str | None":
@@ -966,6 +1046,66 @@ class NemotronClient:
     # capture (someone copied an entire document) would otherwise cost a
     # slow, expensive round trip to produce three spoken sentences.
     SUMMARIZE_MAX_CHARS = 4000
+
+    # Room to think *and* answer, rather than a cap meant to prevent
+    # thinking. Nemotron-3_5-Lightning reasons before answering whatever it
+    # is told - measured across four attempts: "answer with only JSON" in
+    # prose, a tightened version, a worked few-shot exchange, and a 200- and
+    # 900-token cap. Every one opened with "Here's a thinking process:".
+    #
+    # So the fix is not to suppress it. It is a reasoning model; the working
+    # out is how it gets the answer right, and cutting the budget only
+    # removed the answer while keeping the reasoning. The JSON is salvaged
+    # out of the tail instead (see `_first_json_object`), and the budget is
+    # large enough that it is reached.
+    # 8000 because that is what it measurably needs: at 3000 the run used
+    # all 3000 and stopped mid-thought, at 8000 the JSON is there at the
+    # end. Not a guess rounded up - the two were compared directly.
+    COMPOSE_MAX_TOKENS = 8000
+
+    def compose_drums(self, tempo: int, style: str = "") -> "tuple[list[int], list[int], str]":
+        """A drum pattern for `tempo` and `style`, as `(row0, row1, why)`.
+
+        Composed rather than looked up. The pattern used to be a constant in
+        `executor/flstudio.py`, which made the demo a scripted click
+        sequence - the model chose nothing. Here Nemotron reads the tempo
+        and writes the steps, so the same thing on screen is the model
+        making a musical decision rather than replaying one.
+
+        Every failure returns an empty pattern, and the caller falls back to
+        its own default: a demo that draws nothing is worse than a demo that
+        draws something unremarkable.
+        """
+        content = f"Tempo: {tempo} BPM"
+        if style.strip():
+            content += f"\nStyle: {style.strip()}"
+
+        try:
+            response = self._client.chat.completions.create(
+                model=self.settings.nemotron_model_id,
+                messages=[
+                    {"role": "system", "content": COMPOSE_DRUMS_SYSTEM_PROMPT},
+                    # A worked exchange rather than another instruction not
+                    # to reason. Told in prose to answer with only JSON, the
+                    # model still opened with "Here's a thinking process:"
+                    # every single time and talked itself past the token
+                    # limit - measured at 200 and at 900, identical opening.
+                    # Shown one answer in the right shape, it copies the
+                    # shape. Demonstration beats instruction here, which is
+                    # worth remembering for the next prompt that fights back.
+                    {"role": "user", "content": "Tempo: 128 BPM\nStyle: techno"},
+                    {"role": "assistant",
+                     "content": '{"row0": [0, 4, 8, 12], "row1": [2, 6, 10, 14]}'},
+                    {"role": "user", "content": content},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=self.COMPOSE_MAX_TOKENS,
+            )
+            data = _first_json_object(response.choices[0].message.content)
+        except Exception:
+            return ([], [], "")
+
+        return (_step_list(data.get("row0")), _step_list(data.get("row1")), "")
 
     def summarize_for_speech(self, text: str, language: str = "fr") -> str:
         """Turns `text` (clipboard content - see `clipboard_read` in

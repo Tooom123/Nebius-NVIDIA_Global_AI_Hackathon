@@ -968,7 +968,9 @@ class HeyPeer:
         finally:
             self._in_routine = False
 
-    def _run_add_drums(self, narration: "str | None", language: str = "fr") -> None:
+    def _run_add_drums(
+        self, narration: "str | None", language: str = "fr", style: str = ""
+    ) -> None:
         """Opens FL Studio and clicks a drum pattern into the step sequencer.
 
         A scripted demo path, and said so plainly rather than dressed up:
@@ -1022,14 +1024,41 @@ class HeyPeer:
             )
             return
 
-        # A beat of "thinking" before anything moves, at the user's
-        # request: the pattern appearing straight out of the sentence reads
-        # as a macro, where a pause reads as a decision.
+        # Nemotron writes the pattern, rather than replaying a constant.
+        # This is the difference between the model routing a sentence and
+        # the model making a musical decision - same thing on screen,
+        # different claim about what it did.
+        #
+        # It takes about 35 seconds, measured: Nemotron-3_5-Lightning is a
+        # reasoning model and works the pattern out at length before
+        # answering. The user chose to keep that live rather than
+        # pre-compute it, so the wait is made legible instead of hidden -
+        # the tempo is said out loud, the blob shows "thinking", and the
+        # composition is announced when it arrives. A silent 35 seconds
+        # would look like a hang; a narrated one looks like work.
+        tempo = flstudio.read_tempo()
+        self._speak(
+            _bilingual(
+                language,
+                f"Je compose un pattern à {tempo} BPM, laisse-moi réfléchir.",
+                f"Composing a pattern at {tempo} BPM, give me a moment.",
+            ),
+            language=language,
+        )
         if self.debug_window is not None:
             self.debug_window.set_state("thinking")
-        time.sleep(flstudio.THINKING_SECONDS)
+        row0, row1, why = self.nemotron.compose_drums(tempo, style or "")
+        if row0 and row1:
+            pattern = {flstudio.ROW_FIRST: row0, flstudio.ROW_SECOND: row1}
+            self._log(f"Composed at {tempo} BPM: {why or '(no description)'}")
+        else:
+            # A demo that draws nothing is worse than one that draws
+            # something ordinary.
+            pattern = None
+            why = ""
+            self._log("Composition failed; falling back to the built-in pattern.")
 
-        clicks = flstudio.pattern_clicks(window)
+        clicks = flstudio.pattern_clicks(window, pattern)
         self._log(f"FL Studio: {len(clicks)} steps into {window}")
         try:
             previous = cursor_control.cursor_position()
@@ -1907,7 +1936,7 @@ class HeyPeer:
         elif intent.action == "multi":
             self._run_multi(intent.steps, language)
         elif intent.action == "add_drums":
-            self._run_add_drums(intent.speech, language)
+            self._run_add_drums(intent.speech, language, intent.content or "")
         elif intent.action == "click_element":
             self._run_click_element(intent.target_name, intent.speech, language)
         elif intent.action == "listen_to_screen":

@@ -1075,3 +1075,91 @@ def test_a_failed_combine_falls_back_to_a_real_partial(monkeypatch) -> None:
     monkeypatch.setattr(client, "summarize_for_speech", fail_on_combine)
     summary, _ = client.summarize_long_text("A" * 20000, "fr")
     assert summary.startswith("part ")
+
+
+# --- composing a drum pattern ---
+
+def _compose_client(monkeypatch, raw: str):
+    from unittest.mock import MagicMock
+
+    from heypeer.config import Settings
+
+    client = NemotronClient(
+        Settings(nebius_api_key="k", nebius_base_url="http://x", nemotron_model_id="m")
+    )
+    response = MagicMock()
+    response.choices = [MagicMock(message=MagicMock(content=raw))]
+    monkeypatch.setattr(
+        type(client), "_client",
+        property(lambda self: MagicMock(chat=MagicMock(
+            completions=MagicMock(create=MagicMock(return_value=response))))),
+    )
+    return client
+
+
+def test_a_composed_pattern_comes_back_as_two_rows(monkeypatch) -> None:
+    client = _compose_client(monkeypatch, '{"row0": [0, 4, 8, 12], "row1": [2, 6]}')
+    row0, row1, _ = client.compose_drums(126, "house")
+    assert row0 == [0, 4, 8, 12]
+    assert row1 == [2, 6]
+
+
+def test_json_is_salvaged_from_a_reasoning_answer(monkeypatch) -> None:
+    """Nemotron-3_5-Lightning reasons before answering whatever it is told -
+    measured across five prompt variants and two token caps, every one
+    opening with "Here's a thinking process:". The JSON is at the end."""
+    raw = 'Here\'s a thinking process:\n1. Analyse...\nSo:\n{"row0": [0, 8], "row1": [4]}'
+    client = _compose_client(monkeypatch, raw)
+    row0, row1, _ = client.compose_drums(140, "trap")
+    assert row0 == [0, 8]
+    assert row1 == [4]
+
+
+def test_steps_outside_the_bar_are_dropped_not_clamped(monkeypatch) -> None:
+    """A 17th step is the model having lost count, not a wider bar -
+    clamping it to 15 would double a step that is already there."""
+    client = _compose_client(monkeypatch, '{"row0": [0, 4, 20, -3], "row1": [8]}')
+    row0, _, _ = client.compose_drums(126, "")
+    assert row0 == [0, 4]
+
+
+def test_duplicate_steps_collapse(monkeypatch) -> None:
+    """The same step twice is one click either way."""
+    client = _compose_client(monkeypatch, '{"row0": [4, 0, 4, 0], "row1": [8]}')
+    row0, _, _ = client.compose_drums(126, "")
+    assert row0 == [0, 4], "deduplicated and ordered left to right"
+
+
+def test_a_failed_composition_returns_empty_rather_than_raising(monkeypatch) -> None:
+    """The caller falls back to its built-in pattern: a demo that draws
+    nothing is worse than one that draws something unremarkable."""
+    client = _compose_client(monkeypatch, "not json at all")
+    assert client.compose_drums(126, "house") == ([], [], "")
+
+
+def test_the_style_reaches_the_model(monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from heypeer.config import Settings
+
+    client = NemotronClient(
+        Settings(nebius_api_key="k", nebius_base_url="http://x", nemotron_model_id="m")
+    )
+    create = MagicMock(return_value=MagicMock(
+        choices=[MagicMock(message=MagicMock(content='{"row0":[0],"row1":[4]}'))]))
+    monkeypatch.setattr(
+        type(client), "_client",
+        property(lambda self: MagicMock(chat=MagicMock(completions=MagicMock(create=create)))),
+    )
+    client.compose_drums(140, "trap")
+    sent = " ".join(m["content"] for m in create.call_args.kwargs["messages"]
+                    if isinstance(m["content"], str))
+    assert "140" in sent and "trap" in sent
+
+
+def test_the_token_budget_leaves_room_to_reason_and_answer() -> None:
+    """Measured, not guessed: at 3000 the run used all 3000 and stopped
+    mid-thought; at 8000 the JSON is there at the end."""
+    from heypeer.nemotron.client import NemotronClient as C
+
+    assert C.COMPOSE_MAX_TOKENS >= 8000

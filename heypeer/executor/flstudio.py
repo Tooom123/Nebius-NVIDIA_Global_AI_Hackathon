@@ -116,18 +116,51 @@ def step_position(
     return (round(x), round(y))
 
 
-def pattern_clicks(window: "tuple[int, int, int, int]") -> "list[tuple[int, int]]":
+def pattern_clicks(
+    window: "tuple[int, int, int, int]", pattern: "dict | None" = None
+) -> "list[tuple[int, int]]":
     """Every click the pattern needs, in the order to make them.
+
+    `pattern` is `{row: steps}`, defaulting to `PATTERN`. It is a parameter
+    because the pattern is now *composed* by Nemotron from the tempo rather
+    than being the constant below - see `NemotronClient.compose_drums`. The
+    constant stays as the fallback for when that call fails, since a demo
+    that draws nothing is worse than one that draws something ordinary.
 
     Ordered row by row rather than step by step: the pointer travels along
     each instrument's line instead of zig-zagging down the grid, which reads
     as laying down a part rather than as scattering dots.
     """
+    pattern = pattern or PATTERN
     clicks = []
     for row in (ROW_FIRST, ROW_SECOND):
-        for step in PATTERN[row]:
+        for step in pattern.get(row, ()):
             clicks.append(step_position(step, row, window))
     return clicks
+
+
+def read_tempo() -> int:
+    """FL Studio's current tempo, or a sensible default.
+
+    Read from the window title where FL Studio puts it, falling back to 126
+    - a tempo that suits the widest range of styles, so a failed read
+    produces a plausible pattern rather than a strange one.
+    """
+    import re
+
+    try:
+        import uiautomation as auto
+
+        window = auto.WindowControl(searchDepth=1, SubName="FL Studio")
+        if window.Exists(maxSearchSeconds=1):
+            match = re.search(r"(\d{2,3})\s*BPM", window.Name or "", re.IGNORECASE)
+            if match:
+                tempo = int(match.group(1))
+                if 40 <= tempo <= 220:
+                    return tempo
+    except Exception:
+        pass
+    return 126
 
 
 def focus_window() -> bool:
