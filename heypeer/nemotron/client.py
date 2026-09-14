@@ -669,6 +669,26 @@ Respond with ONLY a JSON object: {"answer": "<what to say out loud>"}.
 """
 
 
+COMPOSE_TRIBUTE_SYSTEM_PROMPT = """\
+You are choosing a very short phrase to be drawn, stroke by stroke, with a
+mouse on a canvas.
+
+It has to be drawable with a limited alphabet: capital letters A-Z only,
+spaces, "&", "!", and "<3" which draws as a heart. No lowercase, no
+accents, no digits, no other punctuation.
+
+Keep it under about twenty characters. Every character is drawn by hand at
+roughly a second each, so a long phrase is a long silence.
+
+The user says what they want written. Take them at their word - if they
+asked for a thank-you to two companies, write that, do not invent a slogan.
+Where they leave it open, a heart reads better than the word LOVE.
+
+Answer with the JSON object and nothing else:
+{"phrase": "I <3 NVIDIA"}
+"""
+
+
 COMPOSE_DRUMS_SYSTEM_PROMPT = """\
 You are writing a drum pattern for a music producer, as sixteen steps of
 one bar.
@@ -1062,6 +1082,31 @@ class NemotronClient:
     # all 3000 and stopped mid-thought, at 8000 the JSON is there at the
     # end. Not a guess rounded up - the two were compared directly.
     COMPOSE_MAX_TOKENS = 8000
+
+    def compose_tribute(self, request: str) -> str:
+        """A short phrase to draw, from what the user asked for.
+
+        Empty on any failure, and the caller falls back to its fixed
+        phrase - the same reasoning as `compose_drums`. The alphabet is
+        narrow enough that the caller also checks the result is drawable
+        before committing to it; a model choosing words that cannot be
+        drawn is worse than not choosing.
+        """
+        try:
+            response = self._client.chat.completions.create(
+                model=self.settings.nemotron_model_id,
+                messages=[
+                    {"role": "system", "content": COMPOSE_TRIBUTE_SYSTEM_PROMPT},
+                    {"role": "user", "content": request},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=self.COMPOSE_MAX_TOKENS,
+            )
+            data = _first_json_object(response.choices[0].message.content)
+        except Exception:
+            return ""
+        phrase = data.get("phrase")
+        return phrase.strip() if isinstance(phrase, str) else ""
 
     def compose_drums(self, tempo: int, style: str = "") -> "tuple[list[int], list[int], str]":
         """A drum pattern for `tempo` and `style`, as `(row0, row1, why)`.

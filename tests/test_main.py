@@ -3379,3 +3379,43 @@ def test_drawing_strokes_the_whole_phrase(tmp_path: Path) -> None:
         peer._run_draw_tribute(None, "fr")
 
     assert drag.call_count == expected
+
+
+def test_an_undrawable_composed_phrase_falls_back(tmp_path: Path) -> None:
+    """A phrase with a character outside the alphabet would draw with holes
+    nobody watching could read."""
+    from heypeer.executor import paint as paint_mod
+
+    nemotron = MagicMock()
+    nemotron.compose_tribute.return_value = "MERCI 2026"  # digits have no glyph
+    peer = _peer(tmp_path, nemotron)
+    window = (0, 0, 1920, 1080)
+    default_strokes = len(paint_mod.layout(paint_mod.canvas_area(window)))
+
+    with patch("heypeer.executor.cursor_control.is_supported", return_value=True), patch(
+        "heypeer.executor.paint.find_window", return_value=window
+    ), patch("heypeer.executor.paint.focus_window", return_value=True), patch(
+        "heypeer.executor.cursor_control.drag_path"
+    ) as drag, patch("time.sleep"), patch.object(peer, "_speak"):
+        peer._run_draw_tribute(None, "fr", "dessine quelque chose")
+
+    assert drag.call_count == default_strokes, "fell back to the fixed phrase"
+
+
+def test_a_drawable_composed_phrase_is_used(tmp_path: Path) -> None:
+    from heypeer.executor import paint as paint_mod
+
+    nemotron = MagicMock()
+    nemotron.compose_tribute.return_value = "MERCI"
+    peer = _peer(tmp_path, nemotron)
+    window = (0, 0, 1920, 1080)
+    expected = len(paint_mod.layout(paint_mod.canvas_area(window), paint_mod.parse_phrase("MERCI")))
+
+    with patch("heypeer.executor.cursor_control.is_supported", return_value=True), patch(
+        "heypeer.executor.paint.find_window", return_value=window
+    ), patch("heypeer.executor.paint.focus_window", return_value=True), patch(
+        "heypeer.executor.cursor_control.drag_path"
+    ) as drag, patch("time.sleep"), patch.object(peer, "_speak"):
+        peer._run_draw_tribute(None, "fr", "dessine merci")
+
+    assert drag.call_count == expected

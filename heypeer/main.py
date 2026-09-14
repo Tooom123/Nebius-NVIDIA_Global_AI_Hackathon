@@ -806,7 +806,9 @@ class HeyPeer:
         "create an empty commit."
     )
 
-    def _run_draw_tribute(self, narration: "str | None", language: str = "fr") -> None:
+    def _run_draw_tribute(
+        self, narration: "str | None", language: str = "fr", request: str = ""
+    ) -> None:
         """Opens Paint and draws the phrase, stroke by stroke.
 
         The drawing is the point - the user chose strokes over the text
@@ -853,7 +855,24 @@ class HeyPeer:
             )
             return
 
-        strokes = paint.layout(paint.canvas_area(window))
+        # Nemotron chooses the phrase, rather than drawing a constant -
+        # same reasoning as the drum pattern. Checked for drawability
+        # before committing to it: the alphabet is capitals, space, "&",
+        # "!" and a heart, and a phrase with a character outside that would
+        # draw with holes nobody watching could read.
+        phrase = paint.PHRASE
+        try:
+            chosen = self.nemotron.compose_tribute(request or "dessine I love Nvidia et Nebius")
+            tokens = paint.parse_phrase(chosen) if chosen else []
+            if tokens and paint.drawable(tokens):
+                phrase = tokens
+                self._log(f"Composed phrase: {chosen!r}")
+            elif chosen:
+                self._log(f"Composed {chosen!r} but it is not drawable; using the default.")
+        except Exception as exc:
+            self._log(f"Phrase composition failed: {exc}")
+
+        strokes = paint.layout(paint.canvas_area(window), phrase)
         self._log(f"Paint: {len(strokes)} strokes into {window}")
 
         for stroke in strokes:
@@ -1930,7 +1949,7 @@ class HeyPeer:
         elif intent.action == "list_routines":
             self._run_list_routines(language)
         elif intent.action == "draw_tribute":
-            self._run_draw_tribute(intent.speech, language)
+            self._run_draw_tribute(intent.speech, language, instruction_text)
         elif intent.action == "commit_and_push":
             self._run_commit_and_push(intent.speech, language)
         elif intent.action == "multi":

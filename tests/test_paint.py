@@ -77,3 +77,34 @@ def test_the_canvas_area_avoids_the_ribbon() -> None:
 def test_a_space_draws_nothing_but_advances() -> None:
     assert paint.GLYPHS[" "]["strokes"] == []
     assert paint.GLYPHS[" "]["width"] > 0
+
+
+def test_the_whole_latin_alphabet_can_be_drawn() -> None:
+    """A half-alphabet fails silently at the worst moment. Found by asking
+    Nemotron for three phrases and watching one fail on the J of JURY."""
+    import string
+
+    assert all(letter in paint.GLYPHS for letter in string.ascii_uppercase)
+
+
+def test_a_phrase_is_uppercased_and_the_heart_kept_whole() -> None:
+    """The heart is two characters in text and one glyph on the canvas -
+    splitting it would try to draw "<" and "3", neither of which exists."""
+    assert paint.parse_phrase("i <3 nvidia")[:3] == ["I", " ", "<3"]
+
+
+def test_drawable_rejects_what_has_no_glyph() -> None:
+    """Checked before drawing rather than skipping mid-stroke: a phrase
+    missing letters is not a shorter phrase, it is unreadable."""
+    assert paint.drawable(paint.parse_phrase("MERCI JURY")) is True
+    assert paint.drawable(paint.parse_phrase("merci 2026")) is False, "digits"
+    assert paint.drawable(paint.parse_phrase("ça va")) is False, "accents"
+
+
+def test_a_chosen_phrase_lays_out_like_the_default() -> None:
+    strokes = paint.layout(CANVAS, paint.parse_phrase("MERCI"))
+    assert strokes
+    for stroke in strokes:
+        for x, y in stroke:
+            assert CANVAS[0] <= x <= CANVAS[0] + CANVAS[2]
+            assert CANVAS[1] <= y <= CANVAS[1] + CANVAS[3]

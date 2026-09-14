@@ -1163,3 +1163,19 @@ def test_the_token_budget_leaves_room_to_reason_and_answer() -> None:
     from heypeer.nemotron.client import NemotronClient as C
 
     assert C.COMPOSE_MAX_TOKENS >= 8000
+
+
+def test_a_composed_phrase_comes_back_stripped(monkeypatch) -> None:
+    client = _compose_client(monkeypatch, '{"phrase": "  I <3 NVIDIA  "}')
+    assert client.compose_tribute("dessine quelque chose") == "I <3 NVIDIA"
+
+
+def test_a_failed_phrase_composition_returns_empty(monkeypatch) -> None:
+    """The caller falls back to its fixed phrase."""
+    client = _compose_client(monkeypatch, "not json")
+    assert client.compose_tribute("dessine") == ""
+
+
+def test_a_non_string_phrase_is_refused(monkeypatch) -> None:
+    client = _compose_client(monkeypatch, '{"phrase": 42}')
+    assert client.compose_tribute("dessine") == ""

@@ -12,9 +12,16 @@ shortcoming.
 
 ## The alphabet
 
-Only the letters this one phrase needs, as polylines in a 0..1 box per
-glyph. A general vector font would be a font renderer, and this is a demo
-line that never changes; five letters and a heart is the honest scope.
+Polylines in a 0..1 box per glyph, hand-placed. It started as only the
+letters one fixed phrase needed; it now covers the Latin alphabet this
+project can draw, because the phrase is no longer fixed - Nemotron chooses
+it (see `NemotronClient.compose_tribute`), and a model choosing words that
+cannot be drawn is worse than no choice at all.
+
+Still not a font renderer: no lowercase, no accents, no kerning pairs. What
+it is is enough letters that a short chosen phrase draws rather than
+silently losing characters, and `drawable` says what is in range so the
+caller can fall back rather than draw a phrase with holes in it.
 
 Coordinates are fractions so the whole phrase scales to whatever canvas
 area it is given, and each glyph is a *list of strokes* rather than one
@@ -110,6 +117,74 @@ GLYPHS = {
             (0.36, 0.55), (0.42, 0.78), (0.28, 0.98), (0.08, 0.88),
         ]],
     },
+    "C": {
+        "width": 0.52,
+        "strokes": [[(0.42, 0.12), (0.22, 0.00), (0.06, 0.30), (0.06, 0.70),
+                     (0.22, 1.00), (0.42, 0.88)]],
+    },
+    "G": {
+        "width": 0.56,
+        "strokes": [[(0.44, 0.12), (0.24, 0.00), (0.06, 0.30), (0.06, 0.70),
+                     (0.24, 1.00), (0.44, 0.86), (0.44, 0.58), (0.28, 0.58)]],
+    },
+    "H": {
+        "width": 0.55,
+        "strokes": [[(0.05, 0.0), (0.05, 1.0)], [(0.45, 0.0), (0.45, 1.0)],
+                    [(0.05, 0.52), (0.45, 0.52)]],
+    },
+    "K": {
+        "width": 0.52,
+        "strokes": [[(0.06, 0.0), (0.06, 1.0)], [(0.42, 0.0), (0.06, 0.54)],
+                    [(0.16, 0.44), (0.44, 1.0)]],
+    },
+    "L": {"width": 0.46, "strokes": [[(0.08, 0.0), (0.08, 1.0), (0.40, 1.0)]]},
+    "M": {
+        "width": 0.66,
+        "strokes": [[(0.05, 1.0), (0.05, 0.0), (0.28, 0.55), (0.51, 0.0), (0.51, 1.0)]],
+    },
+    "O": {
+        "width": 0.56,
+        "strokes": [[(0.25, 0.00), (0.06, 0.28), (0.06, 0.72), (0.25, 1.00),
+                     (0.44, 0.72), (0.44, 0.28), (0.25, 0.00)]],
+    },
+    "P": {
+        "width": 0.52,
+        "strokes": [[(0.08, 1.0), (0.08, 0.0), (0.34, 0.06), (0.42, 0.26),
+                     (0.32, 0.48), (0.08, 0.52)]],
+    },
+    "R": {
+        "width": 0.54,
+        "strokes": [[(0.08, 1.0), (0.08, 0.0), (0.34, 0.06), (0.42, 0.26),
+                     (0.32, 0.48), (0.08, 0.52)],
+                    [(0.22, 0.52), (0.44, 1.0)]],
+    },
+    "T": {"width": 0.50, "strokes": [[(0.04, 0.0), (0.44, 0.0)], [(0.24, 0.0), (0.24, 1.0)]]},
+    "W": {
+        "width": 0.70,
+        "strokes": [[(0.04, 0.0), (0.18, 1.0), (0.32, 0.36), (0.46, 1.0), (0.60, 0.0)]],
+    },
+    "Y": {
+        "width": 0.52,
+        "strokes": [[(0.06, 0.0), (0.24, 0.50), (0.42, 0.0)], [(0.24, 0.50), (0.24, 1.0)]],
+    },
+    # The letters the first pass missed. Found by asking Nemotron for three
+    # phrases and watching one fail on the J of JURY - a reminder that "the
+    # alphabet this project can draw" is only true if it is actually
+    # complete, and that a half-alphabet fails silently at the worst moment.
+    "F": {"width": 0.48, "strokes": [[(0.40, 0.0), (0.08, 0.0), (0.08, 1.0)],
+                                     [(0.08, 0.5), (0.32, 0.5)]]},
+    "J": {"width": 0.46, "strokes": [[(0.36, 0.0), (0.36, 0.78), (0.22, 0.98),
+                                      (0.06, 0.84)]]},
+    "Q": {
+        "width": 0.56,
+        "strokes": [[(0.25, 0.00), (0.06, 0.28), (0.06, 0.72), (0.25, 1.00),
+                     (0.44, 0.72), (0.44, 0.28), (0.25, 0.00)],
+                    [(0.32, 0.74), (0.48, 1.04)]],
+    },
+    "X": {"width": 0.52, "strokes": [[(0.06, 0.0), (0.44, 1.0)],
+                                     [(0.44, 0.0), (0.06, 1.0)]]},
+    "Z": {"width": 0.50, "strokes": [[(0.06, 0.0), (0.44, 0.0), (0.06, 1.0), (0.44, 1.0)]]},
+    "!": {"width": 0.26, "strokes": [[(0.12, 0.0), (0.12, 0.70)], [(0.12, 0.92), (0.12, 1.0)]]},
     " ": {"width": 0.35, "strokes": []},
 }
 
@@ -126,6 +201,37 @@ TRACKING = 0.10
 POINT_INTERVAL = 0.006
 # Between strokes, while the pen is up and travelling.
 STROKE_PAUSE = 0.05
+
+
+def drawable(phrase: "str | list[str]") -> bool:
+    """Whether every character of `phrase` has a glyph.
+
+    Checked before drawing rather than skipping the unknown ones mid-stroke:
+    a phrase missing two letters is not a shorter phrase, it is a mistake
+    nobody watching can read, and the caller has a fixed fallback to use
+    instead.
+    """
+    return all(ch in GLYPHS for ch in phrase)
+
+
+def parse_phrase(text: str) -> "list[str]":
+    """A phrase as drawable tokens, uppercased, with "<3" kept whole.
+
+    The heart is two characters in text and one glyph on the canvas, so it
+    has to survive tokenising - splitting it would try to draw "<" and "3",
+    neither of which exists.
+    """
+    tokens: "list[str]" = []
+    i = 0
+    upper = text.upper()
+    while i < len(upper):
+        if upper[i : i + 2] == "<3":
+            tokens.append("<3")
+            i += 2
+        else:
+            tokens.append(upper[i])
+            i += 1
+    return tokens
 
 
 def phrase_width(height: float) -> float:
