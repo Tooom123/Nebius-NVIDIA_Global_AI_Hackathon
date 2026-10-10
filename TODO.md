@@ -2935,7 +2935,7 @@ even with both, drawing our cursor over a click Hermes delivered would be
 staging - the honest failure of it is that the pointer would drift from the
 real one the moment Hermes retried, scrolled, or waited for approval.
 
-- [ ] **Click what Hey Peer itself drives**, via Windows UI Automation
+- [x] **Click what Hey Peer itself drives**, via Windows UI Automation
       (`uiautomation` - wheel confirmed installable) for the element's
       BoundingRectangle plus SendInput for the click. This is the version
       where the cursor is telling the truth: Hey Peer resolved the target
