@@ -54,3 +54,10 @@ pypdf>=4.0.0
 # "clique sur Envoyer". Windows-only and optional: without it Hey Peer says
 # it cannot click. See heypeer/executor/ui_elements.py.
 # uiautomation>=2.0.29 ; sys_platform == "win32"
+
+# Writing sound effects into a CapCut project's timeline, for "rajoute des
+# bruitages a mon dernier CapCut". Optional: without it the sounds still go
+# onto the full-screen preview, just not into the project. Also needs the
+# ffmpeg binary (winget install ffmpeg), which watches the video and renders
+# the preview. See heypeer/executor/capcut.py.
+# pycapcut>=0.0.3 ; sys_platform == "win32"

@@ -1190,6 +1190,114 @@ class HeyPeer:
             language=language,
         )
 
+    def _run_edit_capcut(
+        self, narration: "str | None", language: str = "fr", folder: str = ""
+    ) -> None:
+        """Adds sound effects to the latest CapCut project, chosen from the
+        user's own folder, then plays the result full screen.
+
+        Watch, decide, do - see `executor/capcut.py`. The vision model
+        describes the video from stills, Nemotron writes the cue sheet from
+        that description and the sound files' names, and the cues go both
+        into the CapCut project and onto a rendered preview, which is what
+        is shown.
+
+        Every failure is said out loud and specific, because each one has a
+        different fix: no ffmpeg, no project, an encrypted project, no
+        sounds in the folder.
+        """
+        import tempfile
+
+        from heypeer.executor import capcut
+
+        def say(french: str, english: str) -> None:
+            self._speak(_bilingual(language, french, english), language=language)
+
+        self._speak(
+            narration or _bilingual(language, "J'ouvre ton dernier projet CapCut.",
+                                    "Opening your latest CapCut project."),
+            language=language,
+        )
+
+        if not capcut.ffmpeg_available():
+            print("Install ffmpeg (winget install ffmpeg) and restart Hey Peer.")
+            say("Il me manque ffmpeg pour regarder la vidéo. La commande est dans la console.",
+                "I need ffmpeg to watch the video. The command is in the console.")
+            return
+
+        draft_dir = capcut.latest_draft()
+        draft = capcut.draft_file(draft_dir) if draft_dir else None
+        if draft is None:
+            say("Je ne trouve aucun projet CapCut.", "I can't find any CapCut project.")
+            return
+        content = capcut.load_draft(draft)
+        if content is None:
+            say("Ce projet CapCut est chiffré, je ne peux pas le modifier.",
+                "This CapCut project is encrypted, so I can't edit it.")
+            return
+        video = capcut.main_video(content)
+        if video is None:
+            say("Je ne retrouve pas la vidéo de ce projet.",
+                "I can't find this project's video.")
+            return
+
+        sounds_dir = capcut.find_folder(folder)
+        sounds = capcut.sounds_in(sounds_dir) if sounds_dir else []
+        if not sounds:
+            say(f"Je ne trouve pas de bruitages dans le dossier {folder or 'demandé'}.",
+                f"I can't find any sound effects in {folder or 'that folder'}.")
+            return
+        self._log(f"CapCut: {draft_dir.name}, video {video}, {len(sounds)} sounds in {sounds_dir}")
+
+        seconds = capcut.duration_of(video)
+        self._speak_async(
+            _bilingual(language, "Je regarde la vidéo et je choisis les sons.",
+                       "Watching the video and picking the sounds."),
+            language=language,
+        )
+        if self.debug_window is not None:
+            self.debug_window.set_state("thinking")
+        frames = capcut.sample_frames(video)
+        timeline = self.nemotron.describe_video_frames(frames) if frames else ""
+        self._log(f"Timeline:\n{timeline or '(none)'}")
+        raw = self.nemotron.compose_sound_cues(timeline, [s.name for s in sounds], seconds)
+        cues = capcut.clean_cues(raw, sounds, seconds)
+        if not cues:
+            cues = capcut.fallback_cues(sounds, capcut.frame_times(seconds))
+            self._log("Cue composition failed; spacing the sounds evenly instead.")
+        for cue in cues:
+            self._log(f"  {cue.time:5.2f}s  {cue.sound.name}")
+
+        # Into the project. CapCut must be closed while its draft is
+        # written, or its autosave puts the old timeline back seconds later.
+        placed = 0
+        if capcut.close_app():
+            try:
+                placed = capcut.apply_to_draft(draft, cues, seconds)
+            except Exception as exc:
+                self._log(f"CapCut draft not edited: {exc}")
+        else:
+            self._log("CapCut did not close; its draft was left untouched.")
+        self._speak_async(
+            _bilingual(language, f"J'ai posé {len(cues)} bruitages. Je prépare l'aperçu.",
+                       f"I placed {len(cues)} sound effects. Preparing the preview."),
+            language=language,
+        )
+        capcut.open_app()
+        # A moment for CapCut to come up, so the transition starts from it.
+        time.sleep(3.0)
+
+        work = Path(tempfile.gettempdir())
+        intro = capcut.screenshot(work / "heypeer_capcut_intro.png")
+        preview = work / "heypeer_capcut_preview.mp4"
+        if not capcut.render(video, cues, preview, intro):
+            say("Les bruitages sont dans le projet, mais je n'ai pas réussi à monter l'aperçu.",
+                "The sounds are in the project, but I couldn't render the preview.")
+            return
+        self._log(f"CapCut: {placed} clips written to the draft; preview at {preview}")
+        say("Regarde.", "Take a look.")
+        capcut.play_fullscreen(preview)
+
     def _run_click_element(
         self, name: "str | None", narration: "str | None", language: str = "fr"
     ) -> None:
@@ -2053,6 +2161,8 @@ class HeyPeer:
             self._run_multi(intent.steps, language)
         elif intent.action == "add_drums":
             self._run_add_drums(intent.speech, language, intent.content or "")
+        elif intent.action == "edit_capcut":
+            self._run_edit_capcut(intent.speech, language, intent.content or "")
         elif intent.action == "click_element":
             self._run_click_element(intent.target_name, intent.speech, language)
         elif intent.action == "listen_to_screen":

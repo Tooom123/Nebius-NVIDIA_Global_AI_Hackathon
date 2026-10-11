@@ -113,6 +113,8 @@ KNOWN_APPS = (
     App(name="Parametres", aliases=("les parametres", "reglages"), uri_scheme="ms-settings:"),
     App(name="Terminal", aliases=("invite de commandes", "cmd", "console"), executable="wt"),
     App(name="VS Code", aliases=("visual studio code", "vscode", "code"), executable="code"),
+    App(name="CapCut", aliases=("cap cut", "capcute"), executable="capcut",
+        windows_paths=(r"%LOCALAPPDATA%\CapCut\Apps\CapCut.exe",)),
 )
 
 # Where "cherche X sur internet" goes. A plain query string appended to a
