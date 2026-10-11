@@ -16,7 +16,8 @@ That boundary matters, and is worth saying to anyone who asks: every step
 calls the same handler the spoken path calls. The drums are composed by
 Nemotron from the tempo, the code is diagnosed by Nemotron and fixed by the
 coding agent, the mail and the playlist are carried out by the general
-agent. What is scripted is *which* instructions run and in what order - not
+agent, and the CapCut sound effects are placed by Nemotron after the
+vision model has watched the video. What is scripted is *which* instructions run and in what order - not
 what they do once they run.
 
 ## Editing it
@@ -91,6 +92,14 @@ def playlist_name() -> str:
     return os.environ.get("HEYPEER_DEMO_PLAYLIST") or "Love"
 
 
+def sfx_folder() -> str:
+    """The folder of sound effects for the CapCut step. HEYPEER_SFX_DIR, a
+    full path, is what `executor/capcut.find_folder` falls back to anyway;
+    passing it here as well means the demo never depends on a folder name
+    being found by search."""
+    return os.environ.get("HEYPEER_SFX_DIR") or "SFX"
+
+
 def drum_style() -> str:
     return os.environ.get("HEYPEER_DEMO_STYLE") or ""
 
@@ -144,6 +153,11 @@ def script(language: str = "fr") -> "list[Step]":
                                       "cwd": str(path.parent)}),
         # The playlist, sent on WhatsApp.
         Step("_run_general_task", {"task": playlist_task(), "language": language,
-                                   "narration": f"Dernière chose : une playlist "
+                                   "narration": f"Une playlist "
                                                 f"{playlist_name()} pour {contact()}."}),
+        # CapCut last: it ends on the motion design playing full screen,
+        # which is the demo's closing shot.
+        Step("_run_edit_capcut", {"narration": "Dernière chose : j'ouvre ton dernier "
+                                               "projet CapCut et je rajoute des bruitages.",
+                                  "language": language, "folder": sfx_folder()}),
     ]

@@ -21,8 +21,8 @@ def test_every_step_binds_to_the_method_it_names() -> None:
 
 
 def test_the_sequence_is_the_one_asked_for() -> None:
-    """FL Studio and drums, the mail, the code, then the playlist - in that
-    order."""
+    """FL Studio and drums, the mail, the code, the playlist, then CapCut -
+    in that order."""
     methods = [s.method for s in demo.script()]
     order = [
         methods.index("_run_add_drums"),
@@ -32,8 +32,10 @@ def test_the_sequence_is_the_one_asked_for() -> None:
         methods.index("_run_fix_code"),
         methods.index("_run_commit_and_push"),
         len(methods) - 1 - methods[::-1].index("_run_general_task"),
+        methods.index("_run_edit_capcut"),
     ]
     assert order == sorted(order)
+    assert methods[-1] == "_run_edit_capcut", "it ends on the full-screen video"
 
 
 def test_the_mail_task_replies_to_two_and_deletes_nothing() -> None:
@@ -178,3 +180,9 @@ def test_the_flag_arms_the_demo() -> None:
     assert _build_peer(demo=True)._demo_pending is True
     assert _build_peer(demo=False)._demo_pending is False
 
+
+
+def test_the_capcut_step_uses_the_configured_sound_folder(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HEYPEER_SFX_DIR", str(tmp_path))
+    step = next(s for s in demo.script() if s.method == "_run_edit_capcut")
+    assert step.kwargs["folder"] == str(tmp_path)
