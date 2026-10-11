@@ -477,6 +477,16 @@ some drums to this track"):
   production has no action and is "reply". Leave "speech" null: what is
   about to happen is announced by the action itself as it runs.
 
+- Add sound effects to the user's latest CapCut video, chosen from a \
+folder of theirs (e.g. "ouvre mon dernier CapCut et rajoute des bruitages \
+du dossier SFX", "mets des sons sur mon montage CapCut", "add sound \
+effects to my last CapCut edit from my whoosh folder"):
+  {"action": "edit_capcut", \
+"content": "<the folder name exactly as said, e.g. \"SFX\", or null if none was named>", \
+"speech": null, "end_turn": true}
+  Only for CapCut. Leave "speech" null: the action announces each step
+  itself as it watches the video and places the sounds.
+
 - Draw the Nvidia and Nebius tribute in Paint (e.g. "ouvre Paint et \
 dessine I love Nvidia", "dessine-moi I love Nvidia et Nebius", "draw I \
 love Nvidia and Nebius"):
@@ -715,6 +725,48 @@ Answer with the JSON object and nothing else. Do not reason, do not work
 through it, do not explain - the first character you write is "{".
 
 {"row0": [0, 4, 8, 12], "row1": [2, 6, 10, 14]}
+"""
+
+
+# Turns Nemotron's reasoning off for one call. For a short, well-specified
+# output - a cue sheet - the reasoning is what makes the call slow and,
+# past the token limit, what makes it fail. See `compose_sound_cues`.
+NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+DESCRIBE_FRAMES_PROMPT = """\
+These are stills from one short video, in order, each labelled with the
+second it was taken at. Write what happens on screen as a timeline: one
+line per still, starting with its time, saying what moves, appears,
+disappears, transitions or lands. Concrete and visual ("t=3.5s: the logo
+slides in from the left and snaps into place"), never interpretation.
+
+Respond with ONLY a JSON object: {"timeline": "<the lines, joined by newlines>"}
+"""
+
+
+COMPOSE_SOUND_CUES_SYSTEM_PROMPT = """\
+You are the sound designer on a short video. You are given a timeline of
+what happens on screen, the video's length, and the sound files available
+in the user's folder. Choose which sound plays at which second.
+
+The file names are the only description of the sounds there is - read
+them for what they are ("whoosh", "pop", "click", "impact", "riser",
+"swoosh", "ding") and match them to the motion: a whoosh on something
+sliding in, a pop on something appearing, an impact on something landing,
+a riser before a reveal.
+
+Rules:
+- Use only file names from the list, written exactly as listed.
+- Every time is in seconds, at least 0 and less than the video's length.
+- Between 5 and 12 cues. Not every moment needs a sound; the ones that do
+  should land on the frame the motion happens.
+- Vary the sounds - the same file over and over sounds like a loop.
+
+Answer with the JSON object and nothing else. Do not reason, do not work
+through it - the first character you write is "{".
+
+{"cues": [{"time": 0.5, "sound": "whoosh.wav"}, {"time": 2.0, "sound": "pop.wav"}]}
 """
 
 
@@ -1151,6 +1203,89 @@ class NemotronClient:
             return ([], [], "")
 
         return (_step_list(data.get("row0")), _step_list(data.get("row1")), "")
+
+    def describe_video_frames(self, frames: "list[tuple[float, bytes]]") -> str:
+        """What happens in a video, as a timeline, from timestamped stills.
+
+        The vision model watches; Nemotron, in `compose_sound_cues`, decides.
+        The split is the same one the rest of this client draws: the model
+        that can see is not the one that reasons about what to do. All the
+        stills go in one request, in order, so the description can say what
+        *changed* between them - which is what a sound is laid on.
+
+        Empty on failure, and the caller still has the frame times to fall
+        back on.
+        """
+        content: "list[dict]" = [{"type": "text", "text": DESCRIBE_FRAMES_PROMPT}]
+        for seconds, png in frames:
+            content.append({"type": "text", "text": f"t={seconds}s"})
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{base64.b64encode(png).decode()}"},
+            })
+        try:
+            response = self._client.chat.completions.create(
+                model=self.settings.vision_model_id,
+                response_format={"type": "json_object"},
+                messages=[{"role": "user", "content": content}],
+            )
+            data = _first_json_object(response.choices[0].message.content)
+        except Exception:
+            return ""
+        timeline = data.get("timeline")
+        if isinstance(timeline, list):
+            timeline = "\n".join(str(line) for line in timeline)
+        return timeline.strip() if isinstance(timeline, str) else ""
+
+    def compose_sound_cues(
+        self, timeline: str, sound_names: "list[str]", duration: float
+    ) -> list:
+        """The cue sheet - `[{"time": seconds, "sound": file name}, ...]` -
+        exactly as the model wrote it. Validation is the caller's
+        (`executor/capcut.clean_cues`), which knows which files exist.
+
+        Shown a worked exchange before the real request, for the same
+        reason as `compose_drums`: told in prose to answer with only JSON,
+        this reasoning model opens with its thinking and runs out of
+        tokens; shown one answer in the right shape, it copies the shape.
+        """
+        def request(text_timeline: str, names: "list[str]", seconds: float) -> str:
+            return (
+                f"Video length: {seconds:.1f} seconds\n"
+                f"Sound files: {', '.join(names)}\n"
+                f"Timeline:\n{text_timeline or '(no description - space the cues evenly)'}"
+            )
+
+        try:
+            response = self._client.chat.completions.create(
+                model=self.settings.nemotron_model_id,
+                messages=[
+                    {"role": "system", "content": COMPOSE_SOUND_CUES_SYSTEM_PROMPT},
+                    {"role": "user", "content": request(
+                        "t=1.0s: a title slides in from the right\n"
+                        "t=3.0s: the title lands and a ring pulses out",
+                        ["swoosh_fast.wav", "impact_soft.mp3", "pop.wav"], 6.0)},
+                    {"role": "assistant", "content":
+                        '{"cues": [{"time": 0.8, "sound": "swoosh_fast.wav"}, '
+                        '{"time": 3.0, "sound": "impact_soft.mp3"}, '
+                        '{"time": 3.2, "sound": "pop.wav"}]}'},
+                    {"role": "user", "content": request(timeline, sound_names, duration)},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=self.COMPOSE_MAX_TOKENS,
+                # Reasoning off, through the chat template. Measured on this
+                # deployment: with it on, a 20-second timeline took 80
+                # seconds and ran out of tokens before writing any JSON
+                # (8000 tokens of "Here's a thinking process"); "/no_think"
+                # in the system prompt and reasoning_effort=low changed
+                # nothing. With enable_thinking off: 0.7 seconds, valid JSON.
+                extra_body=NO_THINKING,
+            )
+            data = _first_json_object(response.choices[0].message.content)
+        except Exception:
+            return []
+        cues = data.get("cues")
+        return cues if isinstance(cues, list) else []
 
     def summarize_for_speech(self, text: str, language: str = "fr") -> str:
         """Turns `text` (clipboard content - see `clipboard_read` in

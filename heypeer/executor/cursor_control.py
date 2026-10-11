@@ -97,9 +97,28 @@ class _MOUSEINPUT(ctypes.Structure):
     ]
 
 
+class _KEYBDINPUT(ctypes.Structure):
+    # Same pointer-sized dwExtraInfo caution as _MOUSEINPUT above.
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
+VK_SPACE = 0x20
+
+
 class _INPUT(ctypes.Structure):
+    # Both members, so the union is sized for the larger one whichever is
+    # sent - SendInput rejects an INPUT whose cbSize does not match the
+    # real structure, and with only the mouse member that held by luck.
     class _UNION(ctypes.Union):
-        _fields_ = [("mi", _MOUSEINPUT)]
+        _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT)]
 
     _anonymous_ = ("u",)
     _fields_ = [("type", ctypes.c_ulong), ("u", _UNION)]
@@ -228,6 +247,20 @@ def drag_path(points: "list[tuple[int, int]]", hold_seconds: float = 0.004) -> N
         # button still down leaves the user's mouse stuck down, which is
         # much worse than a half-drawn line.
         _send(MOUSEEVENTF_LEFTUP)
+
+
+def press_key(vk: int) -> None:
+    """Presses and releases one key, through the same SendInput path as the
+    clicks - so it arrives at whatever window has focus, exactly as a real
+    keystroke would."""
+    if not is_supported():
+        raise ClickUnavailable("key presses are only implemented for Windows")
+    for flags in (0, KEYEVENTF_KEYUP):
+        event = _INPUT(type=INPUT_KEYBOARD)
+        event.ki = _KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=None)
+        if not ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_INPUT)):
+            raise ClickUnavailable("SendInput delivered nothing")
+        time.sleep(CLICK_HOLD_SECONDS)
 
 
 def move_to(x: int, y: int) -> None:

@@ -238,6 +238,10 @@ class HeyPeer:
         # The reminder currently sounding, if any - drives the countdown
         # pill's ringing state and its stop button.
         self._ringing_reminder = None
+        # Armed by `--demo`: the first turn runs the scripted sequence in
+        # heypeer/demo.py instead of being interpreted. One-shot - cleared
+        # the moment it fires, so every later turn is ordinary Hey Peer.
+        self._demo_pending = False
         # At most one habit suggestion per run, and the one currently
         # awaiting an answer - see `_maybe_suggest_habit`.
         self._habit_suggested = False
@@ -890,7 +894,86 @@ class HeyPeer:
             language=language,
         )
 
-    def _run_commit_and_push(self, narration: "str | None", language: str = "fr") -> None:
+    def _run_demo(self) -> None:
+        """Runs the scripted demo sequence in heypeer/demo.py, step by step.
+
+        Every step is a call to the same handler the spoken path would
+        reach - only the choice and order of instructions is scripted, not
+        what each one does. A step that fails is logged and the run carries
+        on: on stage, what remains is still the demo.
+
+        `_in_routine` is set for the duration so nothing inside the run can
+        start a routine or a multi-instruction turn of its own, and so the
+        habit tracker does not count the script as the user repeating
+        themselves.
+        """
+        from heypeer import demo
+
+        self._log("Demo mode: running the scripted sequence.")
+        try:
+            demo.ensure_code_file()
+        except Exception as exc:
+            self._log(f"Demo: could not prepare the code file: {exc}")
+
+        self._in_routine = True
+        try:
+            for step in demo.script():
+                self._log(f"Demo step: {step.method}")
+                handler_method = getattr(self, step.method, None)
+                if handler_method is None:
+                    self._log(f"  no such step: {step.method}")
+                    continue
+                try:
+                    handler_method(**step.kwargs)
+                except Exception as exc:
+                    self._log(f"  step failed: {exc}")
+        finally:
+            self._in_routine = False
+        self._log("Demo mode: sequence finished.")
+
+    def _demo_play_flstudio(self, language: str = "fr") -> None:
+        """Starts playback in FL Studio - Space, with its window focused.
+
+        A keystroke rather than a click on the transport's play button: the
+        shortcut does not move when the toolbar is rearranged, and the
+        button's position is one more coordinate to be wrong about.
+        """
+        from heypeer.executor import cursor_control, flstudio
+
+        if not flstudio.focus_window():
+            self._log("Demo: FL Studio not found, skipping playback.")
+            return
+        try:
+            cursor_control.press_key(cursor_control.VK_SPACE)
+            self._log("Demo: FL Studio playing.")
+        except Exception as exc:
+            self._log(f"Demo: could not start playback: {exc}")
+
+    def _demo_open_in_vscode(self, path: str, language: str = "fr") -> None:
+        """Opens the file the demo is about to fix in VS Code, so the fix
+        happens in front of the audience rather than off screen."""
+        import shutil
+        import subprocess
+
+        code = shutil.which("code")
+        if code is None:
+            self._log("Demo: VS Code ('code') not on PATH, skipping.")
+            return
+        self._speak(
+            _bilingual(language, "J'ouvre le code dans VS Code.", "Opening the code in VS Code."),
+            language=language,
+        )
+        try:
+            subprocess.Popen([code, path])  # noqa: S603 - our own fixed file
+            # A moment for the window to come up before the diagnosis is
+            # spoken over it.
+            time.sleep(2.0)
+        except Exception as exc:
+            self._log(f"Demo: could not open VS Code: {exc}")
+
+    def _run_commit_and_push(
+        self, narration: "str | None", language: str = "fr", cwd: "str | None" = None
+    ) -> None:
         """Hands the commit to the coding agent, in whatever project the
         watched directory points at.
 
@@ -919,7 +1002,11 @@ class HeyPeer:
             language=language,
         )
 
-        cwd = self.watched_dir or Path.home()
+        # The repository to commit in. Explicit when the caller knows it -
+        # the demo commits the file it just fixed - and the watched folder
+        # otherwise, which is where a spoken "commit et push" most often
+        # means.
+        cwd = Path(cwd) if cwd else (self.watched_dir or Path.home())
         self.tray.set_status(Status.EXECUTING)
         try:
             output = coding_agent.run(self.COMMIT_PROMPT, cwd)
@@ -1102,6 +1189,114 @@ class HeyPeer:
                        "There you go, the drums are in."),
             language=language,
         )
+
+    def _run_edit_capcut(
+        self, narration: "str | None", language: str = "fr", folder: str = ""
+    ) -> None:
+        """Adds sound effects to the latest CapCut project, chosen from the
+        user's own folder, then plays the result full screen.
+
+        Watch, decide, do - see `executor/capcut.py`. The vision model
+        describes the video from stills, Nemotron writes the cue sheet from
+        that description and the sound files' names, and the cues go both
+        into the CapCut project and onto a rendered preview, which is what
+        is shown.
+
+        Every failure is said out loud and specific, because each one has a
+        different fix: no ffmpeg, no project, an encrypted project, no
+        sounds in the folder.
+        """
+        import tempfile
+
+        from heypeer.executor import capcut
+
+        def say(french: str, english: str) -> None:
+            self._speak(_bilingual(language, french, english), language=language)
+
+        self._speak(
+            narration or _bilingual(language, "J'ouvre ton dernier projet CapCut.",
+                                    "Opening your latest CapCut project."),
+            language=language,
+        )
+
+        if not capcut.ffmpeg_available():
+            print("Install ffmpeg (winget install ffmpeg) and restart Hey Peer.")
+            say("Il me manque ffmpeg pour regarder la vidéo. La commande est dans la console.",
+                "I need ffmpeg to watch the video. The command is in the console.")
+            return
+
+        draft_dir = capcut.latest_draft()
+        draft = capcut.draft_file(draft_dir) if draft_dir else None
+        if draft is None:
+            say("Je ne trouve aucun projet CapCut.", "I can't find any CapCut project.")
+            return
+        content = capcut.load_draft(draft)
+        if content is None:
+            say("Ce projet CapCut est chiffré, je ne peux pas le modifier.",
+                "This CapCut project is encrypted, so I can't edit it.")
+            return
+        video = capcut.main_video(content)
+        if video is None:
+            say("Je ne retrouve pas la vidéo de ce projet.",
+                "I can't find this project's video.")
+            return
+
+        sounds_dir = capcut.find_folder(folder)
+        sounds = capcut.sounds_in(sounds_dir) if sounds_dir else []
+        if not sounds:
+            say(f"Je ne trouve pas de bruitages dans le dossier {folder or 'demandé'}.",
+                f"I can't find any sound effects in {folder or 'that folder'}.")
+            return
+        self._log(f"CapCut: {draft_dir.name}, video {video}, {len(sounds)} sounds in {sounds_dir}")
+
+        seconds = capcut.duration_of(video)
+        self._speak_async(
+            _bilingual(language, "Je regarde la vidéo et je choisis les sons.",
+                       "Watching the video and picking the sounds."),
+            language=language,
+        )
+        if self.debug_window is not None:
+            self.debug_window.set_state("thinking")
+        frames = capcut.sample_frames(video)
+        timeline = self.nemotron.describe_video_frames(frames) if frames else ""
+        self._log(f"Timeline:\n{timeline or '(none)'}")
+        raw = self.nemotron.compose_sound_cues(timeline, [s.name for s in sounds], seconds)
+        cues = capcut.clean_cues(raw, sounds, seconds)
+        if not cues:
+            cues = capcut.fallback_cues(sounds, capcut.frame_times(seconds))
+            self._log("Cue composition failed; spacing the sounds evenly instead.")
+        for cue in cues:
+            self._log(f"  {cue.time:5.2f}s  {cue.sound.name}")
+
+        # Into the project. CapCut must be closed while its draft is
+        # written, or its autosave puts the old timeline back seconds later.
+        placed = 0
+        if capcut.close_app():
+            try:
+                placed = capcut.apply_to_draft(draft, cues, seconds)
+            except Exception as exc:
+                self._log(f"CapCut draft not edited: {exc}")
+        else:
+            self._log("CapCut did not close; its draft was left untouched.")
+        self._speak_async(
+            _bilingual(language, f"J'ai posé {len(cues)} bruitages. Je prépare l'aperçu.",
+                       f"I placed {len(cues)} sound effects. Preparing the preview."),
+            language=language,
+        )
+        capcut.open_app()
+        # A moment for CapCut to come up, so the transition starts from it.
+        time.sleep(3.0)
+
+        work = Path(tempfile.gettempdir())
+        intro = capcut.screenshot(work / "heypeer_capcut_intro.png")
+        preview = work / "heypeer_capcut_preview.mp4"
+        if not capcut.render(video, cues, preview, intro):
+            say("Les bruitages sont dans le projet, mais je n'ai pas réussi à monter l'aperçu.",
+                "The sounds are in the project, but I couldn't render the preview.")
+            return
+        self._log(f"CapCut: {placed} clips written to the draft; preview at {preview}")
+        say("Regarde.", "Take a look.")
+        capcut.play_fullscreen(preview)
 
     def _run_click_element(
         self, name: "str | None", narration: "str | None", language: str = "fr"
@@ -1722,6 +1917,10 @@ class HeyPeer:
                 else:
                     self._speak("Je n'ai pas réussi à joindre le modèle.")
                 return
+            if self._demo_pending:
+                self._demo_pending = False
+                self._run_demo()
+                return
             self._dispatch_intent(intent, instruction_text)
         finally:
             if self._followup_generation == opened_with:
@@ -1753,6 +1952,12 @@ class HeyPeer:
         to populate history first - a reasonable, deliberate shortcut this
         method has to honour too, not silently defeat.
         """
+        # The demo turn is not interpreted at all - see `_run_demo`. The call
+        # is skipped rather than its answer ignored: on stage, a slow or
+        # failing endpoint here would delay or abort the very turn the demo
+        # mode exists to make reliable.
+        if self._demo_pending:
+            return Intent(action="unknown", skill_id=None, n_repetitions=1)
         if not followup and not self._history and self.watched_dir is not None:
             from heypeer.nemotron.fast_path import try_fast_path
 
@@ -1956,6 +2161,8 @@ class HeyPeer:
             self._run_multi(intent.steps, language)
         elif intent.action == "add_drums":
             self._run_add_drums(intent.speech, language, intent.content or "")
+        elif intent.action == "edit_capcut":
+            self._run_edit_capcut(intent.speech, language, intent.content or "")
         elif intent.action == "click_element":
             self._run_click_element(intent.target_name, intent.speech, language)
         elif intent.action == "listen_to_screen":
@@ -2812,22 +3019,26 @@ def _warn_about_retired_models(settings) -> None:
     )
 
 
-def _build_peer(with_debug_window: bool = False) -> HeyPeer:
+def _build_peer(with_debug_window: bool = False, demo: bool = False) -> HeyPeer:
     settings = load_settings()
     print("Hey Peer starting.")
     print(f"Nemotron model: {settings.nemotron_model_id}")
     print(f"Watching folder: {settings.watched_dir}")
     _warn_about_retired_models(settings)
-    return HeyPeer(
+    peer = HeyPeer(
         nemotron=NemotronClient(settings),
         watched_dir=settings.watched_dir,
         wakeword_debug=settings.wakeword_debug,
         wakeword_threshold=settings.wakeword_threshold,
         debug_window=DebugWindow() if with_debug_window else None,
     )
+    if demo:
+        peer._demo_pending = True
+        print("Mode demo : le premier \"Hey Peer\" lance la sequence scriptee (heypeer/demo.py).")
+    return peer
 
 
-def run_tray() -> None:
+def run_tray(demo: bool = False) -> None:
     """Default entry point: a background app living in the system tray.
 
     "Mode auto" (wake-word listening) is a simple ON/OFF toggle in the tray
@@ -2838,7 +3049,7 @@ def run_tray() -> None:
     Note: on Windows, Ctrl+C in the console can't reliably interrupt the
     tray's native message loop - use the tray menu's "Quitter" to exit.
     """
-    peer = _build_peer(with_debug_window=True)
+    peer = _build_peer(with_debug_window=True, demo=demo)
     peer.tray.set_auto_mode(True)
     print("Icone dans la zone de notification. Mode auto (ecoute vocale) : ON.")
     print('Menu "Demander a Hey Peer..." disponible pour tester sans micro.')
@@ -2857,12 +3068,12 @@ def run_tray() -> None:
     peer.tray.run()
 
 
-def run_cli() -> None:
+def run_cli(demo: bool = False) -> None:
     """Foreground console loop - no separate tray host process needed, but a
     real (detached) tray icon still runs alongside it so "Quitter" works as a
     stop button instead of Task Manager. Enter simulates the wake word if no
     trained wake-word model is available."""
-    peer = _build_peer(with_debug_window=True)
+    peer = _build_peer(with_debug_window=True, demo=demo)
     peer.tray.set_auto_mode(True)
     peer.tray.icon.run_detached()  # real tray icon, own thread - see Quitter note below
 
@@ -2961,8 +3172,14 @@ def main() -> None:
         action="store_true",
         help="Run the foreground console loop instead of the system tray app",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="The first wake word runs the scripted demo sequence in heypeer/demo.py, "
+        "whatever is said after it",
+    )
     args = parser.parse_args()
-    run_cli() if args.cli else run_tray()
+    run_cli(demo=args.demo) if args.cli else run_tray(demo=args.demo)
 
 
 if __name__ == "__main__":

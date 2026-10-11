@@ -32,11 +32,6 @@ import time
 # matters - unlike the countdown, redrawing twice a second.
 FRAME_SECONDS = 1 / 60
 
-# How long the journey takes, regardless of distance. Constant rather than
-# speed-based so a cross-screen move and a short hop both feel deliberate;
-# a constant *speed* makes long journeys tediously slow to watch.
-TRAVEL_SECONDS = 0.55
-
 # The press animation, after arrival.
 PRESS_SECONDS = 0.22
 # How long the pointer stays after the press before disappearing. Long
@@ -74,7 +69,7 @@ def _window_process(command_queue, click_event) -> None:
             if kind == "play":
                 click_event.set()
 
-    size = cursor_render.SURFACE * cursor_render.PIXEL_SCALE
+    size = cursor_render.SURFACE
     overlay = Overlay(size, size, title="Hey Peer Cursor")
     if not overlay.create():
         return _drain_until_quit()
@@ -98,18 +93,15 @@ def _window_process(command_queue, click_event) -> None:
             continue
 
         start, end = payload
-        steps = max(2, int(TRAVEL_SECONDS / FRAME_SECONDS))
-        path = cursor_render.travel_path(start, end, steps)
+        # Duration, arc, heading, swell and glow all come from the frames:
+        # the window only draws them at a steady clock.
+        frames = cursor_render.flight_frames(start, end, fps=round(1 / FRAME_SECONDS))
 
         overlay.set_visible(True)
-        for i, (x, y) in enumerate(path):
+        for x, y, angle, scale, glow in frames:
             frame_started = time.time()
             overlay.pump_messages()
-            overlay.update(
-                cursor_render.render(0.0, cursor_render.trail_offsets(path, i)),
-                x - half,
-                y - half,
-            )
+            overlay.update(cursor_render.render(angle, scale, glow), x - half, y - half)
             _sleep_until(frame_started + FRAME_SECONDS)
 
         # Arrived. Tell the parent to press, then animate the press over
@@ -120,13 +112,13 @@ def _window_process(command_queue, click_event) -> None:
             frame_started = time.time()
             overlay.pump_messages()
             overlay.update(
-                cursor_render.render((i + 1) / press_frames),
+                cursor_render.render(press=(i + 1) / press_frames),
                 end[0] - half,
                 end[1] - half,
             )
             _sleep_until(frame_started + FRAME_SECONDS)
 
-        overlay.update(cursor_render.render(0.0), end[0] - half, end[1] - half)
+        overlay.update(cursor_render.render(), end[0] - half, end[1] - half)
         _sleep_until(time.time() + LINGER_SECONDS)
         overlay.set_visible(False)
 
