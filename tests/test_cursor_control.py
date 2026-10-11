@@ -202,3 +202,19 @@ def test_a_one_point_path_draws_nothing(monkeypatch) -> None:
     with patch.object(cc, "_send") as send:
         cc.drag_path([(5, 5)])
     send.assert_not_called()
+
+
+def test_a_key_press_is_a_down_then_an_up(monkeypatch) -> None:
+    user32 = _fake_windll(monkeypatch)
+    sent = []
+    user32.SendInput.side_effect = lambda n, ref, size: sent.append(ref._obj.ki.dwFlags) or 1
+    cc.press_key(cc.VK_SPACE)
+    assert sent == [0, cc.KEYEVENTF_KEYUP]
+
+
+def test_the_input_struct_is_sized_for_both_members() -> None:
+    """SendInput rejects an INPUT whose size does not match the real one."""
+    import ctypes
+
+    assert ctypes.sizeof(cc._INPUT._UNION) >= ctypes.sizeof(cc._MOUSEINPUT)
+    assert ctypes.sizeof(cc._INPUT._UNION) >= ctypes.sizeof(cc._KEYBDINPUT)
