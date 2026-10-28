@@ -414,28 +414,42 @@ def lanes(cues: "list[Cue]", lengths: "dict[Path, float]") -> "list[list[Cue]]":
 # --- Doing: the CapCut project ----------------------------------------------
 
 
-def close_app(timeout: float = 8.0) -> bool:
+def close_app(timeout: float = 8.0, force: bool = False) -> bool:
     """Closes CapCut the way a user would, and returns whether it is closed.
 
     A window close, not a process kill: CapCut saves on close, and killing
     it could lose an edit made seconds ago. Already closed is success.
+    Every CapCut window is closed - the home screen and the editor can be
+    open at once, and closing one left the other holding the draft. With
+    `force`, a CapCut still running after `timeout` is ended: for the
+    demo's own reset, where nothing unsaved is the user's.
     """
     try:
         import uiautomation as auto
     except ImportError:
         return True
+
+    def windows():
+        return [w for w in auto.GetRootControl().GetChildren()
+                if (w.Name or "") == "CapCut" or (w.ClassName or "").startswith(
+                    ("HomePageX", "MainWindow_QML", "SplashDialog"))]
+
     try:
-        window = auto.WindowControl(searchDepth=1, Name="CapCut")
-        if not window.Exists(maxSearchSeconds=0.5):
-            window = auto.WindowControl(searchDepth=1, SubName="CapCut")
-        if not window.Exists(maxSearchSeconds=0.5):
-            return True
-        window.GetWindowPattern().Close()
+        for window in windows():
+            try:
+                window.GetWindowPattern().Close()
+            except Exception:
+                pass
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if not window.Exists(maxSearchSeconds=0.2):
+            if not windows():
                 return True
             time.sleep(0.3)
+        if force:
+            subprocess.run(["taskkill", "/F", "/IM", "CapCut.exe"],  # noqa: S603, S607
+                           capture_output=True)
+            time.sleep(1.0)
+            return not windows()
         return False
     except Exception:
         return False
@@ -502,7 +516,7 @@ def restore_backup(draft_dir: "Path | None" = None) -> bool:
     backup = path.with_name(path.stem + BACKUP_SUFFIX)
     if not backup.is_file():
         return False
-    if not close_app():
+    if not close_app(force=True):
         return False
     shutil.copy2(backup, path)
     copy = timeline_copy(path)

@@ -964,6 +964,13 @@ class HeyPeer:
         """
         from heypeer import demo
 
+        # A clean stage first: whatever the last run or the user left on the
+        # audience's screen. CapCut left open there covered FL Studio, and
+        # the clicks meant for FL's plugin windows opened a CapCut tool.
+        cleared = clear_stage()
+        if cleared:
+            self._log(f"Demo: minimised {cleared} windows on the stage screen.")
+
         if "code" in tags:
             try:
                 self._log(f"Demo: bug put back in {demo.ensure_code_file()}")
@@ -3184,6 +3191,39 @@ def _warn_about_retired_models(settings) -> None:
         f"       NEMOTRON_MODEL_ID={replacement}\n"
         f"       VISION_MODEL_ID=google/gemma-3-27b-it\n"
     )
+
+
+def clear_stage() -> int:
+    """Minimises every ordinary window whose centre is on the stage screen,
+    and returns how many. CapCut is closed rather than minimised - its
+    draft is about to be reset, and it must not be holding it."""
+    try:
+        import uiautomation as auto
+
+        from heypeer.executor import capcut
+        from heypeer.tray.overlay import stage_rect
+
+        capcut.close_app(force=True)
+        left, top, width, height = stage_rect()
+        count = 0
+        for window in auto.GetRootControl().GetChildren():
+            r = window.BoundingRectangle
+            cx, cy = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+            if not (left <= cx < left + width and top <= cy < top + height):
+                continue
+            if r.width() < 200 or r.height() < 150 or window.ClassName in (
+                    "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW"):
+                continue
+            try:
+                pattern = window.GetWindowPattern()
+                if pattern.CanMinimize:
+                    pattern.SetWindowVisualState(auto.WindowVisualState.Minimized)
+                    count += 1
+            except Exception:
+                pass
+        return count
+    except Exception:
+        return 0
 
 
 def minimize_windows(*needles: str) -> int:

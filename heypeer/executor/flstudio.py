@@ -360,6 +360,24 @@ def dismiss_load_problems(wait: float = 0.0) -> bool:
         return False
 
 
+def owns_point(x: int, y: int) -> bool:
+    """Whether the screen point `(x, y)` shows FL Studio, not a window
+    lying over it."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        user32 = ctypes.windll.user32
+        user32.WindowFromPoint.restype = wt.HWND
+        user32.WindowFromPoint.argtypes = [wt.POINT]
+        handle = user32.WindowFromPoint(wt.POINT(x, y))
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
+        return pid.value == _main_window().ProcessId
+    except Exception:
+        return False
+
+
 def dismiss_update_prompt() -> bool:
     """Closes FL Studio's "A newer version is available" prompt, ticking
     "Don't ask this in the future" so it does not come back, and returns
@@ -404,6 +422,10 @@ def close_plugins_over_rack() -> int:
             if not over:
                 break
             r = over[0].BoundingRectangle
+            # Only if the point really is FL Studio's: with another window
+            # over it, these clicks opened a CapCut tool instead.
+            if not owns_point(r.right - 13, r.top + 13):
+                break
             cursor_control.click_at(r.right - 13, r.top + 13)
             time.sleep(0.35)
             closed += 1
