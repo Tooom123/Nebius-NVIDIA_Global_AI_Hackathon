@@ -538,20 +538,11 @@ def _top_window(class_prefix: str, timeout: float):
 
 def _place_on_stage(window) -> None:
     """Moves `window` onto the stage screen, maximised, in front."""
-    import ctypes
-
+    from heypeer.executor.foreground import raise_window
     from heypeer.tray.overlay import stage_rect
 
-    left, top, width, height = stage_rect()
-    user32 = ctypes.windll.user32
-    handle = window.NativeWindowHandle
-    user32.ShowWindow(handle, 9)  # SW_RESTORE, or a maximised window will not move
-    user32.SetWindowPos(handle, 0, left, top, width, height, 0x0040)  # SWP_SHOWWINDOW
-    user32.ShowWindow(handle, 3)  # SW_MAXIMIZE, on the screen it is now on
-    user32.keybd_event(0x12, 0, 0, 0)  # an Alt tap unlocks SetForegroundWindow
-    user32.keybd_event(0x12, 0, 2, 0)
-    user32.SetForegroundWindow(handle)
-    time.sleep(0.6)
+    raise_window(window.NativeWindowHandle, stage=stage_rect())
+    time.sleep(0.2)
 
 
 # Where the first project's thumbnail is on CapCut's home screen, maximised,

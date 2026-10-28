@@ -191,13 +191,29 @@ def test_the_demo_is_not_counted_as_the_user_repeating_themselves() -> None:
     assert seen == [True]
 
 
-def test_playback_presses_space_in_a_focused_fl_studio() -> None:
+def test_playback_plays_the_song_then_stops(monkeypatch) -> None:
+    """Left running, the song played under the whole rest of the demo."""
+    monkeypatch.setenv("HEYPEER_DEMO_FL_SECONDS", "3")
     peer = _peer()
     with patch("heypeer.executor.flstudio.focus_window", return_value=True), patch(
+        "heypeer.executor.flstudio.find_window", return_value=(0, 0, 1920, 1080)
+    ), patch("heypeer.executor.flstudio.song_mode", return_value=True), patch(
         "heypeer.executor.cursor_control.press_key"
-    ) as press:
+    ) as press, patch("time.sleep") as sleep:
         peer._demo_play_flstudio()
-    press.assert_called_once_with(0x20)
+    assert [c.args[0] for c in press.call_args_list] == [0x20, 0x20]
+    assert 3.0 in [c.args[0] for c in sleep.call_args_list]
+
+
+def test_playback_switches_pattern_mode_to_song() -> None:
+    peer = _peer()
+    with patch("heypeer.executor.flstudio.focus_window", return_value=True), patch(
+        "heypeer.executor.flstudio.find_window", return_value=(0, 0, 1920, 1080)
+    ), patch("heypeer.executor.flstudio.song_mode", return_value=False), patch(
+        "heypeer.executor.cursor_control.press_key"
+    ) as press, patch("time.sleep"):
+        peer._demo_play_flstudio()
+    assert press.call_args_list[0].args[0] == 0x4C  # L, the PAT/SONG toggle
 
 
 def test_playback_is_skipped_without_fl_studio() -> None:
@@ -324,3 +340,25 @@ def test_the_agent_must_check_its_own_work() -> None:
 def test_browser_steps_start_on_their_page() -> None:
     starts = [s.kwargs.get("start_url") for s in demo.script() if s.method == "_run_general_task"]
     assert starts == [demo.mail_url(), "https://open.spotify.com"]
+
+
+def test_dry_run_can_spare_one_part(monkeypatch) -> None:
+    """The WhatsApp message can go for real while the mail stays a draft."""
+    monkeypatch.setenv("HEYPEER_DEMO_DRY_RUN", "mail")
+    assert "Do NOT click Send" in demo.mail_task()
+    assert "Send it" in demo.playlist_task()
+
+
+def test_the_commit_url_comes_from_the_remote() -> None:
+    from heypeer.main import commit_url
+
+    assert commit_url("https://github.com/Tooom123/demo-code.git", "abc") == \
+        "https://github.com/Tooom123/demo-code/commit/abc"
+    assert commit_url("git@github.com:Tooom123/demo-code.git", "abc") == \
+        "https://github.com/Tooom123/demo-code/commit/abc"
+    assert commit_url("https://gitlab.com/x/y.git", "abc") is None
+
+
+def test_the_commit_is_shown_after_the_push() -> None:
+    methods = [s.method for s in demo.script()]
+    assert methods.index("_demo_show_commit") == methods.index("_run_commit_and_push") + 1

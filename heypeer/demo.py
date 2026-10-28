@@ -62,8 +62,15 @@ def language() -> str:
     return (os.environ.get("HEYPEER_DEMO_LANGUAGE") or "en").strip().lower()
 
 
-def dry_run() -> bool:
-    return (os.environ.get("HEYPEER_DEMO_DRY_RUN") or "").strip().lower() in ("1", "true", "yes", "on")
+def dry_run(part: str = "") -> bool:
+    """Whether `part` ("mail", "playlist") stops before sending.
+    HEYPEER_DEMO_DRY_RUN is "1" for every part, or a list of parts - so the
+    message to someone who knows about the demo can go for real while the
+    mail replies stay drafts."""
+    raw = (os.environ.get("HEYPEER_DEMO_DRY_RUN") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return bool(part) and part in {p.strip() for p in raw.split(",")}
 
 
 def selected(steps: "list[Step]") -> "list[Step]":
@@ -110,9 +117,9 @@ def ensure_code_file() -> Path:
     HEYPEER_DEMO_CODE_FILE must name a throwaway file kept for the demo -
     whatever is in it is replaced.
 
-    Committed when the file sits in a git repository, so the fix the agent
-    commits later is a real diff against the bug rather than the file's
-    first appearance. The commit is local; the demo's own push carries it.
+    Committed and pushed when the file sits in a git repository, so the
+    fix the agent commits later is a real diff against the bug, on GitHub
+    as well as locally.
     """
     path = code_file()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +131,10 @@ def ensure_code_file() -> Path:
             subprocess.run(  # noqa: S603, S607
                 [*git, "commit", "-m", "Add an average helper"], capture_output=True
             )
+        # Pushed too, so the remote starts from the bug: left local, the
+        # agent saw an unpushed commit removing the guard it was about to
+        # commit, asked whether to push at all, and pushed nothing.
+        subprocess.run([*git, "push", "-q"], capture_output=True, timeout=60)  # noqa: S603, S607
     return path
 
 
@@ -139,7 +150,7 @@ def contact() -> str:
 
 
 def playlist_name() -> str:
-    return os.environ.get("HEYPEER_DEMO_PLAYLIST") or "Love"
+    return os.environ.get("HEYPEER_DEMO_PLAYLIST") or "Chill"
 
 
 def mail_url() -> str:
@@ -184,7 +195,7 @@ def mail_task() -> str:
     """What the general agent is asked to do with the mails. Spelled out
     rather than left as "read my mail": an agent given a vague task on
     stage improvises, and improvising means asking questions."""
-    if dry_run():
+    if dry_run("mail"):
         finish = ("Do NOT click Send: leave both replies as drafts. If a reply "
                   "draft already exists for an email, replace its text instead "
                   "of starting another one.")
@@ -204,7 +215,7 @@ def playlist_task() -> str:
     """The playlist and the message, as one task for the general agent -
     they are one intention, and splitting them would make the agent find the
     playlist link again in a second session."""
-    if dry_run():
+    if dry_run("playlist"):
         finish = ("Type the message in the chat box but do NOT press Enter or "
                   "click Send.")
     else:
@@ -212,10 +223,10 @@ def playlist_task() -> str:
     return (
         "Spotify's web player (https://open.spotify.com) is already open in "
         f"the current tab. Create a playlist named \"{playlist_name()}\" and "
-        "add five well-known love songs to it. Copy the playlist's "
+        "add five well-known chill, laid-back songs to it. Copy the playlist's "
         "share link. Then, in the same tab, go to WhatsApp Web "
         f"(https://web.whatsapp.com), open the chat with {contact()} and "
-        f"write a one-sentence, tender message with the link. {finish} "
+        f"write a one-sentence, warm message with the link. {finish} "
         f"{WORK_IN_THE_TAB}"
     )
 
@@ -251,6 +262,7 @@ def script(lang: "str | None" = None) -> "list[Step]":
                                "narration": None}, "code"),
         Step("_run_commit_and_push", {"narration": None, "language": lang,
                                       "cwd": str(path.parent)}, "code"),
+        Step("_demo_show_commit", {"cwd": str(path.parent), "language": lang}, "code"),
         # The playlist, sent on WhatsApp.
         Step("_run_general_task", {"task": playlist_task(), "language": lang,
                                    "start_url": "https://open.spotify.com",

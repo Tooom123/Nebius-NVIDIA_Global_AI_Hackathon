@@ -35,10 +35,6 @@ CHROME_PATHS = (
     r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
 )
 
-VK_MENU = 0x12
-KEYEVENTF_KEYUP = 0x0002
-SW_MAXIMIZE = 3
-
 # Chrome takes a few seconds to open its debugging port on a cold start.
 START_TIMEOUT_SECONDS = 15.0
 
@@ -169,15 +165,9 @@ def bring_to_front() -> bool:
         if not candidates:
             return False
         window = min(candidates, key=lambda w: abs(w.BoundingRectangle.left - stage_x))
-        import ctypes
+        from heypeer.executor.foreground import raise_window
 
-        user32 = ctypes.windll.user32
-        handle = window.NativeWindowHandle
-        user32.keybd_event(VK_MENU, 0, 0, 0)
-        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-        user32.ShowWindow(handle, SW_MAXIMIZE)
-        user32.SetForegroundWindow(handle)
-        time.sleep(0.3)
+        raise_window(window.NativeWindowHandle)
         return True
     except Exception:
         return False

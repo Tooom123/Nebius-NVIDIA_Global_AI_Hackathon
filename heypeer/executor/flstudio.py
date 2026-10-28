@@ -482,14 +482,15 @@ def focus_window() -> bool:
     try:
         import uiautomation as auto
 
+        from heypeer.executor.foreground import raise_window
+
         window = auto.WindowControl(searchDepth=1, SubName="FL Studio")
         if not window.Exists(maxSearchSeconds=1):
             return False
-        window.SetActive()
-        # A beat for the activation to actually take effect - SetActive
-        # returns before Windows has finished raising the window, and
-        # clicking into the gap is the very problem this avoids.
-        time.sleep(0.35)
+        # Restored and raised the robust way - plain SetActive left a
+        # minimised FL Studio in the taskbar, and the step then searched a
+        # screenshot of whatever was on screen for the channel rack.
+        raise_window(window.NativeWindowHandle)
         return True
     except Exception:
         return False

@@ -809,7 +809,9 @@ class HeyPeer:
         "trailer, exactly:\n\n"
         "Co-Authored-By: Hey Peer <noreply@heypeer.local>\n\n"
         "If there is nothing staged and nothing modified, say so and do not "
-        "create an empty commit."
+        "create an empty commit. Push the current branch as it is, earlier "
+        "local commits included. Do not ask questions: if the push fails, "
+        "say why in one sentence."
     )
 
     def _run_draw_tribute(
@@ -968,9 +970,12 @@ class HeyPeer:
                 self._log(f"Demo: could not start the browser: {exc}")
 
     def _demo_play_flstudio(self, language: str = "fr") -> None:
-        """Starts playback in FL Studio - Space, with its window focused -
-        in PATTERN mode, so what plays is the drums just laid down rather
-        than the song's arrangement, which does not contain them.
+        """Plays the song in FL Studio for a few seconds, then stops it.
+
+        SONG mode, at the user's request: the whole track with the drums
+        in it is what they want heard, not the pattern looping on its own.
+        Stopped before the next part, because left running it played under
+        the whole rest of the demo. HEYPEER_DEMO_FL_SECONDS, 10 by default.
 
         A keystroke rather than a click on the transport's play button: the
         shortcut does not move when the toolbar is rearranged, and the
@@ -982,14 +987,54 @@ class HeyPeer:
             self._log("Demo: FL Studio not found, skipping playback.")
             return
         try:
+            seconds = float(os.environ.get("HEYPEER_DEMO_FL_SECONDS") or 10)
+        except ValueError:
+            seconds = 10.0
+        try:
             window = flstudio.find_window()
-            if window is not None and flstudio.song_mode(window):
+            if window is not None and flstudio.song_mode(window) is False:
                 cursor_control.press_key(flstudio.VK_L)  # PAT/SONG toggle
                 time.sleep(0.3)
             cursor_control.press_key(cursor_control.VK_SPACE)
             self._log("Demo: FL Studio playing.")
+            time.sleep(seconds)
+            flstudio.focus_window()
+            cursor_control.press_key(cursor_control.VK_SPACE)
+            self._log("Demo: FL Studio stopped.")
         except Exception as exc:
-            self._log(f"Demo: could not start playback: {exc}")
+            self._log(f"Demo: could not play FL Studio: {exc}")
+
+    def _demo_show_commit(self, cwd: str, language: str = "fr") -> None:
+        """Opens the commit just pushed on GitHub, in the demo's browser -
+        the fix seen where it landed, not only in the editor.
+
+        The URL is built from the repository's own remote and HEAD rather
+        than asked of the agent: both are a git command away, and an agent
+        would have to be trusted to read them back exactly.
+        """
+        import subprocess
+
+        from heypeer.executor import browser
+
+        def git(*args: str) -> str:
+            return subprocess.run(  # noqa: S603, S607
+                ["git", "-C", cwd, *args], capture_output=True, text=True,
+            ).stdout.strip()
+
+        url = commit_url(git("remote", "get-url", "origin"), git("rev-parse", "HEAD"))
+        if url is None:
+            self._log("Demo: no GitHub remote to show the commit on.")
+            return
+        if not browser.ensure_running() or not browser.single_tab(url):
+            self._log("Demo: the browser is not available to show the commit.")
+            return
+        browser.bring_to_front()
+        self._speak(
+            _bilingual(language, "Et le voilà sur GitHub.", "And there it is on GitHub."),
+            language=language,
+        )
+        # Long enough to read the diff before the next part takes the screen.
+        time.sleep(6.0)
 
     def _demo_open_in_vscode(self, path: str, language: str = "fr") -> None:
         """Opens the file the demo is about to fix in VS Code, so the fix
@@ -3112,6 +3157,17 @@ def _warn_about_retired_models(settings) -> None:
         f"       NEMOTRON_MODEL_ID={replacement}\n"
         f"       VISION_MODEL_ID=google/gemma-3-27b-it\n"
     )
+
+
+def commit_url(remote: str, sha: str) -> "str | None":
+    """The GitHub page of commit `sha`, from an https or ssh remote, or None
+    when the remote is not on GitHub."""
+    import re
+
+    match = re.search(r"github\.com[:/]([^/]+)/(.+?)(?:\.git)?/?$", remote.strip())
+    if not match or not sha:
+        return None
+    return f"https://github.com/{match.group(1)}/{match.group(2)}/commit/{sha}"
 
 
 def _build_peer(with_debug_window: bool = False, demo: bool = False) -> HeyPeer:
