@@ -495,3 +495,40 @@ def test_restoring_restores_the_timeline_copy_too(tmp_path: Path) -> None:
         assert capcut.restore_backup(project) is True
     copy = project / "Timelines" / "MAIN" / "draft_content.json"
     assert copy.read_text(encoding="utf-8") == '{"original": true}'
+
+
+def _timeline_content(tmp_path: Path) -> dict:
+    clip = tmp_path / "clip.mov"
+    clip.write_bytes(b"x")
+    return {
+        "materials": {"videos": [{"id": "m1", "path": str(clip), "type": "video", "duration": 6_100_000}]},
+        "tracks": [{"type": "video", "segments": [
+            {"material_id": "m1", "source_timerange": {"start": 0, "duration": 6_100_000},
+             "target_timerange": {"start": 6_100_000, "duration": 6_100_000}},
+            {"material_id": "m1", "source_timerange": {"start": 1_000_000, "duration": 2_000_000},
+             "target_timerange": {"start": 0, "duration": 2_000_000}},
+        ]}],
+    }
+
+
+def test_the_timeline_is_read_in_playing_order(tmp_path: Path) -> None:
+    """One clip used several times: the sounds belong to the whole timeline,
+    not to the clip's own six seconds."""
+    segments = capcut.timeline_segments(_timeline_content(tmp_path))
+    assert [(round(s, 1), round(d, 1)) for _, s, d in segments] == [(1.0, 2.0), (0.0, 6.1)]
+
+
+def test_the_timeline_command_cuts_and_joins_every_segment(tmp_path: Path) -> None:
+    segments = capcut.timeline_segments(_timeline_content(tmp_path))
+    command = capcut.timeline_command(segments, tmp_path / "out.mp4")
+    assert command.count("-i") == 2
+    assert command[command.index("-ss") + 1] == "1.000"
+    assert "concat=n=2:v=1:a=0[v]" in command[command.index("-filter_complex") + 1]
+
+
+def test_a_project_is_chosen_by_name(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "HeyPeer").mkdir()
+    (tmp_path / "HeyPeer" / "draft_content.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HEYPEER_CAPCUT_DRAFTS", str(tmp_path))
+    assert capcut.project_dir("HeyPeer") == tmp_path / "HeyPeer"
+    assert capcut.project_dir("Missing") is None

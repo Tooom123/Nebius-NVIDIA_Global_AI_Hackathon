@@ -156,8 +156,28 @@ def sfx_folder() -> str:
     return os.environ.get("HEYPEER_SFX_DIR") or "SFX"
 
 
+def capcut_project() -> str:
+    """The CapCut project the sounds go into, by the name CapCut shows -
+    HEYPEER_DEMO_CAPCUT_PROJECT. Empty means the latest one, which on a
+    machine used for anything else is rarely the demo's."""
+    return os.environ.get("HEYPEER_DEMO_CAPCUT_PROJECT") or ""
+
+
 def drum_style() -> str:
     return os.environ.get("HEYPEER_DEMO_STYLE") or ""
+
+
+# How the agent is to work in the browser, said once for both tasks. Each
+# sentence is there because a run went wrong without it: nineteen tabs
+# opened, one per action, while the window showed the first; and a report
+# of two drafts written when no email had been opened - hence the check.
+WORK_IN_THE_TAB = (
+    "Work only in the browser's current tab: never call new_tab(); use "
+    "goto_url(url) to navigate, and js(...), fill_input(...) or "
+    "click_at_xy(...) to act on the page. Before you finish, check on the "
+    "page that what you did is really there. Report only what you actually "
+    "did and saw; if a step failed, say which one. Do not ask me questions."
+)
 
 
 def mail_task() -> str:
@@ -165,18 +185,18 @@ def mail_task() -> str:
     rather than left as "read my mail": an agent given a vague task on
     stage improvises, and improvising means asking questions."""
     if dry_run():
-        finish = ("Write each reply in Gmail's reply box but do NOT click Send: "
-                  "leave both replies as drafts.")
+        finish = ("Do NOT click Send: leave both replies as drafts. If a reply "
+                  "draft already exists for an email, replace its text instead "
+                  "of starting another one.")
     else:
         finish = "Send both replies."
     return (
-        f"Use the browser that is already open. Go to {mail_url()} - the emails "
-        "are listed there. Read them. Exactly two of them call for an answer; "
-        "the other one is an automated message that must be left alone. Reply "
-        "to each of the two with a short, friendly message, written in the "
-        f"language of the email it answers and signed Tom. {finish} "
-        "Do not delete, archive or label anything. Do not ask me questions: "
-        "decide on your own."
+        f"The Gmail label at {mail_url()} is already open in the current tab. "
+        "Read its emails. Exactly two of them call for an answer; the other "
+        "is an automated message that must be left alone. For each of the "
+        "two: open it, click Reply, and type a short, friendly reply in the "
+        f"language of the email, signed Tom. {finish} Do not delete, archive "
+        f"or label anything. {WORK_IN_THE_TAB}"
     )
 
 
@@ -190,12 +210,13 @@ def playlist_task() -> str:
     else:
         finish = "Send it."
     return (
-        "Use the browser that is already open. On https://open.spotify.com, "
-        f"create a playlist named \"{playlist_name()}\" and add about fifteen "
-        "well-known love songs to it. Copy the playlist's share link. Then go "
-        f"to WhatsApp Web (https://web.whatsapp.com), open the chat with {contact()} and "
-        "write a one-sentence, tender message with the link. "
-        f"{finish} Do not ask me questions: decide on your own."
+        "Spotify's web player (https://open.spotify.com) is already open in "
+        f"the current tab. Create a playlist named \"{playlist_name()}\" and "
+        "add five well-known love songs to it. Copy the playlist's "
+        "share link. Then, in the same tab, go to WhatsApp Web "
+        f"(https://web.whatsapp.com), open the chat with {contact()} and "
+        f"write a one-sentence, tender message with the link. {finish} "
+        f"{WORK_IN_THE_TAB}"
     )
 
 
@@ -212,6 +233,7 @@ def script(lang: "str | None" = None) -> "list[Step]":
         Step("_demo_play_flstudio", {"language": lang}, "drums"),
         # Gmail: read, reply to two.
         Step("_run_general_task", {"task": mail_task(), "language": lang,
+                                   "start_url": mail_url(),
                                    "narration": _en(lang,
                                                     "Je passe à tes mails, je lis "
                                                     "les derniers et je réponds à deux.",
@@ -231,6 +253,7 @@ def script(lang: "str | None" = None) -> "list[Step]":
                                       "cwd": str(path.parent)}, "code"),
         # The playlist, sent on WhatsApp.
         Step("_run_general_task", {"task": playlist_task(), "language": lang,
+                                   "start_url": "https://open.spotify.com",
                                    "narration": _en(lang,
                                                     f"Une playlist {playlist_name()} "
                                                     f"pour {contact()}.",
@@ -244,5 +267,6 @@ def script(lang: "str | None" = None) -> "list[Step]":
                                                    "projet CapCut et je rajoute des bruitages.",
                                                    "One last thing: I'm opening your latest "
                                                    "CapCut project and adding sound effects."),
-                                  "language": lang, "folder": sfx_folder()}, "capcut"),
+                                  "language": lang, "folder": sfx_folder(),
+                                  "project": capcut_project()}, "capcut"),
     ]

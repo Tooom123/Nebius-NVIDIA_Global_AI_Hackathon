@@ -53,7 +53,7 @@ def test_the_mail_is_answered_in_its_own_language() -> None:
 
 def test_a_dry_run_sends_nothing(monkeypatch) -> None:
     monkeypatch.setenv("HEYPEER_DEMO_DRY_RUN", "1")
-    assert "do NOT click Send" in demo.mail_task()
+    assert "Do NOT click Send" in demo.mail_task()
     assert "do NOT press Enter" in demo.playlist_task()
 
 
@@ -307,3 +307,20 @@ def test_drums_light_and_clear_steps_in_the_configured_rows(monkeypatch) -> None
     assert (516, 130, "right") in calls and (500, 130, "left") in calls
     assert (516, 160, "right") in calls and (564, 160, "left") in calls
     assert not any(y == 100 for _, y, _ in calls)
+
+
+def test_the_agent_is_kept_in_one_tab() -> None:
+    """Left alone it opened a tab per action, nineteen in one task, while
+    the window showed the first."""
+    for task in (demo.mail_task(), demo.playlist_task()):
+        assert "never call new_tab()" in task
+
+
+def test_the_agent_must_check_its_own_work() -> None:
+    """It once reported two drafts written without having opened an email."""
+    assert "check on the page" in demo.mail_task()
+
+
+def test_browser_steps_start_on_their_page() -> None:
+    starts = [s.kwargs.get("start_url") for s in demo.script() if s.method == "_run_general_task"]
+    assert starts == [demo.mail_url(), "https://open.spotify.com"]

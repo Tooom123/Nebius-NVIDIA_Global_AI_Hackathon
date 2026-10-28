@@ -2,11 +2,18 @@
 
 Hermes's browser tools launch a fresh, signed-out Chromium by default, which
 cannot read anyone's inbox. They can instead attach to a running Chrome over
-CDP (`BROWSER_CDP_URL`) - but Chrome refuses remote debugging on its default
+CDP - but Chrome refuses remote debugging on its default
 profile, so this one runs on a profile of its own (`HEYPEER_BROWSER_PROFILE`),
 signed in once by hand to whatever the tasks need. It then stays signed in
 from one run to the next, beside the user's ordinary Chrome rather than
 instead of it.
+
+Hermes has to be told where it is in its own config, `browser.cdp_url:
+http://127.0.0.1:9222` in config.yaml. An environment variable passed to
+`hermes chat` does not reach it: the tools run in Hermes's long-lived
+gateway process, which reads its config on every call but was started
+with its own environment. Measured - with only the variable set, Hermes
+logged a fresh Chromium and reported the inbox signed out.
 
 The window is placed with `HEYPEER_BROWSER_POSITION` ("x,y"), so on a two-
 screen machine it opens on the screen the audience is watching, and it is
@@ -102,6 +109,31 @@ def ensure_running(url: str = "about:blank") -> bool:
             return True
         time.sleep(0.5)
     return False
+
+
+def single_tab(url: str) -> bool:
+    """Leaves the debugging Chrome with one tab, open on `url`.
+
+    For the audience as much as for the agent: Hermes works in the current
+    tab, and the window shows the current tab - so they had better be the
+    same one. Left to itself it opened a fresh tab per action, nineteen in
+    one task, while the window went on showing the first.
+    """
+    if not is_running():
+        return False
+    base = f"http://127.0.0.1:{_port()}"
+    try:
+        with urllib.request.urlopen(f"{base}/json/list", timeout=2) as response:  # noqa: S310
+            old = [t["id"] for t in json.load(response) if t.get("type") == "page"]
+        request = urllib.request.Request(f"{base}/json/new?{url}", method="PUT")
+        with urllib.request.urlopen(request, timeout=5):  # noqa: S310
+            pass
+        for target in old:
+            with urllib.request.urlopen(f"{base}/json/close/{target}", timeout=2):  # noqa: S310
+                pass
+        return True
+    except Exception:
+        return False
 
 
 def bring_to_front() -> bool:

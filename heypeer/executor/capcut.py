@@ -172,6 +172,76 @@ def main_video(content: dict) -> "Path | None":
     return best[1] if best else None
 
 
+def project_dir(name: "str | None") -> "Path | None":
+    """The project named `name` - its folder under the drafts root, which
+    is the name CapCut shows - or the latest one when no name is given."""
+    if not name:
+        return latest_draft()
+    path = drafts_root() / name
+    return path if draft_file(path) is not None else None
+
+
+def timeline_segments(content: dict) -> "list[tuple[Path, float, float]]":
+    """The main video track as `(file, start, duration)` in seconds, in
+    timeline order: what the project actually plays, rather than its
+    longest clip. A project cut from several clips - or one clip used
+    four times - put every sound in the first clip's length otherwise.
+    """
+    videos = {v.get("id"): v for v in (content.get("materials") or {}).get("videos") or []
+              if isinstance(v, dict)}
+    for track in content.get("tracks") or []:
+        if track.get("type") != "video":
+            continue
+        segments = []
+        for segment in sorted(track.get("segments") or [],
+                              key=lambda s: (s.get("target_timerange") or {}).get("start", 0)):
+            material = videos.get(segment.get("material_id")) or {}
+            path = material.get("path")
+            source = segment.get("source_timerange") or {}
+            if material.get("type", "video") != "video" or not path or not Path(path).is_file():
+                continue
+            segments.append((Path(path), source.get("start", 0) / 1e6, source.get("duration", 0) / 1e6))
+        if segments:
+            return segments
+    return []
+
+
+def timeline_command(
+    segments: "list[tuple[Path, float, float]]", output: Path,
+    size: "tuple[int, int]" = (1920, 1080),
+) -> "list[str]":
+    """The ffmpeg command that plays the segments back to back, picture
+    only - the sounds the demo adds are the soundtrack. Pure, like
+    `render_command`."""
+    width, height = size
+    norm = f"scale={width}:{height}:force_original_aspect_ratio=decrease," \
+           f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
+    inputs: "list[str]" = []
+    filters = []
+    for i, (path, start, duration) in enumerate(segments):
+        inputs += ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
+        filters.append(f"[{i}:v]{norm}[v{i}]")
+    filters.append("".join(f"[v{i}]" for i in range(len(segments)))
+                   + f"concat=n={len(segments)}:v=1:a=0[v]")
+    return ["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(filters),
+            "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", str(output)]
+
+
+def timeline_video(content: dict, output: Path) -> "Path | None":
+    """The project's timeline rendered to one file, or None."""
+    segments = timeline_segments(content)
+    if not segments:
+        return None
+    canvas = content.get("canvas_config") or {}
+    size = (int(canvas.get("width") or 1920), int(canvas.get("height") or 1080))
+    try:
+        result = subprocess.run(timeline_command(segments, output, size), capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=300)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return output if result.returncode == 0 and output.is_file() else None
+
+
 def sounds_in(folder: Path) -> "list[Path]":
     if not folder.is_dir():
         return []
@@ -450,6 +520,106 @@ def open_app() -> bool:
             return False
         apps.launch(app)
         return True
+    except Exception:
+        return False
+
+
+def _top_window(class_prefix: str, timeout: float):
+    import uiautomation as auto
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for window in auto.GetRootControl().GetChildren():
+            if (window.ClassName or "").startswith(class_prefix):
+                return window
+        time.sleep(0.5)
+    return None
+
+
+def _place_on_stage(window) -> None:
+    """Moves `window` onto the stage screen, maximised, in front."""
+    import ctypes
+
+    from heypeer.tray.overlay import stage_rect
+
+    left, top, width, height = stage_rect()
+    user32 = ctypes.windll.user32
+    handle = window.NativeWindowHandle
+    user32.ShowWindow(handle, 9)  # SW_RESTORE, or a maximised window will not move
+    user32.SetWindowPos(handle, 0, left, top, width, height, 0x0040)  # SWP_SHOWWINDOW
+    user32.ShowWindow(handle, 3)  # SW_MAXIMIZE, on the screen it is now on
+    user32.keybd_event(0x12, 0, 0, 0)  # an Alt tap unlocks SetForegroundWindow
+    user32.keybd_event(0x12, 0, 2, 0)
+    user32.SetForegroundWindow(handle)
+    time.sleep(0.6)
+
+
+# Where the first project's thumbnail is on CapCut's home screen, maximised,
+# relative to the window - measured on the user's machine. The first is the
+# most recently opened project, which after the edit is the demo's.
+FIRST_PROJECT = (307, 783)
+
+
+def close_promotions() -> int:
+    """Closes CapCut's promotion windows and returns how many there were.
+
+    They are windows of their own (`SplashDialog_QMLTYPE_*`), which the
+    accessibility tree can close directly - where Escape closed one of the
+    two seen on the machine and not the other, and their close buttons sit
+    in a different place on each.
+    """
+    import uiautomation as auto
+
+    closed = 0
+    for window in auto.GetRootControl().GetChildren():
+        if (window.ClassName or "").startswith("SplashDialog"):
+            try:
+                window.GetWindowPattern().Close()
+                closed += 1
+            except Exception:
+                pass
+    if closed:
+        time.sleep(0.6)
+    return closed
+
+
+def show_in_editor(timeout: float = 25.0) -> bool:
+    """Takes a freshly opened CapCut from its home screen to the most recent
+    project's timeline, on the stage screen, and returns whether the editor
+    came up.
+
+    CapCut takes no project on its command line and its interface is QML,
+    which shows the accessibility tree nothing inside the window - so the
+    way in is the way a user goes: dismiss what it opens with, click the
+    first thumbnail. Each step was seen on the machine: an "Environment
+    testing" window after an update, promotions over the home screen -
+    one of them arriving after the home screen did, and taking the click -
+    and the editor opening on the primary screen whatever screen the home
+    screen was on. Hence the retries.
+    """
+    try:
+        from heypeer.executor import cursor_control
+
+        home = _top_window("HomePageX", timeout)
+        if home is None:
+            return False
+        check = _top_window("VEDecectorWindow", 2.0)
+        if check is not None:
+            r = check.BoundingRectangle
+            cursor_control.click_at(r.left + r.width() // 2, r.top + round(0.86 * r.height()))
+            time.sleep(1.0)
+        _place_on_stage(home)
+        for _attempt in range(3):
+            time.sleep(1.5)  # promotions arrive a moment after the window
+            close_promotions()
+            r = home.BoundingRectangle
+            cursor_control.click_at(r.left + FIRST_PROJECT[0], r.top + FIRST_PROJECT[1])
+            editor = _top_window("MainWindow_QML", 6.0)
+            if editor is not None:
+                _place_on_stage(editor)
+                close_promotions()
+                return True
+        return False
     except Exception:
         return False
 

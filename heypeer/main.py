@@ -953,7 +953,7 @@ class HeyPeer:
             try:
                 from heypeer.executor import capcut
 
-                if capcut.restore_backup():
+                if capcut.restore_backup(capcut.project_dir(demo.capcut_project())):
                     self._log("Demo: CapCut project restored from its backup.")
             except Exception as exc:
                 self._log(f"Demo: could not restore the CapCut project: {exc}")
@@ -1263,7 +1263,8 @@ class HeyPeer:
         )
 
     def _run_edit_capcut(
-        self, narration: "str | None", language: str = "fr", folder: str = ""
+        self, narration: "str | None", language: str = "fr", folder: str = "",
+        project: str = "",
     ) -> None:
         """Adds sound effects to the latest CapCut project, chosen from the
         user's own folder, then plays the result full screen.
@@ -1297,7 +1298,7 @@ class HeyPeer:
                 "I need ffmpeg to watch the video. The command is in the console.")
             return
 
-        draft_dir = capcut.latest_draft()
+        draft_dir = capcut.project_dir(project)
         draft = capcut.draft_file(draft_dir) if draft_dir else None
         if draft is None:
             say("Je ne trouve aucun projet CapCut.", "I can't find any CapCut project.")
@@ -1307,7 +1308,11 @@ class HeyPeer:
             say("Ce projet CapCut est chiffré, je ne peux pas le modifier.",
                 "This CapCut project is encrypted, so I can't edit it.")
             return
-        video = capcut.main_video(content)
+        # The timeline as it plays, so the sounds land on what is seen; the
+        # longest clip only when the timeline cannot be put together.
+        video = capcut.timeline_video(
+            content, Path(tempfile.gettempdir()) / "heypeer_capcut_timeline.mp4"
+        ) or capcut.main_video(content)
         if video is None:
             say("Je ne retrouve pas la vidéo de ce projet.",
                 "I can't find this project's video.")
@@ -1356,8 +1361,13 @@ class HeyPeer:
             language=language,
         )
         capcut.open_app()
-        # A moment for CapCut to come up, so the transition starts from it.
-        time.sleep(3.0)
+        if capcut.show_in_editor():
+            # Long enough to see the new "Hey Peer SFX" track on the
+            # timeline before the preview takes the screen.
+            time.sleep(4.0)
+        else:
+            self._log("CapCut: could not open the project's timeline.")
+            time.sleep(3.0)
 
         work = Path(tempfile.gettempdir())
         intro = capcut.screenshot(work / "heypeer_capcut_intro.png")
@@ -2905,7 +2915,8 @@ class HeyPeer:
         ), language=language)
 
     def _run_general_task(
-        self, task: str, narration: "str | None", language: str = "fr"
+        self, task: str, narration: "str | None", language: str = "fr",
+        start_url: str = "",
     ) -> None:
         """Dispatches `task` to Hermes Agent (`executor/general_agent.py`)
         for anything with no action of its own - open-ended web research,
@@ -2935,6 +2946,10 @@ class HeyPeer:
             from heypeer.executor import browser
 
             if browser.ensure_running():
+                if start_url:
+                    browser.single_tab(start_url)
+                    # A moment for the page to load before the agent reads it.
+                    time.sleep(3)
                 browser.bring_to_front()
         except Exception as exc:
             self._log(f"Could not start the browser for the agent: {exc}")
