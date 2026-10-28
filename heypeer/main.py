@@ -1028,6 +1028,7 @@ class HeyPeer:
         if not browser.ensure_running() or not browser.single_tab(url):
             self._log("Demo: the browser is not available to show the commit.")
             return
+        time.sleep(2.0)  # the page, and the window's title, catching up
         browser.bring_to_front()
         self._speak(
             _bilingual(language, "Et le voilà sur GitHub.", "And there it is on GitHub."),

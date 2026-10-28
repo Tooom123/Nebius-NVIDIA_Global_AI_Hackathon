@@ -157,11 +157,16 @@ def bring_to_front() -> bool:
 
         position = os.environ.get("HEYPEER_BROWSER_POSITION") or "0,0"
         stage_x = int(position.split(",")[0])
-        candidates = [
-            w for w in auto.GetRootControl().GetChildren()
-            if w.ClassName == "Chrome_WidgetWin_1"
-            and any(title and (w.Name or "").startswith(title) for title in titles)
-        ]
+        chromes = [w for w in auto.GetRootControl().GetChildren()
+                   if w.ClassName == "Chrome_WidgetWin_1" and (w.Name or "").endswith("Google Chrome")]
+        candidates = [w for w in chromes
+                      if any(title and (w.Name or "").startswith(title) for title in titles)]
+        # Right after a tab change the window still carries the closed
+        # tab's title, so nothing matches - measured, VS Code then stayed
+        # over the GitHub page. The Chrome on the stage screen is the
+        # debugging one: the user's own sits on the other.
+        if not candidates:
+            candidates = [w for w in chromes if (w.BoundingRectangle.left < 0) == (stage_x < 0)]
         if not candidates:
             return False
         window = min(candidates, key=lambda w: abs(w.BoundingRectangle.left - stage_x))
