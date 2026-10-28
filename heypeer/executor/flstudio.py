@@ -246,6 +246,7 @@ def capture(window: "tuple[int, int, int, int]"):
 
 
 VK_F6 = 0x75
+VK_L = 0x4C
 
 
 def see_channel_rack(window: "tuple[int, int, int, int]", needed: int) -> "list[StepRow]":
@@ -261,7 +262,7 @@ def see_channel_rack(window: "tuple[int, int, int, int]", needed: int) -> "list[
 
     rows: "list[StepRow]" = []
     for attempt in range(3):
-        image, origin = capture(window)
+        image, origin = capture(rack_rect() or window)
         rows = find_step_rows(image, origin)
         if len(rows) >= needed or attempt == 2:
             return rows
@@ -316,7 +317,7 @@ def maximize_window() -> bool:
     try:
         import uiautomation as auto
 
-        window = auto.WindowControl(searchDepth=1, SubName="FL Studio")
+        window = _main_window()
         if not window.Exists(maxSearchSeconds=1):
             return False
         window.GetWindowPattern().SetWindowVisualState(auto.WindowVisualState.Maximized)
@@ -326,21 +327,74 @@ def maximize_window() -> bool:
         return False
 
 
-def dismiss_load_problems() -> bool:
+def _main_window():
+    import uiautomation as auto
+
+    return auto.WindowControl(searchDepth=1, SubName="FL Studio")
+
+
+def dismiss_load_problems(wait: float = 0.0) -> bool:
     """Closes "Problems loading the project" - the missing-plugins list a
     downloaded project opens with - and returns whether there was one.
-    Left open, it sits over the channel rack and takes the first click."""
-    try:
-        import uiautomation as auto
 
-        dialog = auto.WindowControl(searchDepth=2, SubName="Problems loading")
-        if not dialog.Exists(maxSearchSeconds=1):
+    Left open, it sits over the channel rack, takes the keys meant for the
+    transport, and keeps the rack folded to two rows until it goes. It is a
+    form inside the main window (`TMissingPluginsForm`), not a window of
+    its own, and neither Escape nor Enter closes it - measured - so its Ok
+    button is clicked: the leftmost of the three along its bottom edge.
+    `wait` is how long to give it to appear, since it comes up after the
+    window does.
+    """
+    try:
+        from heypeer.executor import cursor_control
+
+        dialog = _main_window().PaneControl(searchDepth=1, ClassName="TMissingPluginsForm")
+        if not dialog.Exists(maxSearchSeconds=max(wait, 0.5)):
             return False
-        dialog.GetWindowPattern().Close()
-        time.sleep(0.4)
+        rect = dialog.BoundingRectangle
+        cursor_control.click_at(rect.left + round(0.524 * rect.width()), rect.bottom - 28)
+        time.sleep(1.0)
         return True
     except Exception:
         return False
+
+
+def rack_rect() -> "tuple[int, int, int, int] | None":
+    """The channel rack's own rectangle, from the accessibility tree - FL
+    Studio exposes its forms there even though it exposes nothing inside
+    them. Looking only there keeps the search off the playlist."""
+    try:
+        rack = _main_window().PaneControl(searchDepth=2, ClassName="TStepSeqForm")
+        if not rack.Exists(maxSearchSeconds=0.5):
+            return None
+        r = rack.BoundingRectangle
+        return (r.left, r.top, r.width(), r.height()) if r.width() > 0 else None
+    except Exception:
+        return None
+
+
+def song_mode(window: "tuple[int, int, int, int]") -> "bool | None":
+    """Whether the transport is in SONG mode, read off the PAT/SONG switch
+    at the top left of the toolbar - whichever half is lit is the mode.
+    None when the switch is not where it was measured.
+
+    Measured on the user's FL Studio 21, maximised: the switch's two halves
+    are centred near (361, 11) and (361, 27), the lit one green.
+    """
+    try:
+        image, _ = capture((window[0] + 345, window[1] + 4, 34, 30))
+        rgb = image.convert("RGB")
+
+        def green(y: int) -> float:
+            pixels = [rgb.getpixel((x, y)) for x in range(4, 30)]
+            return sum(g - (r + b) / 2 for r, g, b in pixels) / len(pixels)
+
+        pat, song = green(7), green(23)
+        if abs(pat - song) < 15:
+            return None
+        return song > pat
+    except Exception:
+        return None
 
 
 def tempo_from_project(path: "str | None") -> "int | None":

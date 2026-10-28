@@ -968,7 +968,9 @@ class HeyPeer:
                 self._log(f"Demo: could not start the browser: {exc}")
 
     def _demo_play_flstudio(self, language: str = "fr") -> None:
-        """Starts playback in FL Studio - Space, with its window focused.
+        """Starts playback in FL Studio - Space, with its window focused -
+        in PATTERN mode, so what plays is the drums just laid down rather
+        than the song's arrangement, which does not contain them.
 
         A keystroke rather than a click on the transport's play button: the
         shortcut does not move when the toolbar is rearranged, and the
@@ -980,6 +982,10 @@ class HeyPeer:
             self._log("Demo: FL Studio not found, skipping playback.")
             return
         try:
+            window = flstudio.find_window()
+            if window is not None and flstudio.song_mode(window):
+                cursor_control.press_key(flstudio.VK_L)  # PAT/SONG toggle
+                time.sleep(0.3)
             cursor_control.press_key(cursor_control.VK_SPACE)
             self._log("Demo: FL Studio playing.")
         except Exception as exc:
@@ -1154,7 +1160,7 @@ class HeyPeer:
 
         # A downloaded project opens on its list of missing plugins, which
         # sits over the channel rack and takes the first click.
-        if flstudio.dismiss_load_problems():
+        if flstudio.dismiss_load_problems(wait=8.0 if project else 0.0):
             self._log("FL Studio: closed the missing-plugins dialog.")
 
         # Raise it before measuring or clicking: an unfocused window eats
