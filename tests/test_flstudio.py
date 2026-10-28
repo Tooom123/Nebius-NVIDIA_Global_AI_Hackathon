@@ -228,3 +228,14 @@ def test_not_a_project_has_no_tempo(tmp_path) -> None:
     path.write_bytes(b"nope")
     assert flstudio.tempo_from_project(str(path)) is None
     assert flstudio.tempo_from_project(None) is None
+
+
+def test_the_window_size_is_relative_to_the_stage(monkeypatch) -> None:
+    monkeypatch.setenv("HEYPEER_STAGE_SCREEN", "-1920,0,1920,1080")
+    monkeypatch.setenv("HEYPEER_FL_WINDOW", "0,0,960,1080")
+    assert flstudio.window_rect() == (-1920, 0, 960, 1080)
+
+
+def test_no_window_size_means_maximised(monkeypatch) -> None:
+    monkeypatch.delenv("HEYPEER_FL_WINDOW", raising=False)
+    assert flstudio.window_rect() is None

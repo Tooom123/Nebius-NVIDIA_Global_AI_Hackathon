@@ -470,6 +470,45 @@ def read_tempo() -> int:
     return 126
 
 
+def window_rect() -> "tuple[int, int, int, int] | None":
+    """Where FL Studio goes on the stage screen, from HEYPEER_FL_WINDOW -
+    "left,top,width,height" relative to the stage - or None to maximise.
+
+    The step finds the channel rack in a screenshot of it, so any size
+    works that shows the whole rack: in the user's project it floats at
+    about 290-790 px across and 82-570 down, so roughly 800 x 600 is the
+    floor. A third of a 1920 screen, 640 wide, cuts it off; half fits.
+    """
+    import os
+
+    raw = os.environ.get("HEYPEER_FL_WINDOW") or ""
+    try:
+        left, top, width, height = (int(part) for part in raw.split(","))
+    except ValueError:
+        return None
+    from heypeer.tray.overlay import stage_rect
+
+    stage_left, stage_top, _, _ = stage_rect()
+    return (stage_left + left, stage_top + top, width, height)
+
+
+def place_window() -> bool:
+    """Puts FL Studio where `window_rect` says, or maximises it."""
+    rect = window_rect()
+    if rect is None:
+        return maximize_window()
+    try:
+        from heypeer.executor.foreground import raise_window
+
+        window = _main_window()
+        if not window.Exists(maxSearchSeconds=1):
+            return False
+        raise_window(window.NativeWindowHandle, stage=rect, maximize=False)
+        return True
+    except Exception:
+        return False
+
+
 def focus_window() -> bool:
     """Brings FL Studio to the front, and returns whether it worked.
 
@@ -490,7 +529,9 @@ def focus_window() -> bool:
         # Restored and raised the robust way - plain SetActive left a
         # minimised FL Studio in the taskbar, and the step then searched a
         # screenshot of whatever was on screen for the channel rack.
-        raise_window(window.NativeWindowHandle)
+        # Not maximised here: that undid the size HEYPEER_FL_WINDOW set,
+        # and the window jumped to full screen when playback started.
+        raise_window(window.NativeWindowHandle, maximize=window_rect() is None)
         return True
     except Exception:
         return False

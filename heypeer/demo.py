@@ -223,10 +223,13 @@ def playlist_task() -> str:
     return (
         "Spotify's web player (https://open.spotify.com) is already open in "
         f"the current tab. Create a playlist named \"{playlist_name()}\" and "
-        "add five well-known chill, laid-back songs to it. Copy the playlist's "
+        "add five well-known chill, laid-back songs to it - music tracks "
+        "only, never podcasts or episodes. Copy the playlist's "
         "share link. Then, in the same tab, go to WhatsApp Web "
         f"(https://web.whatsapp.com), open the chat with {contact()} and "
-        f"write a one-sentence, warm message with the link. {finish} "
+        "write a one-sentence, warm message in English with the link. "
+        f"Call her {contact()} only, in the message and in your report - "
+        f"never by her surname. {finish} "
         f"{WORK_IN_THE_TAB}"
     )
 

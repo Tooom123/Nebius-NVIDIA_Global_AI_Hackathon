@@ -362,3 +362,25 @@ def test_the_commit_url_comes_from_the_remote() -> None:
 def test_the_commit_is_shown_after_the_push() -> None:
     methods = [s.method for s in demo.script()]
     assert methods.index("_demo_show_commit") == methods.index("_run_commit_and_push") + 1
+
+
+def test_the_message_is_english_and_first_name_only(monkeypatch) -> None:
+    monkeypatch.setenv("HEYPEER_DEMO_CONTACT", "Tally")
+    task = demo.playlist_task()
+    assert "in English" in task
+    assert "never by her surname" in task
+
+
+def test_the_playlist_has_no_podcasts() -> None:
+    """The first run put podcast episodes in it before correcting itself."""
+    assert "never podcasts" in demo.playlist_task()
+
+
+def test_the_browser_is_not_started_before_its_step() -> None:
+    """Started in preparation, its blank window opened the demo."""
+    peer = _peer()
+    with patch("heypeer.executor.browser.ensure_running") as start, patch(
+        "heypeer.demo.ensure_code_file"
+    ):
+        peer._prepare_demo({"mail", "playlist"})
+    start.assert_not_called()

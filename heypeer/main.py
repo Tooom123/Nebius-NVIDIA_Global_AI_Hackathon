@@ -960,14 +960,9 @@ class HeyPeer:
             except Exception as exc:
                 self._log(f"Demo: could not restore the CapCut project: {exc}")
 
-        if tags & {"mail", "playlist"}:
-            try:
-                from heypeer.executor import browser
-
-                if browser.cdp_url() and not browser.ensure_running():
-                    self._log("Demo: the debugging Chrome did not start.")
-            except Exception as exc:
-                self._log(f"Demo: could not start the browser: {exc}")
+        # The browser is not started here: started at the beginning, its
+        # blank window was the first thing the audience saw. Each browser
+        # step starts it on its own page instead.
 
     def _demo_play_flstudio(self, language: str = "fr") -> None:
         """Plays the song in FL Studio for a few seconds, then stops it.
@@ -1025,7 +1020,9 @@ class HeyPeer:
         if url is None:
             self._log("Demo: no GitHub remote to show the commit on.")
             return
-        if not browser.ensure_running() or not browser.single_tab(url):
+        # VS Code, opened for the fix, would otherwise stay over the page.
+        minimize_windows(Path(cwd).name, "Visual Studio Code")
+        if not browser.ensure_running(url) or not browser.single_tab(url):
             self._log("Demo: the browser is not available to show the commit.")
             return
         time.sleep(2.0)  # the page, and the window's title, catching up
@@ -1214,7 +1211,7 @@ class HeyPeer:
         # foreground window is usually on the other screen entirely. Both
         # look identical to the click landing somewhere wrong.
         flstudio.focus_window()
-        flstudio.maximize_window()
+        flstudio.place_window()
 
         window = flstudio.find_window()
         if window is None:
@@ -2991,7 +2988,7 @@ class HeyPeer:
         try:
             from heypeer.executor import browser
 
-            if browser.ensure_running():
+            if browser.ensure_running(start_url or "about:blank"):
                 if start_url:
                     browser.single_tab(start_url)
                     # A moment for the page to load before the agent reads it.
@@ -3158,6 +3155,23 @@ def _warn_about_retired_models(settings) -> None:
         f"       NEMOTRON_MODEL_ID={replacement}\n"
         f"       VISION_MODEL_ID=google/gemma-3-27b-it\n"
     )
+
+
+def minimize_windows(*needles: str) -> int:
+    """Minimises every top-level window whose title contains all of
+    `needles`, and returns how many there were."""
+    try:
+        import uiautomation as auto
+
+        count = 0
+        for window in auto.GetRootControl().GetChildren():
+            name = window.Name or ""
+            if all(n in name for n in needles):
+                window.GetWindowPattern().SetWindowVisualState(auto.WindowVisualState.Minimized)
+                count += 1
+        return count
+    except Exception:
+        return 0
 
 
 def commit_url(remote: str, sha: str) -> "str | None":
