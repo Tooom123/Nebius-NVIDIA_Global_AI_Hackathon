@@ -121,7 +121,13 @@ def single_tab(url: str) -> bool:
     try:
         with urllib.request.urlopen(f"{base}/json/list", timeout=2) as response:  # noqa: S310
             old = [t["id"] for t in json.load(response) if t.get("type") == "page"]
-        request = urllib.request.Request(f"{base}/json/new?{url}", method="PUT")
+        # Encoded: everything after a bare "#" is the request's own fragment
+        # and never reaches Chrome - "#label/HeyPeer" was dropped and the
+        # agent landed on the whole inbox.
+        from urllib.parse import quote
+
+        request = urllib.request.Request(f"{base}/json/new?{quote(url, safe=':/?&=')}",
+                                         method="PUT")
         with urllib.request.urlopen(request, timeout=5):  # noqa: S310
             pass
         for target in old:

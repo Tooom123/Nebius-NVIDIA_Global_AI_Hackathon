@@ -16,6 +16,10 @@ KEYEVENTF_KEYUP = 0x0002
 SW_RESTORE = 9
 SW_MAXIMIZE = 3
 SWP_SHOWWINDOW = 0x0040
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
 
 
 def raise_window(handle: int, stage: "tuple[int, int, int, int] | None" = None,
@@ -29,8 +33,26 @@ def raise_window(handle: int, stage: "tuple[int, int, int, int] | None" = None,
         user32.SetWindowPos(handle, 0, left, top, width, height, SWP_SHOWWINDOW)
     if maximize:
         user32.ShowWindow(handle, SW_MAXIMIZE)
-    # An Alt tap counts as input, which is what unlocks SetForegroundWindow.
+    # Topmost and straight back: puts it above every other window whether
+    # or not Windows grants the foreground - which it refuses while the
+    # user is typing in another window, Alt tap or not. Measured: an IDE
+    # in use stayed over FL Studio through every other step here.
+    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+    user32.SetWindowPos(handle, HWND_TOPMOST, 0, 0, 0, 0, flags)
+    user32.SetWindowPos(handle, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+    # Then the keyboard focus, so keystrokes reach it: an Alt tap counts as
+    # input, which unlocks SetForegroundWindow, and sharing the current
+    # foreground thread's input state makes the switch allowed outright.
     user32.keybd_event(VK_MENU, 0, 0, 0)
     user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-    user32.SetForegroundWindow(handle)
+    foreground = user32.GetForegroundWindow()
+    theirs = user32.GetWindowThreadProcessId(foreground, None)
+    ours = ctypes.windll.kernel32.GetCurrentThreadId()
+    attached = theirs and theirs != ours and user32.AttachThreadInput(ours, theirs, True)
+    try:
+        user32.BringWindowToTop(handle)
+        user32.SetForegroundWindow(handle)
+    finally:
+        if attached:
+            user32.AttachThreadInput(ours, theirs, False)
     time.sleep(0.4)

@@ -62,3 +62,33 @@ def test_hermes_keeps_its_configured_model_by_default(monkeypatch, tmp_path) -> 
         run.return_value.stdout = "done"
         general_agent.run("task", tmp_path)
     assert "-m" not in run.call_args.args[0]
+
+
+def test_a_url_fragment_survives_the_new_tab(monkeypatch) -> None:
+    """A bare "#" ended the request: "#label/HeyPeer" was dropped and the
+    agent landed on the whole inbox."""
+    import urllib.request
+
+    monkeypatch.setenv("HEYPEER_BROWSER_CDP_URL", "http://127.0.0.1:9222")
+    seen = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    def fake_open(request, timeout=0):
+        seen.append(request.full_url if hasattr(request, "full_url") else request)
+        return _Response()
+
+    with patch.object(browser, "is_running", return_value=True), patch.object(
+        urllib.request, "urlopen", side_effect=fake_open
+    ), patch("json.load", return_value=[]):
+        assert browser.single_tab("https://mail.google.com/mail/u/0/#label/HeyPeer")
+    new = [u for u in seen if "/json/new?" in u][0]
+    assert "%23label/HeyPeer" in new

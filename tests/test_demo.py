@@ -415,3 +415,24 @@ def test_the_demo_can_keep_talking(monkeypatch) -> None:
 def test_the_announcement_names_every_part() -> None:
     for word in ("FL Studio", "emails", "GitHub", "Tally", "CapCut"):
         assert word in demo.INTRO_EN
+
+
+def test_the_blob_leaves_with_the_voice(monkeypatch) -> None:
+    """It stayed on screen, listening, for the whole silent demo."""
+    monkeypatch.delenv("HEYPEER_DEMO_SILENT", raising=False)
+    peer = _peer()
+    window = MagicMock()
+    peer.debug_window = window
+    seen = []
+    steps = [demo.Step("_speak", {"text": "plan"}, "intro"),
+             demo.Step("_log", {"message": "x"}, "code")]
+    real_log = peer._log
+    with patch("heypeer.demo.script", return_value=steps), patch.object(
+        peer, "_prepare_demo"
+    ), patch("heypeer.tray.tts.speak"), patch.object(
+        peer, "_log", side_effect=lambda m: (seen.append(peer.debug_window), real_log(m))
+    ):
+        peer._run_demo()
+    assert window.set_state.call_args_list[-1].args == ("idle",)
+    assert seen[-2] is None, "no blob updates during the silent part"
+    assert peer.debug_window is window

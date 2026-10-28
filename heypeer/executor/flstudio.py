@@ -359,6 +359,58 @@ def dismiss_load_problems(wait: float = 0.0) -> bool:
         return False
 
 
+def dismiss_update_prompt() -> bool:
+    """Closes FL Studio's "A newer version is available" prompt, ticking
+    "Don't ask this in the future" so it does not come back, and returns
+    whether there was one. Like the missing-plugins list it is a form inside
+    the main window (`TMsgForm`) that Escape does not close - measured - so
+    its controls are clicked: the tick box at its bottom left, then Cancel,
+    the rightmost button."""
+    try:
+        from heypeer.executor import cursor_control
+
+        prompt = _main_window().PaneControl(searchDepth=1, ClassName="TMsgForm")
+        if not prompt.Exists(maxSearchSeconds=0.5) or "Update" not in (prompt.Name or ""):
+            return False
+        r = prompt.BoundingRectangle
+        cursor_control.click_at(r.left + 13, r.bottom - 76)
+        time.sleep(0.3)
+        cursor_control.click_at(r.left + round(0.916 * r.width()), r.bottom - 28)
+        time.sleep(0.6)
+        return True
+    except Exception:
+        return False
+
+
+def close_plugins_over_rack() -> int:
+    """Closes plugin windows lying over the channel rack, and returns how
+    many. A project reopens with the plugin windows it was saved with; in a
+    window narrower than the screen they land on the rack and hide the
+    steps. Each has its close button at its top right."""
+    try:
+        from heypeer.executor import cursor_control
+
+        rack = rack_rect()
+        if rack is None:
+            return 0
+        left, top, width, height = rack
+        closed = 0
+        for _ in range(12):
+            over = [p for pane in _main_window().GetChildren() for p in pane.GetChildren()
+                    if p.ClassName == "TPluginForm"
+                    and p.BoundingRectangle.left < left + width and left < p.BoundingRectangle.right
+                    and p.BoundingRectangle.top < top + height and top < p.BoundingRectangle.bottom]
+            if not over:
+                break
+            r = over[0].BoundingRectangle
+            cursor_control.click_at(r.right - 13, r.top + 13)
+            time.sleep(0.35)
+            closed += 1
+        return closed
+    except Exception:
+        return 0
+
+
 def rack_rect() -> "tuple[int, int, int, int] | None":
     """The channel rack's own rectangle, from the accessibility tree - FL
     Studio exposes its forms there even though it exposes nothing inside

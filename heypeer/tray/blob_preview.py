@@ -71,6 +71,8 @@ def frames(state: str, seconds: float, size: int, level: "float | None" = None):
         LEVEL_GLOW_GAIN,
         LEVEL_RADIUS_GAIN,
         LEVEL_SPEED_GAIN,
+        SPEAKING_PULSE,
+        SPEAKING_PULSE_RATE,
         STATE_ENERGY,
     )
 
@@ -92,6 +94,8 @@ def frames(state: str, seconds: float, size: int, level: "float | None" = None):
         glow = energy["glow"] + LEVEL_GLOW_GAIN * gain
         radius = BASE_RADIUS * (1.0 + LEVEL_RADIUS_GAIN * gain)
         phase += speed / FPS
+        if state == "speaking":
+            amplitude *= 1.0 + SPEAKING_PULSE * math.sin(phase * SPEAKING_PULSE_RATE) ** 2
         yield render(
             size,
             radius_profile(OUTLINE_ANGLES, phase, amplitude),

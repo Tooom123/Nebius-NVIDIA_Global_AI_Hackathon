@@ -152,14 +152,17 @@ def test_no_state_or_level_clips_against_the_frame() -> None:
         BASE_RADIUS,
         LEVEL_AMPLITUDE_GAIN,
         LEVEL_RADIUS_GAIN,
+        SPEAKING_PULSE,
         STATE_ENERGY,
     )
 
-    for energy in STATE_ENERGY.values():
+    for state, energy in STATE_ENERGY.items():
         gain = energy["level_gain"]
+        pulse = 1.0 + SPEAKING_PULSE if state == "speaking" else 1.0
         frame = render(
             SIZE,
-            radius_profile(OUTLINE_ANGLES, 1.0, energy["amplitude"] + LEVEL_AMPLITUDE_GAIN * gain),
+            radius_profile(OUTLINE_ANGLES, 1.0,
+                           (energy["amplitude"] + LEVEL_AMPLITUDE_GAIN * gain) * pulse),
             BASE_RADIUS * (1 + LEVEL_RADIUS_GAIN * gain),
             glow=1.0,
         )

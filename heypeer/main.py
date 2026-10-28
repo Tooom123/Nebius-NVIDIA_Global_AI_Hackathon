@@ -922,6 +922,7 @@ class HeyPeer:
         self._prepare_demo(tags)
 
         self._in_routine = True
+        hidden_window = None
         try:
             for step in steps:
                 self._log(f"Demo step: {step.method}")
@@ -939,9 +940,19 @@ class HeyPeer:
                 # say is logged instead - see `demo.silent`.
                 if step.tag == "intro" and demo.silent():
                     self._muted = True
+                    # The blob leaves with the voice and does not come back
+                    # for "thinking" either: it is the sign Hey Peer is
+                    # talking or listening, and for the rest of the demo it
+                    # is neither. Restored afterwards.
+                    hidden_window = self.debug_window
+                    if hidden_window is not None:
+                        hidden_window.set_state("idle")
+                        self.debug_window = None
         finally:
             self._in_routine = False
             self._muted = False
+            if hidden_window is not None:
+                self.debug_window = hidden_window
         self._log("Demo mode: sequence finished.")
 
     def _prepare_demo(self, tags: "set[str]") -> None:
@@ -1220,6 +1231,11 @@ class HeyPeer:
         # look identical to the click landing somewhere wrong.
         flstudio.focus_window()
         flstudio.place_window()
+        if flstudio.dismiss_update_prompt():
+            self._log("FL Studio: closed the update prompt.")
+        closed = flstudio.close_plugins_over_rack()
+        if closed:
+            self._log(f"FL Studio: closed {closed} plugin windows over the channel rack.")
 
         window = flstudio.find_window()
         if window is None:
