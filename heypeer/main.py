@@ -51,6 +51,7 @@ icon so "Quitter" works as a stop button instead of Task Manager.
 
 import argparse
 import atexit
+import os
 import queue
 import sys
 import threading
@@ -329,6 +330,7 @@ class HeyPeer:
         intent.py`); callers pass that straight through so what gets *said*
         matches what got *written* - answering in English text but reading
         it with the French voice would still sound wrong, just differently."""
+        self._log(f"Peer: {text}")
         self._show_transcript(text, "peer")
         if self.debug_window is not None:
             self.debug_window.set_state("speaking")
@@ -910,26 +912,60 @@ class HeyPeer:
         from heypeer import demo
 
         self._log("Demo mode: running the scripted sequence.")
-        try:
-            demo.ensure_code_file()
-        except Exception as exc:
-            self._log(f"Demo: could not prepare the code file: {exc}")
+        steps = demo.selected(demo.script())
+        tags = {step.tag for step in steps}
+        self._prepare_demo(tags)
 
         self._in_routine = True
         try:
-            for step in demo.script():
+            for step in steps:
                 self._log(f"Demo step: {step.method}")
                 handler_method = getattr(self, step.method, None)
                 if handler_method is None:
                     self._log(f"  no such step: {step.method}")
                     continue
+                started = time.time()
                 try:
                     handler_method(**step.kwargs)
                 except Exception as exc:
                     self._log(f"  step failed: {exc}")
+                self._log(f"  ({time.time() - started:.1f}s)")
         finally:
             self._in_routine = False
         self._log("Demo mode: sequence finished.")
+
+    def _prepare_demo(self, tags: "set[str]") -> None:
+        """Puts everything the steps in `tags` act on back in its starting
+        state, so a run behaves the same as the one before it.
+
+        Each part is independent and only logged when it fails: a step that
+        then finds things in the wrong state says so itself, out loud.
+        """
+        from heypeer import demo
+
+        if "code" in tags:
+            try:
+                self._log(f"Demo: bug put back in {demo.ensure_code_file()}")
+            except Exception as exc:
+                self._log(f"Demo: could not prepare the code file: {exc}")
+
+        if "capcut" in tags:
+            try:
+                from heypeer.executor import capcut
+
+                if capcut.restore_backup():
+                    self._log("Demo: CapCut project restored from its backup.")
+            except Exception as exc:
+                self._log(f"Demo: could not restore the CapCut project: {exc}")
+
+        if tags & {"mail", "playlist"}:
+            try:
+                from heypeer.executor import browser
+
+                if browser.cdp_url() and not browser.ensure_running():
+                    self._log("Demo: the debugging Chrome did not start.")
+            except Exception as exc:
+                self._log(f"Demo: could not start the browser: {exc}")
 
     def _demo_play_flstudio(self, language: str = "fr") -> None:
         """Starts playback in FL Studio - Space, with its window focused.
@@ -1009,7 +1045,7 @@ class HeyPeer:
         cwd = Path(cwd) if cwd else (self.watched_dir or Path.home())
         self.tray.set_status(Status.EXECUTING)
         try:
-            output = coding_agent.run(self.COMMIT_PROMPT, cwd)
+            output = coding_agent.run(self.COMMIT_PROMPT, cwd, coding_agent.GIT_TOOLS)
         except coding_agent.CodingAgentTimedOut:
             self._log("Coding agent timed out on the commit.")
             self._speak(
@@ -1075,7 +1111,8 @@ class HeyPeer:
             self._in_routine = False
 
     def _run_add_drums(
-        self, narration: "str | None", language: str = "fr", style: str = ""
+        self, narration: "str | None", language: str = "fr", style: str = "",
+        project: str = "",
     ) -> None:
         """Opens FL Studio and clicks a drum pattern into the step sequencer.
 
@@ -1107,7 +1144,7 @@ class HeyPeer:
             language=language,
         )
 
-        if not flstudio.launch():
+        if not flstudio.launch(project or None):
             self._speak(
                 _bilingual(language, "Je n'ai pas réussi à ouvrir FL Studio.",
                            "I couldn't open FL Studio."),
@@ -1115,11 +1152,17 @@ class HeyPeer:
             )
             return
 
+        # A downloaded project opens on its list of missing plugins, which
+        # sits over the channel rack and takes the first click.
+        if flstudio.dismiss_load_problems():
+            self._log("FL Studio: closed the missing-plugins dialog.")
+
         # Raise it before measuring or clicking: an unfocused window eats
         # the first click activating itself, and on a second monitor the
         # foreground window is usually on the other screen entirely. Both
         # look identical to the click landing somewhere wrong.
         flstudio.focus_window()
+        flstudio.maximize_window()
 
         window = flstudio.find_window()
         if window is None:
@@ -1142,7 +1185,10 @@ class HeyPeer:
         # the tempo is said out loud, the blob shows "thinking", and the
         # composition is announced when it arrives. A silent 35 seconds
         # would look like a hang; a narrated one looks like work.
-        tempo = flstudio.read_tempo()
+        #
+        # The project's own tempo when there is a project: FL Studio does
+        # not show it anywhere `read_tempo` can see.
+        tempo = flstudio.tempo_from_project(project) or flstudio.read_tempo()
         self._speak(
             _bilingual(
                 language,
@@ -1164,23 +1210,43 @@ class HeyPeer:
             why = ""
             self._log("Composition failed; falling back to the built-in pattern.")
 
-        clicks = flstudio.pattern_clicks(window, pattern)
-        self._log(f"FL Studio: {len(clicks)} steps into {window}")
+        # Measured now rather than before composing: the window has had half
+        # a minute to finish settling, and nothing is moved in between.
+        #
+        # No fallback to guessed positions when the rack cannot be seen:
+        # that is what clicked into the wrong channels and opened their
+        # plugin windows. Saying so is the better failure.
+        flstudio.focus_window()
+        targets = flstudio.demo_rows()
+        try:
+            rows = flstudio.see_channel_rack(window, max(targets) + 1)
+        except Exception as exc:
+            self._log(f"FL Studio: could not read the channel rack: {exc}")
+            rows = []
+        moves = flstudio.pattern_moves(rows, pattern, targets)
+        self._log(f"FL Studio: {len(rows)} channel rows found, {len(moves)} clicks")
+        if len(rows) <= max(targets):
+            self._speak(
+                _bilingual(language, "Je ne vois pas le channel rack de FL Studio.",
+                           "I can't see FL Studio's channel rack."),
+                language=language,
+            )
+            return
         try:
             previous = cursor_control.cursor_position()
         except Exception:
-            previous = clicks[0]
+            previous = moves[0][:2] if moves else (0, 0)
 
-        for i, point in enumerate(clicks):
+        for i, (x, y, button) in enumerate(moves):
             # The pointer flies to the first step and then hops between the
             # rest: animating every short move would take longer than the
             # whole pattern and read as laboured rather than deliberate.
             if i == 0:
-                self._animate_cursor(previous, point)
+                self._animate_cursor(previous, (x, y))
             try:
-                cursor_control.click_at(*point, restore=False)
+                cursor_control.click_at(x, y, button=button, restore=False)
             except Exception as exc:
-                self._log(f"FL Studio click failed at {point}: {exc}")
+                self._log(f"FL Studio click failed at {(x, y)}: {exc}")
                 break
             time.sleep(flstudio.CLICK_INTERVAL)
 
@@ -2859,6 +2925,14 @@ class HeyPeer:
             "I'm on it, this might take a moment...",
         ), language=language)
 
+        try:
+            from heypeer.executor import browser
+
+            if browser.ensure_running():
+                browser.bring_to_front()
+        except Exception as exc:
+            self._log(f"Could not start the browser for the agent: {exc}")
+
         self.tray.set_status(Status.EXECUTING)
         try:
             output = general_agent.run(task, self.watched_dir or Path.home())
@@ -3105,6 +3179,19 @@ def run_cli(demo: bool = False) -> None:
         peer._on_quit()
 
 
+def run_demo_now() -> None:
+    """Runs the scripted demo at once and exits - for rehearsing it without
+    saying "Hey Peer", and for running one part of it on its own with
+    HEYPEER_DEMO_ONLY. The voices load first, so the first line is not
+    late."""
+    peer = _build_peer(with_debug_window=True)
+    peer._preload_tts()
+    try:
+        peer._run_demo()
+    finally:
+        peer._on_quit()
+
+
 def _configure_console() -> None:
     """Puts stdout/stderr into UTF-8 with replacement, where possible.
 
@@ -3178,8 +3265,18 @@ def main() -> None:
         help="The first wake word runs the scripted demo sequence in heypeer/demo.py, "
         "whatever is said after it",
     )
+    parser.add_argument(
+        "--demo-now",
+        action="store_true",
+        help="Run the scripted demo immediately, without waiting for the wake word, then exit",
+    )
     args = parser.parse_args()
-    run_cli(demo=args.demo) if args.cli else run_tray(demo=args.demo)
+    if args.demo_now:
+        run_demo_now()
+    elif args.cli:
+        run_cli(demo=args.demo)
+    else:
+        run_tray(demo=args.demo)
 
 
 if __name__ == "__main__":

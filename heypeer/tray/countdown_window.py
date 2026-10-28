@@ -33,16 +33,6 @@ TICK_SECONDS = 0.5
 IDLE_POLL_SECONDS = 0.25
 
 
-def _screen_size() -> "tuple[int, int]":
-    try:
-        import ctypes
-
-        user32 = ctypes.windll.user32
-        return int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1))
-    except Exception:
-        return 1920, 1080
-
-
 def _window_process(command_queue) -> None:
     """The child. Owns the overlay and the redraw loop."""
     from heypeer.tray.countdown_render import HEIGHT, WIDTH, position, render
@@ -60,8 +50,11 @@ def _window_process(command_queue) -> None:
     if not overlay.create():
         return _drain_until_quit()
 
-    screen_w, screen_h = _screen_size()
+    from heypeer.tray.overlay import stage_rect
+
+    stage_left, stage_top, screen_w, screen_h = stage_rect()
     x, y = position(screen_w, screen_h)
+    x, y = x + stage_left, y + stage_top
 
     # (clock_text, label, fraction) or None for "nothing running".
     shown = None

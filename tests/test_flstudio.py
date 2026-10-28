@@ -138,3 +138,93 @@ def test_focus_failure_is_reported_rather_than_raised(monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "uiautomation", None)
     assert flstudio.focus_window() is False
+
+
+# --- seeing the step sequencer ---
+
+def _rack_image(rows: int = 3, lit: "set[tuple[int, int]]" = frozenset()):
+    """A drawing of a channel rack in FL Studio 21's colours, as measured:
+    background 95,104,109, button border 81,87,91, inside 91,97,101, lit
+    inside 190,195,198. Buttons 11 px wide at a 16 px pitch, rows 30 px
+    apart - and, beside it, a playlist-like grid whose cells touch."""
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (700, 40 + rows * 30), (95, 104, 109))
+    draw = ImageDraw.Draw(image)
+    for r in range(rows):
+        top = 20 + r * 30
+        for step in range(16):
+            left = 40 + step * 16
+            fill = (190, 195, 198) if (r, step) in lit else (91, 97, 101)
+            draw.rectangle((left, top, left + 10, top + 18), fill=fill, outline=(81, 87, 91))
+        for cell in range(18):
+            left = 400 + cell * 14
+            draw.rectangle((left, top, left + 14, top + 18), outline=(60, 64, 66))
+    return image
+
+
+def test_the_rack_is_found_and_the_playlist_is_not() -> None:
+    rows = flstudio.find_step_rows(_rack_image(rows=3))
+    assert len(rows) == 3
+    assert [round(r.y) for r in rows] == [29, 59, 89]
+    assert round(rows[0].xs[0]) == 45 and round(rows[0].xs[15]) == 285
+
+
+def test_rows_are_placed_in_screen_coordinates() -> None:
+    """A screenshot of the left screen starts at x = -1920."""
+    rows = flstudio.find_step_rows(_rack_image(rows=1), origin=(-1920, 100))
+    assert round(rows[0].xs[0]) == -1875 and round(rows[0].y) == 129
+
+
+def test_lit_steps_are_seen() -> None:
+    rows = flstudio.find_step_rows(_rack_image(rows=2, lit={(1, 0), (1, 4)}))
+    assert rows[0].lit == (False,) * 16
+    assert [i for i, on in enumerate(rows[1].lit) if on] == [0, 4]
+
+
+def test_only_steps_in_the_wrong_state_are_clicked() -> None:
+    """Left lights a step, right clears one - so a second run corrects the
+    first instead of toggling it back off."""
+    rows = flstudio.find_step_rows(_rack_image(rows=3, lit={(1, 0), (1, 3)}))
+    moves = flstudio.pattern_moves(rows, {flstudio.ROW_FIRST: [0, 8], flstudio.ROW_SECOND: [0]},
+                                   targets=(1, 2))
+    by_button = {(round(x), b) for x, y, b in moves if round(y) == 59}
+    assert by_button == {(45 + 8 * 16, "left"), (45 + 3 * 16, "right")}
+    assert {(round(x), b) for x, y, b in moves if round(y) == 89} == {(45, "left")}
+
+
+def test_no_moves_when_the_target_rows_are_not_there() -> None:
+    rows = flstudio.find_step_rows(_rack_image(rows=2))
+    assert flstudio.pattern_moves(rows, None, targets=(7, 8)) == []
+
+
+def test_the_target_rows_come_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("HEYPEER_FL_ROWS", "7,8")
+    assert flstudio.demo_rows() == (7, 8)
+    monkeypatch.setenv("HEYPEER_FL_ROWS", "nonsense")
+    assert flstudio.demo_rows() == (flstudio.ROW_FIRST, flstudio.ROW_SECOND)
+
+
+def _flp(tmp_path, events: bytes):
+    path = tmp_path / "song.flp"
+    path.write_bytes(b"FLhd" + (6).to_bytes(4, "little") + b"\x00\x00\x10\x00\x60\x00"
+                     + b"FLdt" + len(events).to_bytes(4, "little") + events)
+    return str(path)
+
+
+def test_the_tempo_is_read_from_a_modern_project(tmp_path) -> None:
+    events = bytes([199, 3]) + b"abc" + bytes([156]) + (128_000).to_bytes(4, "little")
+    assert flstudio.tempo_from_project(_flp(tmp_path, events)) == 128
+
+
+def test_the_tempo_is_read_from_an_old_project(tmp_path) -> None:
+    """The user's demo project predates event 156 and has only event 66."""
+    events = bytes([9, 1]) + bytes([66]) + (133).to_bytes(2, "little")
+    assert flstudio.tempo_from_project(_flp(tmp_path, events)) == 133
+
+
+def test_not_a_project_has_no_tempo(tmp_path) -> None:
+    path = tmp_path / "x.flp"
+    path.write_bytes(b"nope")
+    assert flstudio.tempo_from_project(str(path)) is None
+    assert flstudio.tempo_from_project(None) is None

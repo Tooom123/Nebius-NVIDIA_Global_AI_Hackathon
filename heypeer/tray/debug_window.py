@@ -138,15 +138,6 @@ def slide_position(from_y: float, to_y: float, elapsed: float) -> float:
     return from_y + (to_y - from_y) * eased
 
 
-def _screen_width(default: int = 1920) -> int:
-    try:
-        import ctypes
-
-        return int(ctypes.windll.user32.GetSystemMetrics(0)) or default
-    except Exception:
-        return default
-
-
 def _window_process(
     command_queue: "multiprocessing.Queue", landed: "multiprocessing.Event" = None
 ) -> None:
@@ -178,8 +169,11 @@ def _window_process(
     if not overlay.create():
         return _drain_until_quit()
 
-    x = max(0, (_screen_width() - SIZE) // 2)
-    offscreen_y = -SIZE - 20
+    from heypeer.tray.overlay import stage_rect
+
+    stage_left, stage_top, stage_width, _ = stage_rect()
+    x = stage_left + max(0, (stage_width - SIZE) // 2)
+    offscreen_y = stage_top - SIZE - 20
 
     # Built once here rather than on the first visible frame, so the cue
     # doesn't pay for cache misses and GDI setup at the exact moment it is
@@ -273,7 +267,7 @@ def _window_process(
         # must bend the motion, never teleport the phase.
         phase += speed * dt
 
-        target_y = float(TOP_MARGIN if visible else offscreen_y)
+        target_y = float(stage_top + TOP_MARGIN if visible else offscreen_y)
         elapsed = now - slide_started_at
         progress = min(1.0, elapsed / SLIDE_SECONDS)
         y = slide_position(slide_from, target_y, elapsed)

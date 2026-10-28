@@ -439,3 +439,59 @@ def test_the_action_is_dispatched_with_its_folder() -> None:
         )
     run.assert_called_once()
     assert run.call_args.args[2] == "SFX"
+
+
+def test_restoring_puts_the_original_back(tmp_path: Path) -> None:
+    """Each rehearsal adds tracks; the backup is the untouched original."""
+    from heypeer.executor import capcut
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    draft = project / "draft_content.json"
+    draft.write_text('{"edited": true}', encoding="utf-8")
+    (project / ("draft_content" + capcut.BACKUP_SUFFIX)).write_text('{"original": true}', encoding="utf-8")
+
+    with patch("heypeer.executor.capcut.close_app", return_value=True):
+        assert capcut.restore_backup(project) is True
+    assert draft.read_text(encoding="utf-8") == '{"original": true}'
+
+
+def test_nothing_to_restore_before_the_first_run(tmp_path: Path) -> None:
+    from heypeer.executor import capcut
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "draft_content.json").write_text("{}", encoding="utf-8")
+    assert capcut.restore_backup(project) is False
+
+
+def _two_timeline_project(tmp_path: Path) -> Path:
+    """A project as recent CapCut saves it: the draft, and an identical
+    copy under Timelines/<main id>/ that CapCut reopens."""
+    project = tmp_path / "proj"
+    (project / "Timelines" / "MAIN").mkdir(parents=True)
+    (project / "Timelines" / "project.json").write_text('{"main_timeline_id": "MAIN"}', encoding="utf-8")
+    for p in (project / "draft_content.json", project / "Timelines" / "MAIN" / "draft_content.json"):
+        p.write_text('{"edited": true}', encoding="utf-8")
+    (project / ("draft_content" + capcut.BACKUP_SUFFIX)).write_text('{"original": true}', encoding="utf-8")
+    return project
+
+
+def test_the_main_timeline_copy_is_found(tmp_path: Path) -> None:
+    project = _two_timeline_project(tmp_path)
+    assert capcut.timeline_copy(project / "draft_content.json") == (
+        project / "Timelines" / "MAIN" / "draft_content.json")
+
+
+def test_an_older_project_has_no_timeline_copy(tmp_path: Path) -> None:
+    (tmp_path / "draft_content.json").write_text("{}", encoding="utf-8")
+    assert capcut.timeline_copy(tmp_path / "draft_content.json") is None
+
+
+def test_restoring_restores_the_timeline_copy_too(tmp_path: Path) -> None:
+    """Otherwise CapCut reopens the edited copy and the restore is undone."""
+    project = _two_timeline_project(tmp_path)
+    with patch("heypeer.executor.capcut.close_app", return_value=True):
+        assert capcut.restore_backup(project) is True
+    copy = project / "Timelines" / "MAIN" / "draft_content.json"
+    assert copy.read_text(encoding="utf-8") == '{"original": true}'

@@ -20,6 +20,15 @@ def fake_tts(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return speak_mock
 
 
+@pytest.fixture(autouse=True)
+def synchronous_narration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_speak_async` speaks on a thread of its own, so an assertion on what
+    was said raced the thread - and lost often enough, once the spoken line
+    was also logged, to fail a run in three. Spoken inline here; the tests
+    that care about it not blocking replace it on the instance anyway."""
+    monkeypatch.setattr(HeyPeer, "_speak_async", lambda self, text, language="fr": self._speak(text, language))
+
+
 @pytest.fixture
 def fake_pyautogui(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake = types.ModuleType("pyautogui")

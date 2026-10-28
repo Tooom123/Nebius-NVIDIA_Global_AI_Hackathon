@@ -35,6 +35,7 @@ change to restore would be dishonest. This is worth being explicit about
 before wiring anything up to it that matters.
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -70,10 +71,19 @@ def run(prompt: str, cwd: Path) -> str:
     if hermes_path is None:
         raise GeneralAgentUnavailable("the 'hermes' CLI is not on PATH")
 
+    # Point Hermes's browser tools at a Chrome Hey Peer is already driving,
+    # rather than the fresh, signed-out one it launches by default - a task
+    # on someone's inbox needs their session. See `browser.ensure_running`.
+    env = None
+    cdp_url = os.environ.get("HEYPEER_BROWSER_CDP_URL")
+    if cdp_url:
+        env = {**os.environ, "BROWSER_CDP_URL": cdp_url}
+
     try:
         result = subprocess.run(  # noqa: S603
             [hermes_path, "chat", "-q", prompt],
             cwd=str(cwd),
+            env=env,
             capture_output=True,
             text=True,
             # Explicit, because Python defaults to the console's

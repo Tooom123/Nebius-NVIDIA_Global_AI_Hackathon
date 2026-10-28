@@ -69,9 +69,27 @@ def is_available() -> bool:
     return shutil.which("claude") is not None
 
 
-def run(prompt: str, cwd: Path) -> str:
+# What a commit needs and nothing more. `acceptEdits` approves file edits
+# only: in `-p` mode there is nobody to approve a shell command, so without
+# this list `git commit` is silently denied and the agent reports that it
+# could not commit. Listed one by one rather than `Bash(git:*)`, which would
+# also allow `git reset --hard` and `git push --force`.
+GIT_TOOLS = (
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git push:*)",
+)
+
+
+def run(prompt: str, cwd: Path, allowed_tools: "tuple[str, ...]" = ()) -> str:
     """Runs `claude -p prompt` headlessly with `cwd` as its working
     directory, returning its final text output.
+
+    `allowed_tools` pre-approves tools beyond file edits - `GIT_TOOLS` for a
+    commit, nothing for a fix.
 
     Raises `CodingAgentUnavailable` if the CLI is not found and
     `CodingAgentTimedOut` if it runs past `AGENT_TIMEOUT_SECONDS` - both are
@@ -84,7 +102,8 @@ def run(prompt: str, cwd: Path) -> str:
 
     try:
         result = subprocess.run(  # noqa: S603
-            [claude_path, "-p", prompt, "--permission-mode", "acceptEdits"],
+            [claude_path, "-p", prompt, "--permission-mode", "acceptEdits",
+             *(["--allowedTools", *allowed_tools] if allowed_tools else [])],
             cwd=str(cwd),
             capture_output=True,
             text=True,

@@ -44,6 +44,33 @@ BI_RGB = 0
 DIB_RGB_COLORS = 0
 
 
+def stage_rect() -> "tuple[int, int, int, int]":
+    """The screen the overlays belong on, as `(left, top, width, height)`
+    in virtual-desktop pixels.
+
+    The primary screen unless HEYPEER_STAGE_SCREEN says "x,y,w,h" - for a
+    two-screen demo where the audience watches the secondary one, which
+    sits at a negative x when it is to the left of the primary.
+    """
+    import os
+
+    raw = os.environ.get("HEYPEER_STAGE_SCREEN") or ""
+    try:
+        left, top, width, height = (int(part) for part in raw.split(","))
+        if width > 0 and height > 0:
+            return (left, top, width, height)
+    except ValueError:
+        pass
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        return (0, 0, int(user32.GetSystemMetrics(0)) or 1920,
+                int(user32.GetSystemMetrics(1)) or 1080)
+    except Exception:
+        return (0, 0, 1920, 1080)
+
+
 def is_supported() -> bool:
     return platform.system() == "Windows"
 

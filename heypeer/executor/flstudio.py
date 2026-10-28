@@ -35,6 +35,7 @@ as steps-per-row rather than as coordinates so it reads as music.
 """
 
 import time
+from dataclasses import dataclass
 
 # Rows in the channel rack, top to bottom, as they exist in the user's own
 # project - read off a screenshot of it rather than assumed from a stock
@@ -100,6 +101,12 @@ THINKING_SECONDS = 1.2
 # still initialising does nothing at best.
 LAUNCH_WAIT_SECONDS = 6.0
 
+# Opening a project: FL Studio's own start-up plus the project's plugins
+# and samples. Then a moment more once the window exists, for the project
+# to finish loading into it.
+PROJECT_WAIT_SECONDS = 45.0
+PROJECT_SETTLE_SECONDS = 4.0
+
 
 def step_position(
     step: int, row: int, window: "tuple[int, int, int, int]"
@@ -137,6 +144,252 @@ def pattern_clicks(
         for step in pattern.get(row, ()):
             clicks.append(step_position(step, row, window))
     return clicks
+
+
+# --- Seeing the step sequencer ---------------------------------------------
+#
+# The fractions above describe one layout. A project restores its own -
+# where the channel rack floats, how many channels it has - so the demo
+# project the user actually brings put every click on the rack's title bar.
+# Hence finding the grid in a screenshot instead: the step buttons are a
+# shape that is easy to recognise and hard to confuse with anything else.
+#
+# Measured on FL Studio 21's default skin: each button is about 11 px wide
+# with a one-pixel border darker than what surrounds it, sixteen of them at
+# a regular pitch with a gap between each. The playlist's grid has the
+# pitch but not the gaps - its cells share their borders - which is what
+# tells the two apart. A lit step is far brighter than an unlit one (a
+# luminance near 190 against 92), so the same picture also says which steps
+# are already on.
+
+STEPS = 16
+LIT_LUMINANCE = 140
+
+
+@dataclass(frozen=True)
+class StepRow:
+    y: float               # screen pixels, centre of the buttons
+    xs: "tuple[float, ...]"  # screen pixels, centre of each of the 16 buttons
+    lit: "tuple[bool, ...]"
+
+
+def _luminance(pixel) -> int:
+    return (pixel[0] * 299 + pixel[1] * 587 + pixel[2] * 114) // 1000
+
+
+def find_step_rows(image, origin: "tuple[int, int]" = (0, 0)) -> "list[StepRow]":
+    """Every row of step buttons in `image`, top to bottom, in screen
+    pixels - `origin` is where the image's top-left corner is on screen.
+
+    Pure apart from reading pixels, so it is tested against a real
+    screenshot of the user's FL Studio rather than against a description.
+    """
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    px = rgb.load()
+    hits: "dict[int, list]" = {}
+    for y in range(height):
+        lum = [_luminance(px[x, y]) for x in range(width)]
+        borders = [x for x in range(2, width - 2) if lum[x] < min(lum[x - 2], lum[x + 2]) - 6]
+        buttons = [
+            (a, b, sum(lum[a + 2:b - 1]) / max(1, b - a - 3))
+            for a, b in zip(borders, borders[1:])
+            if 7 <= b - a <= 13
+        ]
+        for i in range(len(buttons) - STEPS + 1):
+            run = buttons[i:i + STEPS]
+            pitches = [q[0] - p[0] for p, q in zip(run, run[1:])]
+            spaces = [q[0] - p[1] for p, q in zip(run, run[1:])]
+            if (12 <= min(pitches) and max(pitches) <= 24 and max(pitches) - min(pitches) <= 2
+                    and min(spaces) >= 3):
+                centres = tuple((a + b) / 2 for a, b, _ in run)
+                hits.setdefault(round(centres[0]), []).append((y, centres, [l for *_, l in run]))
+                break
+
+    rows = []
+    for column in hits.values():
+        groups = [[column[0]]]
+        for hit in column[1:]:
+            if hit[0] - groups[-1][-1][0] <= 12:
+                groups[-1].append(hit)
+            else:
+                groups.append([hit])
+        for group in groups:
+            # A real row of buttons is several pixels tall; a lone line that
+            # happens to match is noise.
+            if len(group) < 3:
+                continue
+            _, centres, lums = group[len(group) // 2]
+            y = (group[0][0] + group[-1][0]) / 2
+            rows.append(StepRow(
+                y=origin[1] + y,
+                xs=tuple(origin[0] + x for x in centres),
+                lit=tuple(l > LIT_LUMINANCE for l in lums),
+            ))
+    rows.sort(key=lambda r: r.y)
+    if not rows:
+        return rows
+    # Only the channel rack: the column with the most rows. Anything else
+    # that matched is somewhere else in the interface.
+    rack_x = max({round(r.xs[0]) for r in rows},
+                 key=lambda x: sum(1 for r in rows if abs(r.xs[0] - x) <= 2))
+    return [r for r in rows if abs(r.xs[0] - rack_x) <= 2]
+
+
+def capture(window: "tuple[int, int, int, int]"):
+    """A screenshot of the window, and the screen position of its corner."""
+    from PIL import ImageGrab
+
+    left, top, width, height = window
+    image = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
+    return image, (left, top)
+
+
+VK_F6 = 0x75
+
+
+def see_channel_rack(window: "tuple[int, int, int, int]", needed: int) -> "list[StepRow]":
+    """The channel rack's rows, bringing the rack to the front first if it
+    cannot be seen - at least `needed` rows, or whatever was found last.
+
+    F6 is FL Studio's own key for the channel rack, and a toggle: it
+    raises a rack that is hidden or behind the playlist, and hides one that
+    is already in front. So it is pressed only after looking, and looked
+    again after each press, rather than pressed blind.
+    """
+    from heypeer.executor import cursor_control
+
+    rows: "list[StepRow]" = []
+    for attempt in range(3):
+        image, origin = capture(window)
+        rows = find_step_rows(image, origin)
+        if len(rows) >= needed or attempt == 2:
+            return rows
+        cursor_control.press_key(VK_F6)
+        time.sleep(0.6)
+    return rows
+
+
+def demo_rows() -> "tuple[int, int]":
+    """Which channel-rack rows the two composed parts go into, counted from
+    0 at the top. HEYPEER_FL_ROWS="7,8" for a project whose drums are not
+    its first two channels; the first two otherwise."""
+    import os
+
+    raw = os.environ.get("HEYPEER_FL_ROWS") or ""
+    try:
+        first, second = (int(part) for part in raw.split(","))
+        return (first, second)
+    except ValueError:
+        return (ROW_FIRST, ROW_SECOND)
+
+
+def pattern_moves(
+    rows: "list[StepRow]", pattern: "dict | None" = None,
+    targets: "tuple[int, int] | None" = None,
+) -> "list[tuple[int, int, str]]":
+    """The clicks that turn the two target rows into `pattern`, as
+    `(x, y, button)`: a left click lights a step, a right click clears one
+    - FL Studio's own convention, and the reason a second run does not
+    undo the first. Steps already as wanted are not touched.
+
+    Empty when the rows are not there to click.
+    """
+    pattern = pattern or PATTERN
+    targets = targets or demo_rows()
+    moves = []
+    for key, index in zip((ROW_FIRST, ROW_SECOND), targets):
+        if index >= len(rows):
+            return []
+        row = rows[index]
+        wanted = set(pattern.get(key, ()))
+        for step in range(STEPS):
+            on = step in wanted
+            if on != row.lit[step]:
+                moves.append((round(row.xs[step]), round(row.y), "left" if on else "right"))
+    return moves
+
+
+def maximize_window() -> bool:
+    """Maximises FL Studio, so the channel rack is where the project put it
+    rather than squeezed by whatever size the window last had."""
+    try:
+        import uiautomation as auto
+
+        window = auto.WindowControl(searchDepth=1, SubName="FL Studio")
+        if not window.Exists(maxSearchSeconds=1):
+            return False
+        window.GetWindowPattern().SetWindowVisualState(auto.WindowVisualState.Maximized)
+        time.sleep(0.5)
+        return True
+    except Exception:
+        return False
+
+
+def dismiss_load_problems() -> bool:
+    """Closes "Problems loading the project" - the missing-plugins list a
+    downloaded project opens with - and returns whether there was one.
+    Left open, it sits over the channel rack and takes the first click."""
+    try:
+        import uiautomation as auto
+
+        dialog = auto.WindowControl(searchDepth=2, SubName="Problems loading")
+        if not dialog.Exists(maxSearchSeconds=1):
+            return False
+        dialog.GetWindowPattern().Close()
+        time.sleep(0.4)
+        return True
+    except Exception:
+        return False
+
+
+def tempo_from_project(path: "str | None") -> "int | None":
+    """The tempo saved in an .flp, or None.
+
+    FL Studio does not put the tempo in its window title, which is where
+    `read_tempo` looks, so for a known project the file is the honest
+    source. An .flp is a "FLhd" header and a "FLdt" chunk of events, each an
+    id byte followed by data whose size the id implies: below 64 one byte,
+    below 128 two, below 192 four, above that a varint length. Event 156
+    holds the tempo in thousandths of a BPM; projects older than FL Studio
+    20 (the user's demo project is one) have only event 66, whole BPM.
+    """
+    if not path:
+        return None
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        return None
+    start = data.find(b"FLdt")
+    if not data.startswith(b"FLhd") or start < 0:
+        return None
+    i = start + 8
+    legacy = None
+    while i < len(data):
+        event = data[i]
+        i += 1
+        if event < 64:
+            i += 1
+        elif event < 128:
+            if event == 66 and legacy is None:
+                legacy = int.from_bytes(data[i:i + 2], "little")
+            i += 2
+        elif event < 192:
+            if event == 156 and i + 4 <= len(data):
+                tempo = round(int.from_bytes(data[i:i + 4], "little") / 1000)
+                return tempo if 40 <= tempo <= 220 else None
+            i += 4
+        else:
+            size, shift = 0, 0
+            while i < len(data):
+                byte = data[i]
+                i += 1
+                size |= (byte & 0x7F) << shift
+                shift += 7
+                if not byte & 0x80:
+                    break
+            i += size
+    return legacy if legacy is not None and 40 <= legacy <= 220 else None
 
 
 def read_tempo() -> int:
@@ -206,24 +459,37 @@ def find_window() -> "tuple[int, int, int, int] | None":
         return None
 
 
-def launch() -> bool:
+def launch(project: "str | None" = None) -> bool:
     """Starts FL Studio if it is not already running, and returns whether a
-    window is there to click into afterwards."""
+    window is there to click into afterwards.
+
+    With `project`, that file is opened - through its file association, so
+    whichever FL Studio the machine opens .flp files with - and the wait is
+    the longer one a project with plugins needs to load.
+    """
     if find_window() is not None:
         return True
     try:
-        from heypeer.executor import apps
+        if project:
+            import os
 
-        app = apps.resolve_app("fl studio")
-        if app is None:
-            return False
-        apps.launch(app)
+            os.startfile(project)  # noqa: S606 - Windows only, a file we were given
+        else:
+            from heypeer.executor import apps
+
+            app = apps.resolve_app("fl studio")
+            if app is None:
+                return False
+            apps.launch(app)
     except Exception:
         return False
 
-    deadline = time.time() + LAUNCH_WAIT_SECONDS
+    deadline = time.time() + (PROJECT_WAIT_SECONDS if project else LAUNCH_WAIT_SECONDS)
     while time.time() < deadline:
         if find_window() is not None:
+            # The window exists before the project has finished loading
+            # into it; clicking now lands on a half-drawn channel rack.
+            time.sleep(PROJECT_SETTLE_SECONDS if project else 0)
             return True
         time.sleep(0.4)
     return False

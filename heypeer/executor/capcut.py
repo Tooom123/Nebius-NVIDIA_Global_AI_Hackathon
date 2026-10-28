@@ -105,6 +105,23 @@ def draft_file(draft_dir: Path) -> "Path | None":
     return None
 
 
+def timeline_copy(path: Path) -> "Path | None":
+    """The main timeline's own copy of the draft, which newer CapCut builds
+    keep and reopen.
+
+    Projects saved by recent desktop versions hold their main timeline
+    twice: the draft beside `Timelines/`, and `Timelines/<main id>/` with a
+    file of the same name. Editing only the first has CapCut put the old
+    timeline back.
+    """
+    try:
+        project = json.loads((path.parent / "Timelines" / "project.json").read_text(encoding="utf-8"))
+        copy = path.parent / "Timelines" / str(project["main_timeline_id"]) / path.name
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return copy if copy.is_file() else None
+
+
 def latest_draft(root: "Path | None" = None) -> "Path | None":
     """The most recently edited project folder, or None.
 
@@ -368,6 +385,11 @@ def apply_to_draft(path: Path, cues: "list[Cue]", video_seconds: float) -> int:
     backup = path.with_name(path.stem + BACKUP_SUFFIX)
     if not backup.exists():
         shutil.copy2(path, backup)
+    # Mirrored only when identical: a project whose copies already differ
+    # is not one this understands well enough to write into twice.
+    copy = timeline_copy(path)
+    if copy is not None and copy.read_bytes() != path.read_bytes():
+        copy = None
 
     script = cc.ScriptFile.load_template(str(path))
     materials = {sound: cc.AudioMaterial(str(sound)) for sound in {c.sound for c in cues}}
@@ -389,7 +411,34 @@ def apply_to_draft(path: Path, cues: "list[Cue]", video_seconds: float) -> int:
             script.add_segment(segment, name)
             placed += 1
     script.save()
+    if copy is not None:
+        shutil.copy2(path, copy)
     return placed
+
+
+def restore_backup(draft_dir: "Path | None" = None) -> bool:
+    """Puts the project back the way it was before Hey Peer first touched
+    it, and returns whether there was anything to restore.
+
+    For rehearsals: each run adds its own "Hey Peer SFX" tracks, and the
+    backup is taken once, on the first run only, so it is always the
+    untouched original. CapCut is closed first - its autosave would
+    otherwise write the edited timeline straight back.
+    """
+    draft_dir = draft_dir or latest_draft()
+    path = draft_file(draft_dir) if draft_dir else None
+    if path is None:
+        return False
+    backup = path.with_name(path.stem + BACKUP_SUFFIX)
+    if not backup.is_file():
+        return False
+    if not close_app():
+        return False
+    shutil.copy2(backup, path)
+    copy = timeline_copy(path)
+    if copy is not None:
+        shutil.copy2(backup, copy)
+    return True
 
 
 def open_app() -> bool:
@@ -486,11 +535,15 @@ def render_command(
 
 
 def screenshot(path: Path) -> "Path | None":
-    """The primary screen as it is, for the transition to start from."""
+    """The stage screen as it is, for the transition to start from - the
+    one the audience is watching, which is not always the primary."""
     try:
         from PIL import ImageGrab
 
-        ImageGrab.grab().save(path)
+        from heypeer.tray.overlay import stage_rect
+
+        left, top, width, height = stage_rect()
+        ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True).save(path)
         return path
     except Exception:
         return None
@@ -520,9 +573,17 @@ def play_fullscreen(path: Path) -> bool:
     """
     player = shutil.which("ffplay")
     if player:
+        from heypeer.tray.overlay import stage_rect
+
+        # Full screen on the display the window opens on, so it is opened
+        # on the stage screen rather than wherever SDL defaults to. On top,
+        # because CapCut has just been opened behind it and its start-up
+        # dialogs, and the taskbar, otherwise sit over the video.
+        left, top, _, _ = stage_rect()
         try:
             subprocess.run(
-                [player, "-fs", "-autoexit", "-noborder", "-loglevel", "quiet", str(path)],
+                [player, "-fs", "-autoexit", "-noborder", "-alwaysontop", "-loglevel", "quiet",
+                 "-left", str(left + 50), "-top", str(top + 50), str(path)],
                 timeout=600,
             )
             return True
