@@ -319,7 +319,7 @@ def test_drums_light_and_clear_steps_in_the_configured_rows(monkeypatch) -> None
         stack.enter_context(patch.object(peer, "_animate_cursor"))
         peer._run_add_drums(None, "en")
     calls = {(c.args[0], c.args[1], c.kwargs["button"]) for c in click.call_args_list}
-    # Row 1: steps 0,4,8,12 lit, the stray step 1 cleared; row 0 untouched.
+    # Row 1: the stray step 1 cleared, then 0,4,8,12 lit; row 0 untouched.
     assert (516, 130, "right") in calls and (500, 130, "left") in calls
     assert (516, 160, "right") in calls and (564, 160, "left") in calls
     assert not any(y == 100 for _, y, _ in calls)
@@ -436,3 +436,16 @@ def test_the_blob_leaves_with_the_voice(monkeypatch) -> None:
     assert window.set_state.call_args_list[-1].args == ("idle",)
     assert seen[-2] is None, "no blob updates during the silent part"
     assert peer.debug_window is window
+
+
+def test_the_playlist_starts_fresh() -> None:
+    """A run found the last run's playlist and added five more to it."""
+    task = demo.playlist_task()
+    assert "delete it first" in task and "create a new playlist" in task
+
+
+def test_the_mail_agent_leaves_other_drafts_alone() -> None:
+    """It opened one of the user's own drafts, and wrote each reply as one line."""
+    task = demo.mail_task()
+    assert "Never open, edit or close any other draft" in task
+    assert "each on its own line" in task

@@ -223,8 +223,11 @@ def mail_task() -> str:
         "Read its emails. Exactly two of them call for an answer; the other "
         "is an automated message that must be left alone. For each of the "
         "two: open it, click Reply, and type a short, friendly reply in the "
-        f"language of the email, signed Tom. {finish} Do not delete, archive "
-        f"or label anything. {WORK_IN_THE_TAB}"
+        "language of the email, signed Tom, with the greeting, the body and "
+        "the signature each on its own line. "
+        f"{finish} Never open, edit or close any other draft or compose "
+        "window: only the two replies. Do not delete, archive or label "
+        f"anything. {WORK_IN_THE_TAB}"
     )
 
 
@@ -239,7 +242,9 @@ def playlist_task() -> str:
         finish = "Send it."
     return (
         "Spotify's web player (https://open.spotify.com) is already open in "
-        f"the current tab. Create a playlist named \"{playlist_name()}\" and "
+        f"the current tab. If your library already has a playlist named "
+        f"\"{playlist_name()}\", delete it first. Then create a new playlist "
+        f"named \"{playlist_name()}\" and "
         "add five well-known chill, laid-back songs to it - music tracks "
         "only, never podcasts or episodes. Copy the playlist's "
         "share link. Then, in the same tab, go to WhatsApp Web "

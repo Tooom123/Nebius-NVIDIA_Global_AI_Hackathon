@@ -1273,6 +1273,11 @@ class HeyPeer:
         if self.debug_window is not None:
             self.debug_window.set_state("thinking")
         row0, row1, why = self.nemotron.compose_drums(tempo, style or "")
+        if not (row0 and row1):
+            # Once more: a failure here is nearly always one slow or
+            # dropped request - measured, the very next call answered in
+            # ten seconds - and the composed pattern is the point.
+            row0, row1, why = self.nemotron.compose_drums(tempo, style or "")
         if row0 and row1:
             pattern = {flstudio.ROW_FIRST: row0, flstudio.ROW_SECOND: row1}
             self._log(f"Composed at {tempo} BPM: {why or '(no description)'}")

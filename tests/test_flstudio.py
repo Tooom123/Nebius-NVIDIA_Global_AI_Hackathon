@@ -182,15 +182,17 @@ def test_lit_steps_are_seen() -> None:
     assert [i for i, on in enumerate(rows[1].lit) if on] == [0, 4]
 
 
-def test_only_steps_in_the_wrong_state_are_clicked() -> None:
-    """Left lights a step, right clears one - so a second run corrects the
-    first instead of toggling it back off."""
+def test_the_rows_are_cleared_then_drawn() -> None:
+    """A run that found the last run's pattern clicked nothing - the drums
+    were never seen being written."""
     rows = flstudio.find_step_rows(_rack_image(rows=3, lit={(1, 0), (1, 3)}))
     moves = flstudio.pattern_moves(rows, {flstudio.ROW_FIRST: [0, 8], flstudio.ROW_SECOND: [0]},
                                    targets=(1, 2))
-    by_button = {(round(x), b) for x, y, b in moves if round(y) == 59}
-    assert by_button == {(45 + 8 * 16, "left"), (45 + 3 * 16, "right")}
-    assert {(round(x), b) for x, y, b in moves if round(y) == 89} == {(45, "left")}
+    assert [(round(x), round(y), b) for x, y, b in moves] == [
+        (45, 59, "right"), (45 + 3 * 16, 59, "right"),
+        (45, 59, "left"), (45 + 8 * 16, 59, "left"),
+        (45, 89, "left"),
+    ]
 
 
 def test_no_moves_when_the_target_rows_are_not_there() -> None:

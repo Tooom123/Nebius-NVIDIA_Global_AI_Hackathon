@@ -43,7 +43,7 @@ from pathlib import Path
 # Longer than coding_agent.AGENT_TIMEOUT_SECONDS for the same reason - an
 # open-ended task can take a while, and this blocks the thread handling the
 # current turn for its entire duration.
-AGENT_TIMEOUT_SECONDS = 600
+AGENT_TIMEOUT_SECONDS = 900
 
 
 class GeneralAgentUnavailable(RuntimeError):
@@ -66,7 +66,11 @@ def _model_args() -> "list[str]":
     a browser is many dependent steps, and measured on the demo inbox,
     Nemotron-3-Super gave up within seconds on its own JavaScript errors,
     Nemotron-3-Ultra had not finished after 400 seconds, and Kimi-K3
-    answered both mails, checked its drafts and stopped in 137.
+    answered both mails, checked its drafts and stopped in 137 - until one
+    evening it took 180 seconds per call and timed out on both tasks,
+    while DeepSeek-V4-Pro did the same mails in 337. Hence a setting
+    rather than a constant: the right model on the night is the one that
+    answers.
     """
     model = os.environ.get("HEYPEER_HERMES_MODEL")
     if not model:

@@ -289,26 +289,27 @@ def pattern_moves(
     rows: "list[StepRow]", pattern: "dict | None" = None,
     targets: "tuple[int, int] | None" = None,
 ) -> "list[tuple[int, int, str]]":
-    """The clicks that turn the two target rows into `pattern`, as
-    `(x, y, button)`: a left click lights a step, a right click clears one
-    - FL Studio's own convention, and the reason a second run does not
-    undo the first. Steps already as wanted are not touched.
+    """The clicks that lay `pattern` into the two target rows, as
+    `(x, y, button)`: first a right click on every lit step - FL Studio's
+    own way to clear one - then a left click on every step of the pattern.
 
-    Empty when the rows are not there to click.
+    Cleared and redrawn rather than corrected in place: a run that found
+    the previous run's pattern already there clicked nothing at all, and
+    on stage that is the drums not being written. Empty when the rows are
+    not there to click.
     """
     pattern = pattern or PATTERN
     targets = targets or demo_rows()
-    moves = []
+    if max(targets) >= len(rows):
+        return []
+    clears, lights = [], []
     for key, index in zip((ROW_FIRST, ROW_SECOND), targets):
-        if index >= len(rows):
-            return []
         row = rows[index]
-        wanted = set(pattern.get(key, ()))
-        for step in range(STEPS):
-            on = step in wanted
-            if on != row.lit[step]:
-                moves.append((round(row.xs[step]), round(row.y), "left" if on else "right"))
-    return moves
+        y = round(row.y)
+        clears += [(round(row.xs[s]), y, "right") for s in range(STEPS) if row.lit[s]]
+        lights += [(round(row.xs[s]), y, "left") for s in sorted(set(pattern.get(key, ())))
+                   if 0 <= s < STEPS]
+    return clears + lights
 
 
 def maximize_window() -> bool:
