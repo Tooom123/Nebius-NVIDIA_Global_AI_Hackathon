@@ -73,6 +73,23 @@ def dry_run(part: str = "") -> bool:
     return bool(part) and part in {p.strip() for p in raw.split(",")}
 
 
+def silent() -> bool:
+    """Whether Hey Peer stays quiet after announcing the plan. On unless
+    HEYPEER_DEMO_SILENT=0: music runs under the whole demo video, so the
+    voice says what it is about to do once, after the request, and the
+    rest is seen rather than heard."""
+    return (os.environ.get("HEYPEER_DEMO_SILENT") or "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+# What the intro announces, in the order the parts run.
+INTRO_EN = ("Let's go. I'll lay down drums in FL Studio, answer your emails, "
+            "fix the bug and push it to GitHub, send Tally a chill playlist, "
+            "and add sound effects to your CapCut project.")
+INTRO_FR = ("C'est parti. Je pose une batterie dans FL Studio, je réponds à tes "
+            "mails, je corrige le bug et je le pousse sur GitHub, j'envoie une "
+            "playlist chill à Tally, et j'ajoute des bruitages à ton projet CapCut.")
+
+
 def selected(steps: "list[Step]") -> "list[Step]":
     """The steps HEYPEER_DEMO_ONLY asks for, or all of them."""
     wanted = {t.strip().lower() for t in (os.environ.get("HEYPEER_DEMO_ONLY") or "").split(",") if t.strip()}
@@ -239,7 +256,8 @@ def script(lang: "str | None" = None) -> "list[Step]":
     lang = lang or language()
     path = code_file()
     return [
-        Step("_speak", {"text": _en(lang, "C'est parti.", "Let's go."), "language": lang}, "intro"),
+        # The one thing said aloud when the demo is silent - see `silent`.
+        Step("_speak", {"text": _en(lang, INTRO_FR, INTRO_EN), "language": lang}, "intro"),
         # FL Studio: drums composed by Nemotron from the tempo, then play.
         Step("_run_add_drums", {"narration": None, "language": lang,
                                 "style": drum_style(),

@@ -330,6 +330,9 @@ class HeyPeer:
         intent.py`); callers pass that straight through so what gets *said*
         matches what got *written* - answering in English text but reading
         it with the French voice would still sound wrong, just differently."""
+        if getattr(self, "_muted", False):
+            self._log(f"Peer (silent): {text}")
+            return
         self._log(f"Peer: {text}")
         self._show_transcript(text, "peer")
         if self.debug_window is not None:
@@ -932,8 +935,13 @@ class HeyPeer:
                 except Exception as exc:
                     self._log(f"  step failed: {exc}")
                 self._log(f"  ({time.time() - started:.1f}s)")
+                # Silent after the announcement: everything a step would
+                # say is logged instead - see `demo.silent`.
+                if step.tag == "intro" and demo.silent():
+                    self._muted = True
         finally:
             self._in_routine = False
+            self._muted = False
         self._log("Demo mode: sequence finished.")
 
     def _prepare_demo(self, tags: "set[str]") -> None:

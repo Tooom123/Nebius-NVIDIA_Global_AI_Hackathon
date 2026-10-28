@@ -66,7 +66,7 @@ def test_a_real_run_sends(monkeypatch) -> None:
 def test_the_demo_is_in_english_by_default(monkeypatch) -> None:
     monkeypatch.delenv("HEYPEER_DEMO_LANGUAGE", raising=False)
     first = demo.script()[0]
-    assert first.kwargs == {"text": "Let's go.", "language": "en"}
+    assert first.kwargs == {"text": demo.INTRO_EN, "language": "en"}
 
 
 def test_only_the_tagged_steps_run(monkeypatch) -> None:
@@ -384,3 +384,34 @@ def test_the_browser_is_not_started_before_its_step() -> None:
     ):
         peer._prepare_demo({"mail", "playlist"})
     start.assert_not_called()
+
+
+def test_a_silent_demo_speaks_only_the_announcement(monkeypatch) -> None:
+    """Music runs under the whole demo: the plan is said once, then quiet."""
+    monkeypatch.delenv("HEYPEER_DEMO_SILENT", raising=False)
+    peer = _peer()
+    steps = [demo.Step("_speak", {"text": "plan"}, "intro"),
+             demo.Step("_speak", {"text": "later"}, "code")]
+    with patch("heypeer.demo.script", return_value=steps), patch.object(
+        peer, "_prepare_demo"
+    ), patch("heypeer.tray.tts.speak") as tts:
+        peer._run_demo()
+    assert [c.args[0] for c in tts.call_args_list] == ["plan"]
+    assert peer._muted is False, "Hey Peer speaks again after the demo"
+
+
+def test_the_demo_can_keep_talking(monkeypatch) -> None:
+    monkeypatch.setenv("HEYPEER_DEMO_SILENT", "0")
+    peer = _peer()
+    steps = [demo.Step("_speak", {"text": "plan"}, "intro"),
+             demo.Step("_speak", {"text": "later"}, "code")]
+    with patch("heypeer.demo.script", return_value=steps), patch.object(
+        peer, "_prepare_demo"
+    ), patch("heypeer.tray.tts.speak") as tts:
+        peer._run_demo()
+    assert [c.args[0] for c in tts.call_args_list] == ["plan", "later"]
+
+
+def test_the_announcement_names_every_part() -> None:
+    for word in ("FL Studio", "emails", "GitHub", "Tally", "CapCut"):
+        assert word in demo.INTRO_EN
