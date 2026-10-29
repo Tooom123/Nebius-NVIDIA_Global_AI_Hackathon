@@ -29,6 +29,25 @@ def _no_real_overlay_windows(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_tray_icon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replaces pystray's Icon with a mock for every test.
+
+    Every `HeyPeer` builds a `TrayApp`, and on Linux a real Icon opens its own
+    X connection that is only closed when the object is collected. Under
+    xvfb in CI those piled up past the server's client limit, and whichever
+    test came next failed with "Display connection closed by server"."""
+    import heypeer.tray.app as tray_app
+
+    def fake_icon(*args, menu=None, **kwargs) -> MagicMock:
+        # The menu is real pystray objects; only the X-backed icon is faked.
+        icon = MagicMock()
+        icon.menu = menu
+        return icon
+
+    monkeypatch.setattr(tray_app.pystray, "Icon", fake_icon)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_user_data(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
     """Points every user-data store at a temp directory for the whole suite.
 

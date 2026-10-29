@@ -26,3 +26,8 @@ data/wakeword/piper_voices/
 
 # Voice audition renders (python -m heypeer.tray.tts --demo)
 data/tts_demo/
+
+# Local debug scratch files
+/a.txt
+/test.py
+/test2.py
