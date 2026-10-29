@@ -456,3 +456,9 @@ def test_the_message_is_english_and_first_name_only(monkeypatch) -> None:
 def test_there_are_spare_tracks() -> None:
     """Five go in; a search that finds nothing is covered by the next."""
     assert len(demo.CHILL_TRACKS) > 5
+
+
+def test_replies_are_typed_with_their_line_breaks() -> None:
+    """fill_input ran a rehearsal's greeting, body and signature into one line."""
+    task = demo.mail_task()
+    assert "Do not use fill_input" in task and "insertLineBreak" in task

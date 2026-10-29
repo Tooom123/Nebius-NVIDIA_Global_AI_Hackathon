@@ -208,6 +208,22 @@ WORK_IN_THE_TAB = (
 )
 
 
+# How to type the reply. fill_input drops the line breaks - a rehearsal's
+# drafts read "Hi Marc,Confirmed, see you tomorrow at 2:30 in Room B.Tom".
+# Raw CDP key events went to another target and the agent spent four
+# minutes on them; execCommand in the page is what worked first time.
+TYPE_LINES = (
+    "Do not use fill_input or key events for the reply body: fill_input "
+    "drops line breaks. Type it in one js() call, with LINES your lines: "
+    "js(\"(() => { const b = [...document.querySelectorAll('[contenteditable=true]"
+    "[role=textbox]')].pop(); b.focus(); document.execCommand('selectAll'); "
+    "document.execCommand('delete'); LINES.forEach((l, i) => { if (i) "
+    "document.execCommand('insertLineBreak'); document.execCommand('insertText', "
+    "false, l); }); return b.innerText; })()\") - it returns the body, check "
+    "it shows the line breaks."
+)
+
+
 def mail_task() -> str:
     """What the general agent is asked to do with the mails. Spelled out
     rather than left as "read my mail": an agent given a vague task on
@@ -226,7 +242,7 @@ def mail_task() -> str:
         "English - these emails are in English, whatever language Gmail's own "
         "interface is in - signed Tom, with the greeting, the body and "
         "the signature each on its own line. "
-        f"{finish} Never open, edit or close any other draft or compose "
+        f"{TYPE_LINES} {finish} Never open, edit or close any other draft or compose "
         "window: only the two replies. Do not delete, archive or label "
         f"anything. {WORK_IN_THE_TAB}"
     )
