@@ -968,6 +968,17 @@ class HeyPeer:
         # A clean stage first: whatever the last run or the user left on the
         # audience's screen. CapCut left open there covered FL Studio, and
         # the clicks meant for FL's plugin windows opened a CapCut tool.
+        # Spotify first: when it is open without its debugging port it is
+        # restarted, and the stage is cleared of its window afterwards.
+        if "playlist" in tags:
+            try:
+                from heypeer.executor import spotify_app
+
+                if not spotify_app.ensure_running():
+                    self._log("Demo: Spotify did not open with its debugging port.")
+            except Exception as exc:
+                self._log(f"Demo: could not start Spotify: {exc}")
+
         cleared = clear_stage()
         if cleared:
             self._log(f"Demo: minimised {cleared} windows on the stage screen.")
@@ -3073,6 +3084,69 @@ class HeyPeer:
         self._speak(summary or _bilingual(
             language, "C'est fait.", "Done.",
         ), language=language)
+
+    def _run_share_playlist(self, name: str, contact: str, narration: "str | None" = None,
+                            language: str = "fr") -> None:
+        """Makes a playlist in the Spotify app and writes its link to
+        `contact` on WhatsApp Web - as fixed steps rather than through the
+        agent, which kept failing at both (see executor/spotify_app.py).
+
+        The message is sent unless HEYPEER_DEMO_DRY_RUN covers "playlist".
+        """
+        from heypeer import demo
+        from heypeer.executor import browser, spotify_app, whatsapp_web
+        from heypeer.tray.overlay import stage_rect
+
+        self._speak(narration or _bilingual(
+            language, "Je fais la playlist.", "Making the playlist.",
+        ), language=language)
+        self.tray.set_status(Status.EXECUTING)
+        try:
+            if not spotify_app.ensure_running():
+                self._log("Spotify: the app did not open with its debugging port.")
+                self._speak(_bilingual(language, "Je n'arrive pas à ouvrir Spotify.",
+                                       "I can't open Spotify."), language=language)
+                return
+            spotify_app.bring_to_front(stage_rect())
+            try:
+                link, songs = spotify_app.make_playlist(name, list(demo.CHILL_TRACKS),
+                                                        log=self._log)
+            except Exception as exc:
+                self._log(f"Spotify: making the playlist failed: {exc}")
+                self._speak(_bilingual(language, "Je n'ai pas réussi à faire la playlist.",
+                                       "I couldn't make the playlist."), language=language)
+                return
+            self._log(f"Spotify: {name} has {len(songs)} tracks: {'; '.join(songs)} - {link}")
+            # Long enough for the audience to read the finished playlist.
+            time.sleep(3)
+
+            url = "https://web.whatsapp.com"
+            if not browser.ensure_running(url):
+                self._log("WhatsApp: the browser did not start.")
+                return
+            browser.single_tab(url)
+            browser.bring_to_front()
+            send = not demo.dry_run("playlist")
+            try:
+                written = whatsapp_web.write_message(contact, demo.playlist_message(link),
+                                                     send=send, log=self._log)
+            except Exception as exc:
+                self._log(f"WhatsApp: writing the message failed: {exc}")
+                written = False
+        finally:
+            self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
+        if not written:
+            self._speak(_bilingual(language, f"La playlist est prête, mais je n'ai pas pu écrire à {contact}.",
+                                   f"The playlist is ready, but I couldn't message {contact}."),
+                        language=language)
+            return
+        if send:
+            done = _bilingual(language, f"C'est fait, la playlist est partie à {contact}.",
+                              f"Done, the playlist is on its way to {contact}.")
+        else:
+            done = _bilingual(language, f"C'est fait, le message à {contact} est prêt.",
+                              f"Done, the message to {contact} is ready.")
+        self._speak(done, language=language)
 
     def _resolved_path(self, spoken_name: str) -> "Path | None":
         """Where a spoken filename actually points, resolved *before* the

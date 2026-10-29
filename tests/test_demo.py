@@ -31,7 +31,7 @@ def test_the_sequence_is_the_one_asked_for() -> None:
         methods.index("_run_analyze_code"),
         methods.index("_run_fix_code"),
         methods.index("_run_commit_and_push"),
-        len(methods) - 1 - methods[::-1].index("_run_general_task"),
+        methods.index("_run_share_playlist"),
         methods.index("_run_edit_capcut"),
     ]
     assert order == sorted(order)
@@ -54,13 +54,11 @@ def test_the_mail_is_answered_in_its_own_language() -> None:
 def test_a_dry_run_sends_nothing(monkeypatch) -> None:
     monkeypatch.setenv("HEYPEER_DEMO_DRY_RUN", "1")
     assert "Do NOT click Send" in demo.mail_task()
-    assert "do NOT press Enter" in demo.playlist_task()
 
 
 def test_a_real_run_sends(monkeypatch) -> None:
     monkeypatch.delenv("HEYPEER_DEMO_DRY_RUN", raising=False)
     assert "Send both replies" in demo.mail_task()
-    assert "Send it" in demo.playlist_task()
 
 
 def test_the_demo_is_in_english_by_default(monkeypatch) -> None:
@@ -77,13 +75,6 @@ def test_only_the_tagged_steps_run(monkeypatch) -> None:
 
 def test_every_step_has_a_known_tag() -> None:
     assert all(s.tag in demo.TAGS for s in demo.script())
-
-
-def test_the_playlist_goes_to_the_configured_contact(monkeypatch) -> None:
-    monkeypatch.setenv("HEYPEER_DEMO_CONTACT", "Tally")
-    monkeypatch.setenv("HEYPEER_DEMO_PLAYLIST", "Love")
-    task = demo.playlist_task()
-    assert "Love" in task and "Tally" in task and "WhatsApp" in task
 
 
 def test_the_commit_happens_where_the_fixed_file_is(monkeypatch, tmp_path: Path) -> None:
@@ -328,8 +319,7 @@ def test_drums_light_and_clear_steps_in_the_configured_rows(monkeypatch) -> None
 def test_the_agent_is_kept_in_one_tab() -> None:
     """Left alone it opened a tab per action, nineteen in one task, while
     the window showed the first."""
-    for task in (demo.mail_task(), demo.playlist_task()):
-        assert "never call new_tab()" in task
+    assert "never call new_tab()" in demo.mail_task()
 
 
 def test_the_agent_must_check_its_own_work() -> None:
@@ -339,14 +329,13 @@ def test_the_agent_must_check_its_own_work() -> None:
 
 def test_browser_steps_start_on_their_page() -> None:
     starts = [s.kwargs.get("start_url") for s in demo.script() if s.method == "_run_general_task"]
-    assert starts == [demo.mail_url(), "https://open.spotify.com"]
+    assert starts == [demo.mail_url()]
 
 
 def test_dry_run_can_spare_one_part(monkeypatch) -> None:
     """The WhatsApp message can go for real while the mail stays a draft."""
     monkeypatch.setenv("HEYPEER_DEMO_DRY_RUN", "mail")
     assert "Do NOT click Send" in demo.mail_task()
-    assert "Send it" in demo.playlist_task()
 
 
 def test_the_commit_url_comes_from_the_remote() -> None:
@@ -362,18 +351,6 @@ def test_the_commit_url_comes_from_the_remote() -> None:
 def test_the_commit_is_shown_after_the_push() -> None:
     methods = [s.method for s in demo.script()]
     assert methods.index("_demo_show_commit") == methods.index("_run_commit_and_push") + 1
-
-
-def test_the_message_is_english_and_first_name_only(monkeypatch) -> None:
-    monkeypatch.setenv("HEYPEER_DEMO_CONTACT", "Tally")
-    task = demo.playlist_task()
-    assert "in English" in task
-    assert "never by her surname" in task
-
-
-def test_the_playlist_has_no_podcasts() -> None:
-    """The first run put podcast episodes in it before correcting itself."""
-    assert "never podcasts" in demo.playlist_task()
 
 
 def test_the_browser_is_not_started_before_its_step() -> None:
@@ -438,12 +415,6 @@ def test_the_blob_leaves_with_the_voice(monkeypatch) -> None:
     assert peer.debug_window is window
 
 
-def test_the_playlist_starts_fresh() -> None:
-    """A run found the last run's playlist and added five more to it."""
-    task = demo.playlist_task()
-    assert "delete it first" in task and "create a new playlist" in task
-
-
 def test_the_mail_agent_leaves_other_drafts_alone() -> None:
     """It opened one of the user's own drafts, and wrote each reply as one line."""
     task = demo.mail_task()
@@ -469,13 +440,19 @@ def test_old_reply_drafts_are_discarded_first() -> None:
     assert "discard that draft" in demo.mail_task()
 
 
-def test_the_playlist_is_exactly_five_tracks() -> None:
-    """A run made it ten."""
-    assert "exactly five" in demo.playlist_task()
+def test_the_playlist_goes_to_the_configured_contact(monkeypatch) -> None:
+    monkeypatch.setenv("HEYPEER_DEMO_CONTACT", "Tally")
+    monkeypatch.setenv("HEYPEER_DEMO_PLAYLIST", "Love")
+    step = next(s for s in demo.script() if s.method == "_run_share_playlist")
+    assert step.kwargs["name"] == "Love" and step.kwargs["contact"] == "Tally"
 
 
-def test_a_dry_run_clears_the_last_unsent_message(monkeypatch) -> None:
-    """A rehearsal left the previous run's message - and its dead link - in the box."""
-    monkeypatch.setenv("HEYPEER_DEMO_DRY_RUN", "playlist")
-    task = demo.playlist_task()
-    assert "Ctrl+A then Delete" in task and "the one you just copied" in task
+def test_the_message_is_english_and_first_name_only(monkeypatch) -> None:
+    monkeypatch.setenv("HEYPEER_DEMO_CONTACT", "Tally")
+    message = demo.playlist_message("https://open.spotify.com/playlist/x")
+    assert message.startswith("Hey Tally,") and message.endswith("playlist/x")
+
+
+def test_there_are_spare_tracks() -> None:
+    """Five go in; a search that finds nothing is covered by the next."""
+    assert len(demo.CHILL_TRACKS) > 5

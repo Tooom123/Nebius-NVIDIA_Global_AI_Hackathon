@@ -232,34 +232,25 @@ def mail_task() -> str:
     )
 
 
-def playlist_task() -> str:
-    """The playlist and the message, as one task for the general agent -
-    they are one intention, and splitting them would make the agent find the
-    playlist link again in a second session."""
-    if dry_run("playlist"):
-        finish = ("The chat box may still hold an unsent message from an earlier "
-                  "try, with a link to a playlist that no longer exists: click "
-                  "into the box, press Ctrl+A then Delete, and check it is empty "
-                  "before typing. The link in your message must be the one you "
-                  "just copied. Type the message but do NOT press Enter or "
-                  "click Send.")
-    else:
-        finish = "Send it."
-    return (
-        "Spotify's web player (https://open.spotify.com) is already open in "
-        f"the current tab. If your library already has a playlist named "
-        f"\"{playlist_name()}\", delete it first. Then create a new playlist "
-        f"named \"{playlist_name()}\" and "
-        "add exactly five well-known chill, laid-back songs to it - music "
-        "tracks only, never podcasts or episodes. Count the tracks on the "
-        "playlist page before going on: five, not more. Copy the playlist's "
-        "share link. Then, in the same tab, go to WhatsApp Web "
-        f"(https://web.whatsapp.com), open the chat with {contact()} and "
-        "write a one-sentence, warm message in English with the link. "
-        f"Call her {contact()} only, in the message and in your report - "
-        f"never by her surname. {finish} "
-        f"{WORK_IN_THE_TAB}"
-    )
+# The playlist's songs, tried in order until five are in. Fixed rather
+# than chosen on the night: the step is a sequence now, not an agent (see
+# executor/spotify_app.py), and a spare or two covers a search that finds
+# nothing.
+CHILL_TRACKS = (
+    ("Weightless", "Marconi Union"),
+    ("Teardrop", "Massive Attack"),
+    ("Porcelain", "Moby"),
+    ("Breathe Me", "Sia"),
+    ("Intro", "The xx"),
+    ("Holocene", "Bon Iver"),
+    ("Sunset Lover", "Petit Biscuit"),
+)
+
+
+def playlist_message(link: str) -> str:
+    """The WhatsApp message: English, first name only."""
+    return (f"Hey {contact()}, I made you a chill playlist - hope it brings "
+            f"a bit of calm to your day: {link}")
 
 
 def script(lang: "str | None" = None) -> "list[Step]":
@@ -296,13 +287,13 @@ def script(lang: "str | None" = None) -> "list[Step]":
                                       "cwd": str(path.parent)}, "code"),
         Step("_demo_show_commit", {"cwd": str(path.parent), "language": lang}, "code"),
         # The playlist, sent on WhatsApp.
-        Step("_run_general_task", {"task": playlist_task(), "language": lang,
-                                   "start_url": "https://open.spotify.com",
-                                   "narration": _en(lang,
-                                                    f"Une playlist {playlist_name()} "
-                                                    f"pour {contact()}.",
-                                                    f"A {playlist_name()} playlist "
-                                                    f"for {contact()}.")},
+        Step("_run_share_playlist", {"name": playlist_name(), "contact": contact(),
+                                     "language": lang,
+                                     "narration": _en(lang,
+                                                      f"Une playlist {playlist_name()} "
+                                                      f"pour {contact()}.",
+                                                      f"A {playlist_name()} playlist "
+                                                      f"for {contact()}.")},
              "playlist"),
         # CapCut last: it ends on the motion design playing full screen,
         # which is the demo's closing shot.
