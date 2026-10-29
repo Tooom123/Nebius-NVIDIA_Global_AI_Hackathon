@@ -48,7 +48,7 @@ def test_the_mail_task_replies_to_two_and_deletes_nothing() -> None:
 def test_the_mail_is_answered_in_its_own_language() -> None:
     """The instructions are in English; a French mail still gets a French
     reply."""
-    assert "language of the email" in demo.mail_task()
+    assert "in English" in demo.mail_task()
 
 
 def test_a_dry_run_sends_nothing(monkeypatch) -> None:
@@ -449,3 +449,16 @@ def test_the_mail_agent_leaves_other_drafts_alone() -> None:
     task = demo.mail_task()
     assert "Never open, edit or close any other draft" in task
     assert "each on its own line" in task
+
+
+def test_the_commit_is_staged_and_pushed_around_the_agent(tmp_path: Path) -> None:
+    """The agent's own git add was refused once, and nothing was committed."""
+    peer = _peer()
+    calls = []
+    with patch("heypeer.executor.coding_agent.is_available", return_value=True), patch(
+        "heypeer.executor.coding_agent.run", side_effect=lambda *a: calls.append("agent") or ""
+    ), patch("heypeer.main.git_in", side_effect=lambda cwd, *a: calls.append(a) or (
+        "## main...origin/main [ahead 1]" if a[0] == "status" else "")), patch.object(peer, "_speak"):
+        peer._run_commit_and_push(None, "en", cwd=str(tmp_path))
+    assert calls[0] == ("add", "-A") and calls[1] == "agent"
+    assert ("push", "-q") in calls

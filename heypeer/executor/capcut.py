@@ -382,6 +382,27 @@ def clean_cues(raw, sounds: "list[Path]", duration: float) -> "list[Cue]":
     return cues[:MAX_CUES]
 
 
+MIN_CUES = 5
+
+
+def top_up(cues: "list[Cue]", sounds: "list[Path]", duration: float) -> "list[Cue]":
+    """`cues`, with evenly spaced ones added until there are MIN_CUES -
+    each at least a second from any already there. The model is asked for
+    five to twelve and sometimes returns three that survive cleaning, and a
+    minute of video with three sounds reads as a mistake."""
+    if len(cues) >= MIN_CUES or not sounds:
+        return cues
+    result = list(cues)
+    used = {c.sound for c in cues}
+    spare = [s for s in sounds if s not in used] or list(sounds)
+    for i, t in enumerate(frame_times(duration, MIN_CUES * 2)):
+        if len(result) >= MIN_CUES:
+            break
+        if all(abs(t - c.time) >= 1.0 for c in result):
+            result.append(Cue(t, spare[i % len(spare)]))
+    return sorted(result, key=lambda c: c.time)
+
+
 def fallback_cues(sounds: "list[Path]", times: "list[float]") -> "list[Cue]":
     """Used only when the model returns nothing usable: one sound per
     sampled moment, cycling through the folder. Ordinary, and said to be in

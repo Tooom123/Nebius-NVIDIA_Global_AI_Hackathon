@@ -807,8 +807,9 @@ class HeyPeer:
     # the point of the feature, and a prompt that merely *mentions* it gets
     # it right most of the time, which is not the same thing.
     COMMIT_PROMPT = (
-        "Stage the current changes, write a commit message describing what "
-        "they actually do, and push. End the commit message with this "
+        "The changes are already staged (git add has been run for you). Read "
+        "them with git diff --cached, write a commit message describing what "
+        "they actually do, commit, and push. End the commit message with this "
         "trailer, exactly:\n\n"
         "Co-Authored-By: Hey Peer <noreply@heypeer.local>\n\n"
         "If there is nothing staged and nothing modified, say so and do not "
@@ -1119,6 +1120,11 @@ class HeyPeer:
         # means.
         cwd = Path(cwd) if cwd else (self.watched_dir or Path.home())
         self.tray.set_status(Status.EXECUTING)
+        # Staged here and pushed here if the agent did not: the agent's part
+        # is the message, and its shell commands only run when they match
+        # the pre-approved patterns exactly - a run where it phrased the add
+        # differently was refused, and nothing was committed.
+        git_in(cwd, "add", "-A")
         try:
             output = coding_agent.run(self.COMMIT_PROMPT, cwd, coding_agent.GIT_TOOLS)
         except coding_agent.CodingAgentTimedOut:
@@ -1139,6 +1145,11 @@ class HeyPeer:
             return
         finally:
             self.tray.set_status(Status.LISTENING if self.tray.auto_mode else Status.OFF)
+
+        status = git_in(cwd, "status", "-sb")
+        if "ahead" in (status.splitlines() or [""])[0]:
+            self._log("Commit made but not pushed by the agent; pushing it.")
+            git_in(cwd, "push", "-q")
 
         try:
             summary = self.nemotron.summarize_for_speech(output, language) if output else ""
@@ -1417,7 +1428,8 @@ class HeyPeer:
         timeline = self.nemotron.describe_video_frames(frames) if frames else ""
         self._log(f"Timeline:\n{timeline or '(none)'}")
         raw = self.nemotron.compose_sound_cues(timeline, [s.name for s in sounds], seconds)
-        cues = capcut.clean_cues(raw, sounds, seconds)
+        cues = capcut.top_up(capcut.clean_cues(raw, sounds, seconds), sounds, seconds) \
+            if raw else []
         if not cues:
             cues = capcut.fallback_cues(sounds, capcut.frame_times(seconds))
             self._log("Cue composition failed; spacing the sounds evenly instead.")
@@ -3191,6 +3203,18 @@ def _warn_about_retired_models(settings) -> None:
         f"       NEMOTRON_MODEL_ID={replacement}\n"
         f"       VISION_MODEL_ID=google/gemma-3-27b-it\n"
     )
+
+
+def git_in(cwd, *args: str) -> str:
+    """`git -C cwd args`, its output, or "" on any failure."""
+    import subprocess
+
+    try:
+        return subprocess.run(  # noqa: S603, S607
+            ["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
+    except Exception:
+        return ""
 
 
 def clear_stage() -> int:
