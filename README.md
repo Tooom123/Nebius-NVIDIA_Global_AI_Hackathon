@@ -67,6 +67,28 @@ routines - so Nemotron resolves "move the invoice to Archives" to a real
  Spoken reply (Piper for French, Kokoro for English)
 ```
 
+## Motion design
+
+[![Hey Peer, how it works - the closing motion design of the demo video](motion/out/poster.jpg)](motion/out/heypeer_architecture.mp4)
+
+The demo video closes on a 57-second motion design of the whole system:
+the problem, the voice taking over from mouse and keyboard, the pipeline
+from your microphone to Nemotron and back, the Personal AI features, and
+the test suite. [Watch it](motion/out/heypeer_architecture.mp4) (MP4, 1080p,
+with sound).
+
+It is built as code with [HyperFrames](https://github.com/heygen-com/hyperframes)
+(HTML and GSAP rendered to video), and every claim on screen was checked
+against this repository. The blob is the app's own indicator, rendered by
+`heypeer/tray/blob_preview.py`; the sound effects are synthesised from
+scratch by `motion/sfx/build_sfx.py`, so there is no third-party audio. To
+re-render:
+
+```bash
+cd motion
+npx hyperframes render -q delivery --fps 30 -o out/heypeer_architecture.mp4
+```
+
 ## What it can do
 
 - **Files** - move, rename, create, delete ("déplace la facture vers
