@@ -472,3 +472,10 @@ def test_old_reply_drafts_are_discarded_first() -> None:
 def test_the_playlist_is_exactly_five_tracks() -> None:
     """A run made it ten."""
     assert "exactly five" in demo.playlist_task()
+
+
+def test_a_dry_run_clears_the_last_unsent_message(monkeypatch) -> None:
+    """A rehearsal left the previous run's message - and its dead link - in the box."""
+    monkeypatch.setenv("HEYPEER_DEMO_DRY_RUN", "playlist")
+    task = demo.playlist_task()
+    assert "Ctrl+A then Delete" in task and "the one you just copied" in task

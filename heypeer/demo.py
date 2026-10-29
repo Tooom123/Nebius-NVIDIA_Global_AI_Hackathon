@@ -237,9 +237,12 @@ def playlist_task() -> str:
     they are one intention, and splitting them would make the agent find the
     playlist link again in a second session."""
     if dry_run("playlist"):
-        finish = ("If the chat box already holds text from an earlier try, "
-                  "clear it first. Type the message in the chat box but do NOT "
-                  "press Enter or click Send.")
+        finish = ("The chat box may still hold an unsent message from an earlier "
+                  "try, with a link to a playlist that no longer exists: click "
+                  "into the box, press Ctrl+A then Delete, and check it is empty "
+                  "before typing. The link in your message must be the one you "
+                  "just copied. Type the message but do NOT press Enter or "
+                  "click Send.")
     else:
         finish = "Send it."
     return (
