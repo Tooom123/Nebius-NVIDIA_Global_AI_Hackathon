@@ -397,7 +397,9 @@ def test_the_whole_edit_watches_decides_writes_and_shows(monkeypatch, tmp_path: 
 
     peer.nemotron.compose_sound_cues.assert_called_once_with("t=1s: a logo pops", ["pop.wav"], 20.0)
     assert apply.call_args.args[0] == draft
-    assert [c.sound.name for c in apply.call_args.args[1]] == ["pop.wav"]
+    placed = apply.call_args.args[1]
+    assert placed[0].sound.name == "pop.wav", "the composed cue is kept"
+    assert len(placed) == capcut.MIN_CUES, "and topped up to the minimum"
     assert render.call_args.args[3] == tmp_path / "s.png", "the transition starts from the screen"
     play.assert_called_once()
 
@@ -439,3 +441,113 @@ def test_the_action_is_dispatched_with_its_folder() -> None:
         )
     run.assert_called_once()
     assert run.call_args.args[2] == "SFX"
+
+
+def test_restoring_puts_the_original_back(tmp_path: Path) -> None:
+    """Each rehearsal adds tracks; the backup is the untouched original."""
+    from heypeer.executor import capcut
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    draft = project / "draft_content.json"
+    draft.write_text('{"edited": true}', encoding="utf-8")
+    (project / ("draft_content" + capcut.BACKUP_SUFFIX)).write_text('{"original": true}', encoding="utf-8")
+
+    with patch("heypeer.executor.capcut.close_app", return_value=True):
+        assert capcut.restore_backup(project) is True
+    assert draft.read_text(encoding="utf-8") == '{"original": true}'
+
+
+def test_nothing_to_restore_before_the_first_run(tmp_path: Path) -> None:
+    from heypeer.executor import capcut
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "draft_content.json").write_text("{}", encoding="utf-8")
+    assert capcut.restore_backup(project) is False
+
+
+def _two_timeline_project(tmp_path: Path) -> Path:
+    """A project as recent CapCut saves it: the draft, and an identical
+    copy under Timelines/<main id>/ that CapCut reopens."""
+    project = tmp_path / "proj"
+    (project / "Timelines" / "MAIN").mkdir(parents=True)
+    (project / "Timelines" / "project.json").write_text('{"main_timeline_id": "MAIN"}', encoding="utf-8")
+    for p in (project / "draft_content.json", project / "Timelines" / "MAIN" / "draft_content.json"):
+        p.write_text('{"edited": true}', encoding="utf-8")
+    (project / ("draft_content" + capcut.BACKUP_SUFFIX)).write_text('{"original": true}', encoding="utf-8")
+    return project
+
+
+def test_the_main_timeline_copy_is_found(tmp_path: Path) -> None:
+    project = _two_timeline_project(tmp_path)
+    assert capcut.timeline_copy(project / "draft_content.json") == (
+        project / "Timelines" / "MAIN" / "draft_content.json")
+
+
+def test_an_older_project_has_no_timeline_copy(tmp_path: Path) -> None:
+    (tmp_path / "draft_content.json").write_text("{}", encoding="utf-8")
+    assert capcut.timeline_copy(tmp_path / "draft_content.json") is None
+
+
+def test_restoring_restores_the_timeline_copy_too(tmp_path: Path) -> None:
+    """Otherwise CapCut reopens the edited copy and the restore is undone."""
+    project = _two_timeline_project(tmp_path)
+    with patch("heypeer.executor.capcut.close_app", return_value=True):
+        assert capcut.restore_backup(project) is True
+    copy = project / "Timelines" / "MAIN" / "draft_content.json"
+    assert copy.read_text(encoding="utf-8") == '{"original": true}'
+
+
+def _timeline_content(tmp_path: Path) -> dict:
+    clip = tmp_path / "clip.mov"
+    clip.write_bytes(b"x")
+    return {
+        "materials": {"videos": [{"id": "m1", "path": str(clip), "type": "video", "duration": 6_100_000}]},
+        "tracks": [{"type": "video", "segments": [
+            {"material_id": "m1", "source_timerange": {"start": 0, "duration": 6_100_000},
+             "target_timerange": {"start": 6_100_000, "duration": 6_100_000}},
+            {"material_id": "m1", "source_timerange": {"start": 1_000_000, "duration": 2_000_000},
+             "target_timerange": {"start": 0, "duration": 2_000_000}},
+        ]}],
+    }
+
+
+def test_the_timeline_is_read_in_playing_order(tmp_path: Path) -> None:
+    """One clip used several times: the sounds belong to the whole timeline,
+    not to the clip's own six seconds."""
+    segments = capcut.timeline_segments(_timeline_content(tmp_path))
+    assert [(round(s, 1), round(d, 1)) for _, s, d in segments] == [(1.0, 2.0), (0.0, 6.1)]
+
+
+def test_the_timeline_command_cuts_and_joins_every_segment(tmp_path: Path) -> None:
+    segments = capcut.timeline_segments(_timeline_content(tmp_path))
+    command = capcut.timeline_command(segments, tmp_path / "out.mp4")
+    assert command.count("-i") == 2
+    assert command[command.index("-ss") + 1] == "1.000"
+    assert "concat=n=2:v=1:a=0[v]" in command[command.index("-filter_complex") + 1]
+
+
+def test_a_project_is_chosen_by_name(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "HeyPeer").mkdir()
+    (tmp_path / "HeyPeer" / "draft_content.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HEYPEER_CAPCUT_DRAFTS", str(tmp_path))
+    assert capcut.project_dir("HeyPeer") == tmp_path / "HeyPeer"
+    assert capcut.project_dir("Missing") is None
+
+
+def test_too_few_cues_are_topped_up(tmp_path: Path) -> None:
+    """Three sounds over a minute of video read as a mistake."""
+    sounds = [tmp_path / f"s{i}.wav" for i in range(6)]
+    cues = [capcut.Cue(10.0, sounds[0]), capcut.Cue(30.0, sounds[1]), capcut.Cue(50.0, sounds[2])]
+    out = capcut.top_up(cues, sounds, 60.0)
+    assert len(out) == capcut.MIN_CUES
+    assert out == sorted(out, key=lambda c: c.time)
+    times = [c.time for c in out]
+    assert all(abs(a - b) >= 1.0 for a, b in zip(times, times[1:]))
+
+
+def test_enough_cues_are_left_alone(tmp_path: Path) -> None:
+    sounds = [tmp_path / "s.wav"]
+    cues = [capcut.Cue(float(i), sounds[0]) for i in range(6)]
+    assert capcut.top_up(cues, sounds, 60.0) == cues

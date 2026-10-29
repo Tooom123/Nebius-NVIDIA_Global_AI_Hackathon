@@ -56,6 +56,7 @@ Windows-only, like `cursor.py`. Elsewhere it degrades to a no-op rather than
 pretending to work.
 """
 
+import math
 import multiprocessing
 import time
 
@@ -83,7 +84,7 @@ STATE_ENERGY = {
     "awaiting":  {"amplitude": 0.042, "speed": 0.70, "glow": 0.55, "level_gain": 1.0},
     "recording": {"amplitude": 0.045, "speed": 0.80, "glow": 0.55, "level_gain": 1.0},
     "thinking":  {"amplitude": 0.065, "speed": 1.60, "glow": 0.60, "level_gain": 0.0},
-    "speaking":  {"amplitude": 0.080, "speed": 1.10, "glow": 0.70, "level_gain": 0.6},
+    "speaking":  {"amplitude": 0.110, "speed": 1.60, "glow": 0.70, "level_gain": 0.6},
 }
 
 # What a full-scale mic level adds on top of the state's own values. These
@@ -94,6 +95,11 @@ LEVEL_AMPLITUDE_GAIN = 0.15
 LEVEL_SPEED_GAIN = 2.5
 LEVEL_GLOW_GAIN = 0.40
 LEVEL_RADIUS_GAIN = 0.14
+
+# The syllable pulse while speaking: how much it adds to the outline's
+# deformation at its peak, and how fast it beats against the phase.
+SPEAKING_PULSE = 0.55
+SPEAKING_PULSE_RATE = 4.3
 
 # Only shown while a turn is actually happening - the indicator should appear
 # when Hey Peer has heard something, not sit on screen permanently.
@@ -138,15 +144,6 @@ def slide_position(from_y: float, to_y: float, elapsed: float) -> float:
     return from_y + (to_y - from_y) * eased
 
 
-def _screen_width(default: int = 1920) -> int:
-    try:
-        import ctypes
-
-        return int(ctypes.windll.user32.GetSystemMetrics(0)) or default
-    except Exception:
-        return default
-
-
 def _window_process(
     command_queue: "multiprocessing.Queue", landed: "multiprocessing.Event" = None
 ) -> None:
@@ -178,8 +175,11 @@ def _window_process(
     if not overlay.create():
         return _drain_until_quit()
 
-    x = max(0, (_screen_width() - SIZE) // 2)
-    offscreen_y = -SIZE - 20
+    from heypeer.tray.overlay import stage_rect
+
+    stage_left, stage_top, stage_width, _ = stage_rect()
+    x = stage_left + max(0, (stage_width - SIZE) // 2)
+    offscreen_y = stage_top - SIZE - 20
 
     # Built once here rather than on the first visible frame, so the cue
     # doesn't pay for cache misses and GDI setup at the exact moment it is
@@ -273,11 +273,16 @@ def _window_process(
         # must bend the motion, never teleport the phase.
         phase += speed * dt
 
-        target_y = float(TOP_MARGIN if visible else offscreen_y)
+        target_y = float(stage_top + TOP_MARGIN if visible else offscreen_y)
         elapsed = now - slide_started_at
         progress = min(1.0, elapsed / SLIDE_SECONDS)
         y = slide_position(slide_from, target_y, elapsed)
 
+        # Speech gets a pulse of its own on the rim, like syllables: Hey
+        # Peer's own voice is not fed back as a level, so without it the
+        # blob talked with the same slow wobble it thinks with.
+        if state == "speaking":
+            amplitude *= 1.0 + SPEAKING_PULSE * math.sin(phase * SPEAKING_PULSE_RATE) ** 2
         radii = radius_profile(OUTLINE_ANGLES, phase, amplitude)
         # The aura pulses with the state's own energy, so it is near-absent
         # at idle and full while speaking. Passing `phase` is what makes its

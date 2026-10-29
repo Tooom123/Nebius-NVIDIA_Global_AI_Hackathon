@@ -28,60 +28,138 @@ adding to it is writing one. The few things that depend on the demo
 machine - which file holds the bug, who receives the playlist - come from
 environment variables with defaults, so the run can be rehearsed on one
 machine and performed on another without editing code.
+
+## Rehearsing it
+
+`python -m heypeer.main --demo-now` runs the sequence at once, without
+waiting for the wake word. HEYPEER_DEMO_ONLY="drums,code" runs only the
+steps with those tags. HEYPEER_DEMO_DRY_RUN=1 has every agent stop before
+anything leaves the machine - replies and messages are written, not sent -
+so the outward steps can be rehearsed as often as the others.
 """
 
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+TAGS = ("intro", "drums", "mail", "code", "playlist", "capcut")
 
 
 @dataclass(frozen=True)
 class Step:
-    """One thing the demo does: a `HeyPeer` method and what to pass it."""
+    """One thing the demo does: a `HeyPeer` method and what to pass it.
+    `tag` names the part of the demo it belongs to, for HEYPEER_DEMO_ONLY."""
 
     method: str
     kwargs: dict = field(default_factory=dict)
+    tag: str = ""
+
+
+def language() -> str:
+    """The demo is performed in English unless HEYPEER_DEMO_LANGUAGE says
+    otherwise - it decides Hey Peer's voice and the agents' instructions."""
+    return (os.environ.get("HEYPEER_DEMO_LANGUAGE") or "en").strip().lower()
+
+
+def dry_run(part: str = "") -> bool:
+    """Whether `part` ("mail", "playlist") stops before sending.
+    HEYPEER_DEMO_DRY_RUN is "1" for every part, or a list of parts - so the
+    message to someone who knows about the demo can go for real while the
+    mail replies stay drafts."""
+    raw = (os.environ.get("HEYPEER_DEMO_DRY_RUN") or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return bool(part) and part in {p.strip() for p in raw.split(",")}
+
+
+def silent() -> bool:
+    """Whether Hey Peer stays quiet after announcing the plan. On unless
+    HEYPEER_DEMO_SILENT=0: music runs under the whole demo video, so the
+    voice says what it is about to do once, after the request, and the
+    rest is seen rather than heard."""
+    return (os.environ.get("HEYPEER_DEMO_SILENT") or "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+# What the intro announces, in the order the parts run.
+INTRO_EN = ("Let's go. I'll lay down drums in FL Studio, answer your emails, "
+            "fix the bug and push it to GitHub, send Tally a chill playlist, "
+            "and add sound effects to your CapCut project.")
+INTRO_FR = ("C'est parti. Je pose une batterie dans FL Studio, je réponds à tes "
+            "mails, je corrige le bug et je le pousse sur GitHub, j'envoie une "
+            "playlist chill à Tally, et j'ajoute des bruitages à ton projet CapCut.")
+
+
+def selected(steps: "list[Step]") -> "list[Step]":
+    """The steps HEYPEER_DEMO_ONLY asks for, or all of them."""
+    wanted = {t.strip().lower() for t in (os.environ.get("HEYPEER_DEMO_ONLY") or "").split(",") if t.strip()}
+    if not wanted:
+        return steps
+    return [s for s in steps if s.tag in wanted]
+
+
+def _en(lang: str, french: str, english: str) -> str:
+    return english if lang == "en" else french
 
 
 def code_file() -> Path:
     """The file with the bug the demo fixes. HEYPEER_DEMO_CODE_FILE, else
-    `demo_bug.py` beside the project - created by `ensure_code_file` so a
-    fresh machine has something to fix."""
+    `demo_bug.py` beside the project."""
     configured = os.environ.get("HEYPEER_DEMO_CODE_FILE")
     if configured:
         return Path(configured).expanduser()
     return Path(__file__).resolve().parent.parent / "demo_bug.py"
 
 
-# The bug the demo fixes when no file is configured. Deliberately the one a
-# room recognises in a second - an average that divides by zero on an empty
-# list - so the audience is following the fix, not reading the code.
-DEFAULT_BUGGY_CODE = '''def moyenne(nombres):
+# The bug the demo fixes. Deliberately the one a room recognises in a
+# second - an average that divides by zero on an empty list - so the
+# audience is following the fix, not reading the code.
+DEFAULT_BUGGY_CODE = '''def average(numbers):
     total = 0
-    for n in nombres:
+    for n in numbers:
         total += n
-    return total / len(nombres)
+    return total / len(numbers)
 
 
-print(moyenne([12, 15, 18]))
-print(moyenne([]))
+print(average([12, 15, 18]))
+print(average([]))
 '''
 
 
 def ensure_code_file() -> Path:
-    """Puts the bug back before every run.
+    """Puts the bug back before every run, and commits it.
 
     Always rewritten rather than checked: a rehearsal fixes it, and a second
-    run with nothing to diagnose has the agent say so on stage. Detecting
-    "already fixed" would mean guessing what shape the agent's fix took.
+    run with nothing to diagnose has the agent say so on stage. So
+    HEYPEER_DEMO_CODE_FILE must name a throwaway file kept for the demo -
+    whatever is in it is replaced.
 
-    Only the default file. A path from HEYPEER_DEMO_CODE_FILE is the user's
-    own code and is never written to by this.
+    Committed and pushed when the file sits in a git repository, so the
+    fix the agent commits later is a real diff against the bug, on GitHub
+    as well as locally.
     """
     path = code_file()
-    if not os.environ.get("HEYPEER_DEMO_CODE_FILE"):
-        path.write_text(DEFAULT_BUGGY_CODE, encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(DEFAULT_BUGGY_CODE.encode("utf-8"))
+    if (path.parent / ".git").exists():
+        git = ["git", "-C", str(path.parent)]
+        subprocess.run([*git, "add", path.name], capture_output=True)  # noqa: S603, S607
+        if subprocess.run([*git, "diff", "--cached", "--quiet"]).returncode != 0:  # noqa: S603, S607
+            subprocess.run(  # noqa: S603, S607
+                [*git, "commit", "-m", "Add an average helper"], capture_output=True
+            )
+        # Pushed too, so the remote starts from the bug: left local, the
+        # agent saw an unpushed commit removing the guard it was about to
+        # commit, asked whether to push at all, and pushed nothing.
+        subprocess.run([*git, "push", "-q"], capture_output=True, timeout=60)  # noqa: S603, S607
     return path
+
+
+def flp_file() -> "Path | None":
+    """The FL Studio project the drums go into, opened by the drums step
+    when FL Studio is not already up. HEYPEER_DEMO_FLP; none by default."""
+    configured = os.environ.get("HEYPEER_DEMO_FLP")
+    return Path(configured).expanduser() if configured else None
 
 
 def contact() -> str:
@@ -89,7 +167,13 @@ def contact() -> str:
 
 
 def playlist_name() -> str:
-    return os.environ.get("HEYPEER_DEMO_PLAYLIST") or "Love"
+    return os.environ.get("HEYPEER_DEMO_PLAYLIST") or "Chill"
+
+
+def mail_url() -> str:
+    """Where the demo's mails are. A label rather than the whole inbox, so
+    the agent reads the three mails set up for it and nothing private."""
+    return os.environ.get("HEYPEER_DEMO_MAIL_URL") or "https://mail.google.com/mail/u/0/#label/HeyPeer"
 
 
 def sfx_folder() -> str:
@@ -100,64 +184,140 @@ def sfx_folder() -> str:
     return os.environ.get("HEYPEER_SFX_DIR") or "SFX"
 
 
+def capcut_project() -> str:
+    """The CapCut project the sounds go into, by the name CapCut shows -
+    HEYPEER_DEMO_CAPCUT_PROJECT. Empty means the latest one, which on a
+    machine used for anything else is rarely the demo's."""
+    return os.environ.get("HEYPEER_DEMO_CAPCUT_PROJECT") or ""
+
+
 def drum_style() -> str:
     return os.environ.get("HEYPEER_DEMO_STYLE") or ""
 
 
+# How the agent is to work in the browser, said once for both tasks. Each
+# sentence is there because a run went wrong without it: nineteen tabs
+# opened, one per action, while the window showed the first; and a report
+# of two drafts written when no email had been opened - hence the check.
+WORK_IN_THE_TAB = (
+    "Work only in the browser's current tab: never call new_tab(); use "
+    "goto_url(url) to navigate, and js(...), fill_input(...) or "
+    "click_at_xy(...) to act on the page. Before you finish, check on the "
+    "page that what you did is really there. Report only what you actually "
+    "did and saw; if a step failed, say which one. Do not ask me questions."
+)
+
+
+# How to type the reply. fill_input drops the line breaks - a rehearsal's
+# drafts read "Hi Marc,Confirmed, see you tomorrow at 2:30 in Room B.Tom".
+# Raw CDP key events went to another target and the agent spent four
+# minutes on them; execCommand in the page is what worked first time.
+TYPE_LINES = (
+    "Do not use fill_input or key events for the reply body: fill_input "
+    "drops line breaks. Type it in one js() call, with LINES your lines: "
+    "js(\"(() => { const b = [...document.querySelectorAll('[contenteditable=true]"
+    "[role=textbox]')].pop(); b.focus(); document.execCommand('selectAll'); "
+    "document.execCommand('delete'); LINES.forEach((l, i) => { if (i) "
+    "document.execCommand('insertLineBreak'); document.execCommand('insertText', "
+    "false, l); }); return b.innerText; })()\") - it returns the body, check "
+    "it shows the line breaks."
+)
+
+
 def mail_task() -> str:
-    """What the general agent is asked to do with the inbox. Spelled out
-    rather than left as "lis mes mails": an agent given a vague task on
+    """What the general agent is asked to do with the mails. Spelled out
+    rather than left as "read my mail": an agent given a vague task on
     stage improvises, and improvising means asking questions."""
+    if dry_run("mail"):
+        finish = ("Do NOT click Send: leave both replies as drafts.")
+    else:
+        finish = "Send both replies."
     return (
-        "Ouvre https://mail.google.com dans le navigateur. Lis les derniers "
-        "e-mails reçus dans la boîte de réception. Choisis-en deux qui "
-        "appellent une réponse et réponds à chacun avec un message court, "
-        "cordial et adapté à ce qu'il dit, puis envoie les deux réponses. "
-        "Ne supprime et n'archive rien."
+        f"The Gmail label at {mail_url()} is already open in the current tab. "
+        "Read its emails. Exactly two of them call for an answer; the other "
+        "is an automated message that must be left alone. For each of the "
+        "two: open it; if it already has a reply draft, discard that draft "
+        "first with its trash icon (an older run left drafts behind, some in "
+        "the wrong language); then click Reply and type a short, friendly reply in "
+        "English - these emails are in English, whatever language Gmail's own "
+        "interface is in - signed Tom, with the greeting, the body and "
+        "the signature each on its own line. "
+        f"{TYPE_LINES} {finish} Never open, edit or close any other draft or compose "
+        "window: only the two replies. Do not delete, archive or label "
+        f"anything. {WORK_IN_THE_TAB}"
     )
 
 
-def playlist_task() -> str:
-    """The playlist and the message, as one task for the general agent -
-    they are one intention, and splitting them would make the agent find the
-    playlist link again in a second session."""
-    return (
-        f"Crée une playlist Spotify nommée « {playlist_name()} » avec une "
-        "quinzaine de chansons d'amour connues. Copie le lien de partage de "
-        f"la playlist, puis ouvre WhatsApp et envoie ce lien à {contact()} "
-        "avec un petit message tendre d'une phrase."
-    )
+# The playlist's songs, tried in order until five are in. Fixed rather
+# than chosen on the night: the step is a sequence now, not an agent (see
+# executor/spotify_app.py), and a spare or two covers a search that finds
+# nothing.
+CHILL_TRACKS = (
+    ("Weightless", "Marconi Union"),
+    ("Teardrop", "Massive Attack"),
+    ("Porcelain", "Moby"),
+    ("Breathe Me", "Sia"),
+    ("Intro", "The xx"),
+    ("Holocene", "Bon Iver"),
+    ("Sunset Lover", "Petit Biscuit"),
+)
 
 
-def script(language: str = "fr") -> "list[Step]":
+def playlist_message(link: str) -> str:
+    """The WhatsApp message: English, first name only."""
+    return (f"Hey {contact()}, I made you a chill playlist - hope it brings "
+            f"a bit of calm to your day: {link}")
+
+
+def script(lang: "str | None" = None) -> "list[Step]":
     """The demo, in order."""
+    lang = lang or language()
     path = code_file()
     return [
-        Step("_speak", {"text": "C'est parti.", "language": language}),
+        # The one thing said aloud when the demo is silent - see `silent`.
+        Step("_speak", {"text": _en(lang, INTRO_FR, INTRO_EN), "language": lang}, "intro"),
         # FL Studio: drums composed by Nemotron from the tempo, then play.
-        Step("_run_add_drums", {"narration": None, "language": language,
-                                "style": drum_style()}),
-        Step("_demo_play_flstudio", {"language": language}),
+        Step("_run_add_drums", {"narration": None, "language": lang,
+                                "style": drum_style(),
+                                "project": str(flp_file() or "")}, "drums"),
+        Step("_demo_play_flstudio", {"language": lang}, "drums"),
         # Gmail: read, reply to two.
-        Step("_run_general_task", {"task": mail_task(), "language": language,
-                                   "narration": "Je passe à tes mails, je lis "
-                                                "les derniers et je réponds à deux."}),
+        Step("_run_general_task", {"task": mail_task(), "language": lang,
+                                   "start_url": mail_url(),
+                                   "narration": _en(lang,
+                                                    "Je passe à tes mails, je lis "
+                                                    "les derniers et je réponds à deux.",
+                                                    "Now your inbox: I'll read the latest "
+                                                    "emails and answer the two that need it.")},
+             "mail"),
         # Code: open it, diagnose it, fix it, commit and push it.
-        Step("_demo_open_in_vscode", {"path": str(path), "language": language}),
-        Step("_run_analyze_code", {"filename": str(path), "language": language,
-                                   "question": "Qu'est-ce qui ne va pas dans ce code ?",
-                                   "narration": None}),
-        Step("_run_fix_code", {"filename": str(path), "language": language,
-                               "question": "Corrige ce bug.", "narration": None}),
-        Step("_run_commit_and_push", {"narration": None, "language": language,
-                                      "cwd": str(path.parent)}),
+        Step("_demo_open_in_vscode", {"path": str(path), "language": lang}, "code"),
+        Step("_run_analyze_code", {"filename": str(path), "language": lang,
+                                   "question": _en(lang, "Qu'est-ce qui ne va pas dans ce code ?",
+                                                   "What's wrong with this code?"),
+                                   "narration": None}, "code"),
+        Step("_run_fix_code", {"filename": str(path), "language": lang,
+                               "question": _en(lang, "Corrige ce bug.", "Fix this bug."),
+                               "narration": None}, "code"),
+        Step("_run_commit_and_push", {"narration": None, "language": lang,
+                                      "cwd": str(path.parent)}, "code"),
+        Step("_demo_show_commit", {"cwd": str(path.parent), "language": lang}, "code"),
         # The playlist, sent on WhatsApp.
-        Step("_run_general_task", {"task": playlist_task(), "language": language,
-                                   "narration": f"Une playlist "
-                                                f"{playlist_name()} pour {contact()}."}),
+        Step("_run_share_playlist", {"name": playlist_name(), "contact": contact(),
+                                     "language": lang,
+                                     "narration": _en(lang,
+                                                      f"Une playlist {playlist_name()} "
+                                                      f"pour {contact()}.",
+                                                      f"A {playlist_name()} playlist "
+                                                      f"for {contact()}.")},
+             "playlist"),
         # CapCut last: it ends on the motion design playing full screen,
         # which is the demo's closing shot.
-        Step("_run_edit_capcut", {"narration": "Dernière chose : j'ouvre ton dernier "
-                                               "projet CapCut et je rajoute des bruitages.",
-                                  "language": language, "folder": sfx_folder()}),
+        Step("_run_edit_capcut", {"narration": _en(lang,
+                                                   "Dernière chose : j'ouvre ton dernier "
+                                                   "projet CapCut et je rajoute des bruitages.",
+                                                   "One last thing: I'm opening your latest "
+                                                   "CapCut project and adding sound effects."),
+                                  "language": lang, "folder": sfx_folder(),
+                                  "project": capcut_project()}, "capcut"),
     ]

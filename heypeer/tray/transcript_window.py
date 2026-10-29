@@ -32,16 +32,6 @@ PEER_CPS = 26.0
 LINGER_SECONDS = 2.5
 
 
-def _screen_size() -> "tuple[int, int]":
-    try:
-        import ctypes
-
-        user32 = ctypes.windll.user32
-        return int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1))
-    except Exception:
-        return 1920, 1080
-
-
 def _window_process(command_queue) -> None:
     from heypeer.tray import transcript_render as tr
     from heypeer.tray.overlay import Overlay, is_supported
@@ -59,7 +49,9 @@ def _window_process(command_queue) -> None:
     if not overlay.create():
         return _drain_until_quit()
 
-    screen_width, screen_height = _screen_size()
+    from heypeer.tray.overlay import stage_rect
+
+    stage_left, stage_top, screen_width, screen_height = stage_rect()
     text = ""
     cps = USER_CPS
     revealed = 0.0
@@ -112,6 +104,7 @@ def _window_process(command_queue) -> None:
         if image is None:
             continue
         x, y = tr.position(screen_width, screen_height, image.height)
+        x, y = x + stage_left, y + stage_top
         overlay.update(_pad(image, tr.WIDTH, height), x, y)
         if not visible:
             overlay.set_visible(True)

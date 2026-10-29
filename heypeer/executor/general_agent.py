@@ -35,14 +35,15 @@ change to restore would be dishonest. This is worth being explicit about
 before wiring anything up to it that matters.
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
-# Same reasoning and same figure as coding_agent.AGENT_TIMEOUT_SECONDS - an
+# Longer than coding_agent.AGENT_TIMEOUT_SECONDS for the same reason - an
 # open-ended task can take a while, and this blocks the thread handling the
 # current turn for its entire duration.
-AGENT_TIMEOUT_SECONDS = 300
+AGENT_TIMEOUT_SECONDS = 900
 
 
 class GeneralAgentUnavailable(RuntimeError):
@@ -57,8 +58,29 @@ def is_available() -> bool:
     return shutil.which("hermes") is not None
 
 
+def _model_args() -> "list[str]":
+    """HEYPEER_HERMES_MODEL overrides the model in Hermes's own config, on
+    HEYPEER_HERMES_PROVIDER (Nebius Token Factory by default).
+
+    Not the same model as Hey Peer's own on purpose: driving Gmail through
+    a browser is many dependent steps, and measured on the demo inbox,
+    Nemotron-3-Super gave up within seconds on its own JavaScript errors,
+    Nemotron-3-Ultra had not finished after 400 seconds, and Kimi-K3
+    answered both mails, checked its drafts and stopped in 137 - until one
+    evening it took 180 seconds per call and timed out on both tasks,
+    while DeepSeek-V4-Pro did the same mails in 337. Hence a setting
+    rather than a constant: the right model on the night is the one that
+    answers.
+    """
+    model = os.environ.get("HEYPEER_HERMES_MODEL")
+    if not model:
+        return []
+    provider = os.environ.get("HEYPEER_HERMES_PROVIDER") or "nebius-token-factory"
+    return ["-m", model, "--provider", provider]
+
+
 def run(prompt: str, cwd: Path) -> str:
-    """Runs `hermes chat -q prompt` in one-shot mode with `cwd` as its
+    """Runs `hermes chat -Q -q prompt` in one-shot mode with `cwd` as its
     working directory, returning its final text output.
 
     Raises `GeneralAgentUnavailable` if the CLI is not found and
@@ -72,8 +94,14 @@ def run(prompt: str, cwd: Path) -> str:
 
     try:
         result = subprocess.run(  # noqa: S603
-            [hermes_path, "chat", "-q", prompt],
+            # -Q prints the final answer and nothing else. Without it stdout
+            # is the banner, the query echoed back and every tool call,
+            # and that whole transcript is what got summarised aloud - an
+            # answer that described the prompt instead of the inbox.
+            [hermes_path, "chat", "-Q", *_model_args(), "-q", prompt],
             cwd=str(cwd),
+            # Closed, or quiet mode waits on it and the turn times out.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             # Explicit, because Python defaults to the console's

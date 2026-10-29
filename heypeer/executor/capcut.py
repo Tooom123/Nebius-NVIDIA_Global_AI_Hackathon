@@ -105,6 +105,23 @@ def draft_file(draft_dir: Path) -> "Path | None":
     return None
 
 
+def timeline_copy(path: Path) -> "Path | None":
+    """The main timeline's own copy of the draft, which newer CapCut builds
+    keep and reopen.
+
+    Projects saved by recent desktop versions hold their main timeline
+    twice: the draft beside `Timelines/`, and `Timelines/<main id>/` with a
+    file of the same name. Editing only the first has CapCut put the old
+    timeline back.
+    """
+    try:
+        project = json.loads((path.parent / "Timelines" / "project.json").read_text(encoding="utf-8"))
+        copy = path.parent / "Timelines" / str(project["main_timeline_id"]) / path.name
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return copy if copy.is_file() else None
+
+
 def latest_draft(root: "Path | None" = None) -> "Path | None":
     """The most recently edited project folder, or None.
 
@@ -153,6 +170,76 @@ def main_video(content: dict) -> "Path | None":
         if best is None or duration > best[0]:
             best = (duration, Path(path))
     return best[1] if best else None
+
+
+def project_dir(name: "str | None") -> "Path | None":
+    """The project named `name` - its folder under the drafts root, which
+    is the name CapCut shows - or the latest one when no name is given."""
+    if not name:
+        return latest_draft()
+    path = drafts_root() / name
+    return path if draft_file(path) is not None else None
+
+
+def timeline_segments(content: dict) -> "list[tuple[Path, float, float]]":
+    """The main video track as `(file, start, duration)` in seconds, in
+    timeline order: what the project actually plays, rather than its
+    longest clip. A project cut from several clips - or one clip used
+    four times - put every sound in the first clip's length otherwise.
+    """
+    videos = {v.get("id"): v for v in (content.get("materials") or {}).get("videos") or []
+              if isinstance(v, dict)}
+    for track in content.get("tracks") or []:
+        if track.get("type") != "video":
+            continue
+        segments = []
+        for segment in sorted(track.get("segments") or [],
+                              key=lambda s: (s.get("target_timerange") or {}).get("start", 0)):
+            material = videos.get(segment.get("material_id")) or {}
+            path = material.get("path")
+            source = segment.get("source_timerange") or {}
+            if material.get("type", "video") != "video" or not path or not Path(path).is_file():
+                continue
+            segments.append((Path(path), source.get("start", 0) / 1e6, source.get("duration", 0) / 1e6))
+        if segments:
+            return segments
+    return []
+
+
+def timeline_command(
+    segments: "list[tuple[Path, float, float]]", output: Path,
+    size: "tuple[int, int]" = (1920, 1080),
+) -> "list[str]":
+    """The ffmpeg command that plays the segments back to back, picture
+    only - the sounds the demo adds are the soundtrack. Pure, like
+    `render_command`."""
+    width, height = size
+    norm = f"scale={width}:{height}:force_original_aspect_ratio=decrease," \
+           f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p"
+    inputs: "list[str]" = []
+    filters = []
+    for i, (path, start, duration) in enumerate(segments):
+        inputs += ["-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(path)]
+        filters.append(f"[{i}:v]{norm}[v{i}]")
+    filters.append("".join(f"[v{i}]" for i in range(len(segments)))
+                   + f"concat=n={len(segments)}:v=1:a=0[v]")
+    return ["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(filters),
+            "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", str(output)]
+
+
+def timeline_video(content: dict, output: Path) -> "Path | None":
+    """The project's timeline rendered to one file, or None."""
+    segments = timeline_segments(content)
+    if not segments:
+        return None
+    canvas = content.get("canvas_config") or {}
+    size = (int(canvas.get("width") or 1920), int(canvas.get("height") or 1080))
+    try:
+        result = subprocess.run(timeline_command(segments, output, size), capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=300)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return output if result.returncode == 0 and output.is_file() else None
 
 
 def sounds_in(folder: Path) -> "list[Path]":
@@ -295,6 +382,27 @@ def clean_cues(raw, sounds: "list[Path]", duration: float) -> "list[Cue]":
     return cues[:MAX_CUES]
 
 
+MIN_CUES = 5
+
+
+def top_up(cues: "list[Cue]", sounds: "list[Path]", duration: float) -> "list[Cue]":
+    """`cues`, with evenly spaced ones added until there are MIN_CUES -
+    each at least a second from any already there. The model is asked for
+    five to twelve and sometimes returns three that survive cleaning, and a
+    minute of video with three sounds reads as a mistake."""
+    if len(cues) >= MIN_CUES or not sounds:
+        return cues
+    result = list(cues)
+    used = {c.sound for c in cues}
+    spare = [s for s in sounds if s not in used] or list(sounds)
+    for i, t in enumerate(frame_times(duration, MIN_CUES * 2)):
+        if len(result) >= MIN_CUES:
+            break
+        if all(abs(t - c.time) >= 1.0 for c in result):
+            result.append(Cue(t, spare[i % len(spare)]))
+    return sorted(result, key=lambda c: c.time)
+
+
 def fallback_cues(sounds: "list[Path]", times: "list[float]") -> "list[Cue]":
     """Used only when the model returns nothing usable: one sound per
     sampled moment, cycling through the folder. Ordinary, and said to be in
@@ -327,28 +435,42 @@ def lanes(cues: "list[Cue]", lengths: "dict[Path, float]") -> "list[list[Cue]]":
 # --- Doing: the CapCut project ----------------------------------------------
 
 
-def close_app(timeout: float = 8.0) -> bool:
+def close_app(timeout: float = 8.0, force: bool = False) -> bool:
     """Closes CapCut the way a user would, and returns whether it is closed.
 
     A window close, not a process kill: CapCut saves on close, and killing
     it could lose an edit made seconds ago. Already closed is success.
+    Every CapCut window is closed - the home screen and the editor can be
+    open at once, and closing one left the other holding the draft. With
+    `force`, a CapCut still running after `timeout` is ended: for the
+    demo's own reset, where nothing unsaved is the user's.
     """
     try:
         import uiautomation as auto
     except ImportError:
         return True
+
+    def windows():
+        return [w for w in auto.GetRootControl().GetChildren()
+                if (w.Name or "") == "CapCut" or (w.ClassName or "").startswith(
+                    ("HomePageX", "MainWindow_QML", "SplashDialog"))]
+
     try:
-        window = auto.WindowControl(searchDepth=1, Name="CapCut")
-        if not window.Exists(maxSearchSeconds=0.5):
-            window = auto.WindowControl(searchDepth=1, SubName="CapCut")
-        if not window.Exists(maxSearchSeconds=0.5):
-            return True
-        window.GetWindowPattern().Close()
+        for window in windows():
+            try:
+                window.GetWindowPattern().Close()
+            except Exception:
+                pass
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if not window.Exists(maxSearchSeconds=0.2):
+            if not windows():
                 return True
             time.sleep(0.3)
+        if force:
+            subprocess.run(["taskkill", "/F", "/IM", "CapCut.exe"],  # noqa: S603, S607
+                           capture_output=True)
+            time.sleep(1.0)
+            return not windows()
         return False
     except Exception:
         return False
@@ -368,6 +490,11 @@ def apply_to_draft(path: Path, cues: "list[Cue]", video_seconds: float) -> int:
     backup = path.with_name(path.stem + BACKUP_SUFFIX)
     if not backup.exists():
         shutil.copy2(path, backup)
+    # Mirrored only when identical: a project whose copies already differ
+    # is not one this understands well enough to write into twice.
+    copy = timeline_copy(path)
+    if copy is not None and copy.read_bytes() != path.read_bytes():
+        copy = None
 
     script = cc.ScriptFile.load_template(str(path))
     materials = {sound: cc.AudioMaterial(str(sound)) for sound in {c.sound for c in cues}}
@@ -389,7 +516,34 @@ def apply_to_draft(path: Path, cues: "list[Cue]", video_seconds: float) -> int:
             script.add_segment(segment, name)
             placed += 1
     script.save()
+    if copy is not None:
+        shutil.copy2(path, copy)
     return placed
+
+
+def restore_backup(draft_dir: "Path | None" = None) -> bool:
+    """Puts the project back the way it was before Hey Peer first touched
+    it, and returns whether there was anything to restore.
+
+    For rehearsals: each run adds its own "Hey Peer SFX" tracks, and the
+    backup is taken once, on the first run only, so it is always the
+    untouched original. CapCut is closed first - its autosave would
+    otherwise write the edited timeline straight back.
+    """
+    draft_dir = draft_dir or latest_draft()
+    path = draft_file(draft_dir) if draft_dir else None
+    if path is None:
+        return False
+    backup = path.with_name(path.stem + BACKUP_SUFFIX)
+    if not backup.is_file():
+        return False
+    if not close_app(force=True):
+        return False
+    shutil.copy2(backup, path)
+    copy = timeline_copy(path)
+    if copy is not None:
+        shutil.copy2(backup, copy)
+    return True
 
 
 def open_app() -> bool:
@@ -401,6 +555,97 @@ def open_app() -> bool:
             return False
         apps.launch(app)
         return True
+    except Exception:
+        return False
+
+
+def _top_window(class_prefix: str, timeout: float):
+    import uiautomation as auto
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for window in auto.GetRootControl().GetChildren():
+            if (window.ClassName or "").startswith(class_prefix):
+                return window
+        time.sleep(0.5)
+    return None
+
+
+def _place_on_stage(window) -> None:
+    """Moves `window` onto the stage screen, maximised, in front."""
+    from heypeer.executor.foreground import raise_window
+    from heypeer.tray.overlay import stage_rect
+
+    raise_window(window.NativeWindowHandle, stage=stage_rect())
+    time.sleep(0.2)
+
+
+# Where the first project's thumbnail is on CapCut's home screen, maximised,
+# relative to the window - measured on the user's machine. The first is the
+# most recently opened project, which after the edit is the demo's.
+FIRST_PROJECT = (307, 783)
+
+
+def close_promotions() -> int:
+    """Closes CapCut's promotion windows and returns how many there were.
+
+    They are windows of their own (`SplashDialog_QMLTYPE_*`), which the
+    accessibility tree can close directly - where Escape closed one of the
+    two seen on the machine and not the other, and their close buttons sit
+    in a different place on each.
+    """
+    import uiautomation as auto
+
+    closed = 0
+    for window in auto.GetRootControl().GetChildren():
+        if (window.ClassName or "").startswith("SplashDialog"):
+            try:
+                window.GetWindowPattern().Close()
+                closed += 1
+            except Exception:
+                pass
+    if closed:
+        time.sleep(0.6)
+    return closed
+
+
+def show_in_editor(timeout: float = 25.0) -> bool:
+    """Takes a freshly opened CapCut from its home screen to the most recent
+    project's timeline, on the stage screen, and returns whether the editor
+    came up.
+
+    CapCut takes no project on its command line and its interface is QML,
+    which shows the accessibility tree nothing inside the window - so the
+    way in is the way a user goes: dismiss what it opens with, click the
+    first thumbnail. Each step was seen on the machine: an "Environment
+    testing" window after an update, promotions over the home screen -
+    one of them arriving after the home screen did, and taking the click -
+    and the editor opening on the primary screen whatever screen the home
+    screen was on. Hence the retries.
+    """
+    try:
+        from heypeer.executor import cursor_control
+
+        home = _top_window("HomePageX", timeout)
+        if home is None:
+            return False
+        check = _top_window("VEDecectorWindow", 2.0)
+        if check is not None:
+            r = check.BoundingRectangle
+            cursor_control.click_at(r.left + r.width() // 2, r.top + round(0.86 * r.height()))
+            time.sleep(1.0)
+        _place_on_stage(home)
+        for _attempt in range(3):
+            time.sleep(1.5)  # promotions arrive a moment after the window
+            close_promotions()
+            r = home.BoundingRectangle
+            cursor_control.click_at(r.left + FIRST_PROJECT[0], r.top + FIRST_PROJECT[1])
+            editor = _top_window("MainWindow_QML", 6.0)
+            if editor is not None:
+                _place_on_stage(editor)
+                close_promotions()
+                return True
+        return False
     except Exception:
         return False
 
@@ -486,11 +731,15 @@ def render_command(
 
 
 def screenshot(path: Path) -> "Path | None":
-    """The primary screen as it is, for the transition to start from."""
+    """The stage screen as it is, for the transition to start from - the
+    one the audience is watching, which is not always the primary."""
     try:
         from PIL import ImageGrab
 
-        ImageGrab.grab().save(path)
+        from heypeer.tray.overlay import stage_rect
+
+        left, top, width, height = stage_rect()
+        ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True).save(path)
         return path
     except Exception:
         return None
@@ -520,9 +769,17 @@ def play_fullscreen(path: Path) -> bool:
     """
     player = shutil.which("ffplay")
     if player:
+        from heypeer.tray.overlay import stage_rect
+
+        # Full screen on the display the window opens on, so it is opened
+        # on the stage screen rather than wherever SDL defaults to. On top,
+        # because CapCut has just been opened behind it and its start-up
+        # dialogs, and the taskbar, otherwise sit over the video.
+        left, top, _, _ = stage_rect()
         try:
             subprocess.run(
-                [player, "-fs", "-autoexit", "-noborder", "-loglevel", "quiet", str(path)],
+                [player, "-fs", "-autoexit", "-noborder", "-alwaysontop", "-loglevel", "quiet",
+                 "-left", str(left + 50), "-top", str(top + 50), str(path)],
                 timeout=600,
             )
             return True

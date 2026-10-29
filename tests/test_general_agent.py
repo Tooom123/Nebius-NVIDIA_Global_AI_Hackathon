@@ -40,7 +40,7 @@ def test_run_invokes_hermes_in_one_shot_mode_with_the_given_cwd() -> None:
 
     assert result == "Found three good options."
     call = run.call_args
-    assert call.args[0] == ["/usr/local/bin/hermes", "chat", "-q", "find flights to Paris"]
+    assert call.args[0] == ["/usr/local/bin/hermes", "chat", "-Q", "-q", "find flights to Paris"]
     assert call.kwargs["cwd"] == "/watched/dir"
     assert call.kwargs["timeout"] == general_agent.AGENT_TIMEOUT_SECONDS
 
