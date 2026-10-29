@@ -6,142 +6,138 @@
 > **Say it. It's done.**
 
 **Hey Peer** is an always-on voice assistant for Windows that *acts on your
-machine* rather than telling you how to. Say "Hey Peer" and it moves files,
-fixes code in your editor, plays music, sets timers, reads your screen, runs
-named routines — in French or English, switching per sentence.
+machine* rather than telling you how to. No mouse, no keyboard: say "Hey
+Peer", give an instruction - or several in one breath - and it takes the
+controls. It moves files, opens and drives apps, fixes code and pushes it,
+answers mail, builds a Spotify playlist and shares it on WhatsApp, puts
+sound effects on a CapCut timeline, runs your routines - in French or
+English, switching sentence by sentence.
 
 The wake word, speech recognition and speech synthesis all run **locally**:
 your voice never leaves your machine. Only text reaches the model.
 
-Built for the **Nebius x NVIDIA Global AI Hackathon** (track: *Personal AI*),
-on **NVIDIA Nemotron** via **Nebius Token Factory**.
-
-## What it does
-
-1. Hey Peer runs as a background app with a **system tray icon**.
-2. **Skill learning is currently off**, and Hey Peer is voice-to-action only. The
-   machinery is still there — a pattern detector that spots repeated action
-   sequences and stores them as replayable "skills" — but in practice the skills
-   it learned never matched a spoken instruction while being sent to the model on
-   every request, and the global input hooks that fed it cost real performance.
-   Set `HEYPEER_LEARN_SKILLS=1` (and `HEYPEER_CAPTURE_INPUT=1` for mouse/keyboard
-   habits) to turn it back on.
-3. **"Mode auto (écoute vocale)"** is a separate tray toggle for something narrower:
-   whether Hey Peer is actually listening for the wake word and able to act on it. It's
-   a simple ON/OFF switch, **on by default** as soon as the app starts — turn it off
-   from the tray menu if you don't want voice activation for that session. When it's
-   on, a lightweight, fully local wake-word detector listens for "Hey Peer"
-   (nothing is sent to the cloud before activation — privacy by design), and the
-   **mouse cursor changes color** as a visible "Hey Peer can hear you" indicator
-   (Windows only for now — see Status below).
-4. Once activated, the user's transcribed instruction is sent to **Nemotron 3
-   Nano Omni**, hosted on **Nebius Token Factory**, grounded against the watched
-   folder's real file and folder listing, to produce a structured intent.
-   Nemotron resolves it to a **direct one-off file action** — move, rename,
-   create, or delete a specific file/folder (e.g. "déplace le fichier facture vers Archives",
-   "renomme facture.pdf en facture_mars.pdf", "crée un dossier Factures",
-   "supprime notes.txt" — all grounded against the watched folder's actual file
-   listing) — or reports the instruction as unrecognized.
-5. Hey Peer narrates what it's about to do out loud (in French by default) and then
-   does it — **no confirmation prompt** stands in the way any more. Say **"annule"**
-   to reverse the last action, and for a few seconds afterwards a follow-up command
-   needs no wake word at all. If something is missing from an instruction, Hey Peer
-   asks for exactly that ("Vers quel dossier ?") rather than saying it didn't
-   understand. There used to be
-   one (spoken or typed); it was removed after real-world testing showed it caused
-   more problems than it solved (a misheard "yes" over a noisy mic would silently
-   default to "no" and block a legitimate action). The safety net that replaces it:
-   deletes go to the recycle bin/trash rather than a permanent unlink, and every file
-   operation resolves inside a safe zone — your own files, never the operating
-   system's (see Ethics & privacy notes below).
-6. It's carried out — via direct filesystem operations for file-organizing skills
-   and file actions, or mouse/keyboard automation with a visual check between steps
-   for anything else. The tray icon turns blue while something is running, so the
-   current status is always visible from the hidden-icons area.
-
-For quick testing or debugging without a mic, the tray menu also has a **"Demander
-à Hey Peer..."** item that opens a small text-input dialog and feeds it through the
-exact same interpretation → execution path as a real wake-word activation.
+Built by Tom Angles (Paris) for the **Nebius x NVIDIA Global AI Hackathon**,
+track *Personal AI*, on **NVIDIA Nemotron** via **Nebius Token Factory**.
 
 ## Why
 
-Repetitive multi-app busywork (data entry, file sorting, form submission) is common
-and tedious. Hey Peer learns these patterns passively and lets the user delegate them
-with a single voice command.
+A working day is spread across a dozen apps, and every one of them wants
+your clicks. Assistants that *answer* questions still leave you doing the
+work. Hey Peer is the other half: you say what you want done, and it does
+it on your own computer, with your own apps and accounts, while you keep
+your hands - and your voice data - to yourself.
 
-## Demo scenario: file sorting
+## How it uses Nebius Token Factory and NVIDIA Nemotron
 
-The concrete scenario this build targets: the user moves a few files (e.g. PDFs) out
-of a watched folder (`~/Downloads` by default) into another folder a few times. Hey
-Peer notices the repeated pattern — same source folder, same file extension, same
-destination — and learns it as a skill. Saying "Hey Peer, do 4 more" replays it by
-moving the next 4 matching files straight through the filesystem (`shutil.move`), not
-by simulating clicks — so it's robust to the file manager window being anywhere on
-screen, or not even open.
+| Job | Model | Where |
+|---|---|---|
+| Understanding every turn: which action, with what arguments, or a spoken answer, or a question back | **NVIDIA Nemotron** - `nvidia/Nemotron-3_5-Lightning` | Nebius Token Factory |
+| Splitting one long instruction into ordered steps (`"action": "multi"`) | Nemotron | Nebius Token Factory |
+| Diagnosing code, writing the cue sheet for CapCut sound effects, summarising documents and screens for speech | Nemotron | Nebius Token Factory |
+| Anything that needs eyes: reading the screen, describing video frames | `google/gemma-3-27b-it` | Nebius Token Factory |
+| Open-ended browser tasks (mail, research) | [Hermes Agent](https://hermes-agent.nousresearch.com/), provider `nebius-token-factory` by default | Nebius Token Factory |
 
-Alongside that, Hey Peer can also handle a **single named file or folder directly**,
-with no repetition and no learned skill involved at all — move, rename, create, or
-delete ("déplace le fichier facture vers Archives", "renomme facture.pdf en
-facture_mars.pdf", "crée un dossier Factures", "supprime notes.txt") — pure Nemotron
-reasoning grounded against the real filenames in the watched folder. As a safety
-constraint, every one of these resolves to a path *inside a safe zone* — your
-own files anywhere (the watched folder, Desktop, Documents, Pictures, a project
-folder, another drive), never system locations like `C:\Windows`, `Program
-Files`, `/etc`, or application state like `~/.ssh` and `~/.aws`
-(checked, not just assumed — see Ethics & privacy notes), so a misunderstood or
-ambiguous instruction can't write, rename, or delete outside it.
+Token Factory's OpenAI-compatible API means the client is the `openai` SDK
+pointed at Nebius's base URL (`heypeer/nemotron/client.py`). Every turn is
+grounded with real context - the actual file names in the folder you're
+working in, the facts you asked Hey Peer to remember, the names of your
+routines - so Nemotron resolves "move the invoice to Archives" to a real
+`facture_mars.pdf`, never an invented path.
 
 ## Architecture
 
 ```
-[Continuous capture]  →  [Pattern detection + skill memory]
-        │                              │
-        │ (wake word "Hey Peer")       │
-        ▼                              │
-[Interpretation — Nemotron 3 Nano Omni]◄──── (queries skill memory)
-   (Nebius Token Factory · audio + screen)
-        │
-        ▼
-[Execution — filesystem ops / mouse+keyboard control]
-        │
-        └──► updates skill memory
+ ON YOUR PC - PRIVATE                       NEBIUS TOKEN FACTORY
+ ─────────────────────                      ────────────────────
+ Wake word  (openWakeWord, your voice)
+      │
+ Speech to text (faster-whisper + Silero VAD)
+      │  text ─────────────────────────────►  NVIDIA Nemotron
+      │                                       (+ Gemma 3 27B for vision)
+      │  ◄──────────────── structured action ─┘
+      ▼
+ The hands
+   • File actions (safe zones, undo, recycle bin)
+   • Desktop apps (Windows UI Automation)
+   • Coding agent (Claude Code, headless)
+   • Hermes Agent driving your own Chrome
+   • Spotify & WhatsApp Web (fixed steps over Chrome DevTools)
+   • CapCut, FL Studio, volume, brightness, windows, timers...
+      │
+ Spoken reply (Piper for French, Kokoro for English)
 ```
 
-See [CONTEXT.md](CONTEXT.md) for the full project rationale and design notes.
+## What it can do
+
+- **Files** - move, rename, create, delete ("déplace la facture vers
+  Archives"). Every path must resolve inside a *safe zone* (your own files,
+  never `C:\Windows`, `Program Files` or `~/.ssh`); deletes go to the recycle
+  bin; say **"undo"** / **"annule"** to roll the last action back.
+- **Apps and the desktop** - open apps from a known registry, maximise,
+  minimise, close, show the desktop, volume, brightness, clipboard, and
+  **click any named control** ("click Send") through Windows UI Automation,
+  with a visible pointer flying to it.
+- **Code** - "why does this function crash?", "fix it", "commit and push":
+  Nemotron diagnoses, a real coding agent (Claude Code, headless) edits, and
+  the change is committed and pushed.
+- **Browser tasks** - mail, research and other open-ended work are handed to
+  Hermes Agent, which drives a dedicated Chrome profile signed in to your
+  accounts.
+- **Music and messages** - plays a track ("play Alright by Kendrick Lamar"),
+  builds a Spotify playlist and sends its link to a contact on WhatsApp Web.
+- **Creative tools** - lays a drum pattern into FL Studio; watches a CapCut
+  video, picks sounds from your own folder and places them on the timeline.
+- **Screen and documents** - "what's on my screen?", "summarise this PDF",
+  "what is she saying in this video?" (system audio, Windows).
+- **Conversation** - ordinary questions get spoken answers; a missing detail
+  gets a question back ("Which folder?") and the microphone stays open for
+  the reply, no wake word needed.
+
+## Personal AI
+
+- **Always on** - a tray app, optionally started at login, listening only
+  for its wake word, locally.
+- **Private** - audio is processed on your PC; your memory, routines and
+  wake-word model are local files.
+- **Persistent memory** - "remember that I prefer to be called Tom" is
+  stored in a local `memory.json` and given to Nemotron on every turn.
+- **Reusable skills** - named routines ("when I say *good morning*, open
+  Spotify and read my timers"), and after the same request three times Hey
+  Peer offers to turn it into one.
+- **Safe by design** - safe zones, recycle bin, undo, and an app registry
+  instead of running whatever a model returned.
 
 ## Project layout
 
 ```
 heypeer/
-├── wakeword/       # openWakeWord training pipeline (Piper samples, augmentation,
-│                   # training) + real-time ONNX-based listener
-├── capture/        # active app/window watcher, abstracted input-event listener,
-│                   # and a watchdog-based file-move watcher (demo scenario)
-├── patterns/       # repeated-sequence detector + JSON-backed skill memory
-├── nemotron/       # Nebius Token Factory client for Nemotron 3 Nano Omni
-├── executor/       # automated replay: pyautogui for input skills, direct
-│                   # filesystem ops (move/rename/create/delete) for file actions
-├── tray/           # system tray icon (voice-activation toggle, live status,
-│                   # manual prompt dialog), colored-cursor indicator, and the
-│                   # layered-window blob overlay (shape, rendering, Win32)
-├── main.py         # wires every stage into the end-to-end demo loop
+├── wakeword/       # openWakeWord training pipeline + real-time listener,
+│                   # faster-whisper transcription, wake-word verification
+├── nemotron/       # Nebius Token Factory client, intent schema, prompts
+├── executor/       # the hands: files, apps, UI Automation, coding agent,
+│                   # Hermes, browser, Spotify, WhatsApp, CapCut, FL Studio...
+├── tray/           # tray app, the blob indicator, captions, TTS (Piper/Kokoro)
+├── memory.py       # persistent facts
+├── habits.py       # routine suggestions after repeated requests
+├── startup.py      # opt-in launch at login
+├── main.py         # wires every stage together
 └── config.py       # shared configuration (env vars, paths, model ids)
+motion/             # the closing motion design of the demo video (HyperFrames)
 ```
 
 ## Requirements
 
+- Windows 10/11 for the full experience (the test suite runs anywhere)
 - Python 3.10+
-- A [Nebius AI Studio / Token Factory](https://studio.nebius.ai/) API key with access
-  to two models (verify the exact ids in the platform's model catalog — casing
-  has changed before, and models get retired):
+- A [Nebius Token Factory](https://studio.nebius.ai/) API key with access to
+  two models (check the exact ids in the model catalog - casing has changed
+  before, and models get retired):
   - `nvidia/Nemotron-3_5-Lightning` for interpreting turns (`NEMOTRON_MODEL_ID`)
-  - `google/gemma-3-27b-it` for the calls that send a screenshot (`VISION_MODEL_ID`)
-
-  Two, because no Nemotron currently on Nebius Serverless accepts image input.
-  The project ran on `nvidia/Nemotron-3-Nano-Omni`, which did both, until it was
-  removed from Serverless on 2026-08-31.
-- A microphone and display (for the wake-word listener and skill replay,
-  respectively) — not required to run the test suite
+  - `google/gemma-3-27b-it` for the calls that send an image (`VISION_MODEL_ID`)
+- A microphone and speakers
+- Optional, each degrading gracefully when absent: the `claude` CLI (coding
+  agent), the `hermes` CLI (browser tasks), Google Chrome, the Spotify desktop
+  app, `ffmpeg` and `pycapcut` (CapCut), FL Studio
 
 ## Setup
 
@@ -238,102 +234,33 @@ what the app actually draws.
 ## Running
 
 ```bash
-python -m heypeer.main
+python -m heypeer.main          # tray app
+python -m heypeer.main --cli    # same, with the conversation logged to the console
 ```
 
-This starts Hey Peer as a **background app with a system tray / hidden-icons**
-entry. Capture (learning repeated action sequences and repeated file moves —
-default watched folder `~/Downloads`, override with `HEYPEER_WATCHED_DIR`) starts
-immediately and runs natively the whole time the app is open; the tray icon's color
-and tooltip/menu text always show voice-listening status (off / listening /
-executing). **"Mode auto (écoute vocale)"** starts ON by default — toggle it off
-from the tray menu if you don't want voice activation for that session. A trained
-wake-word model ships at `data/wakeword/hey_peer.onnx` — if it's missing, voice
-activation just won't come up regardless of the toggle; use the tray's **"Demander
-à Hey Peer..."** item to type an instruction instead.
+Hey Peer starts in the system tray, listening for "Hey Peer". The blob
+indicator slides down from the top of the screen while it listens, thinks
+and speaks, then hides between turns. The tray menu's **"Demander à Hey
+Peer..."** takes a typed instruction through exactly the same path, for a
+machine without a microphone.
 
-Set `HEYPEER_WAKEWORD_DEBUG=1` for a live mic dB meter and per-chunk detection
-score in the console, useful when diagnosing a microphone problem.
+How a turn works:
 
-The detection threshold defaults to `0.9`. It was briefly 0.55, as a workaround
-for a model trained on synthetic speech whose false positives outscored many
-true ones — with that model a permissive first stage plus a strict verifier was
-the only workable arrangement. A model personalised on your own voice separates
-the classes properly, so the threshold does real work again. Detection remains a
-two-stage cascade (see below), which is why 0.9 rather than 0.95: a missed
-activation costs you a repeat, while a false one is caught by the verifier
-moments later. Override with `HEYPEER_WAKEWORD_THRESHOLD`.
+- **Wake word, in two stages.** A small always-on ONNX detector proposes;
+  the start of the faster-whisper transcript confirms that it really heard
+  "Hey Peer" before anything is acted on. Threshold `0.9` by default
+  (`HEYPEER_WAKEWORD_THRESHOLD`).
+- **The end of your sentence is measured, not assumed** - relative to the
+  room's own noise floor, with ~1.2 s of trailing silence, so a pause between
+  a file name and a destination does not cut you off.
+- **Hey Peer does not listen to itself.** The wake-word listener is muted for
+  the whole turn, from detection to the end of the spoken reply.
+- **No confirmation prompt.** It was removed after real-world testing: a
+  misheard "yes" blocked more legitimate work than it prevented mistakes.
+  Undo, the recycle bin and safe zones replace it.
 
-For debugging with the console visible (or on a headless box without a tray
-host), use the foreground console loop instead:
-
-```bash
-python -m heypeer.main --cli
-```
-
-This always runs with capture and voice activation both on, falls back to
-pressing Enter to simulate the wake word if no trained model is available, and
-still shows a real (detached) tray icon so "Quitter" works as a stop button
-instead of Task Manager. **The actual conversation (wake word detected, instruction
-heard, resolved intent, result) is logged to the terminal.** A short chime plays
-once the wake word is *confirmed* (see the cascade below) — audible confirmation
-that it really heard you, the way Siri/Alexa do, played on its own thread so it
-never delays the start of recording — and a
-visual indicator (`heypeer/tray/debug_window.py`) slides down from the top edge of
-the screen like a notification: a blue → violet → magenta gradient blob with an
-organic morphing silhouette, whose palette and drift speed shift per state and
-whose size swells with your live voice level. It slides back up and hides between
-turns, rather than sitting on screen permanently.
-
-It has genuinely no window border and soft, glowing edges: the frame is drawn
-with PIL (`heypeer/tray/blob_render.py`) and composited into the desktop through
-`UpdateLayeredWindow` (`heypeer/tray/overlay.py`), which gives real per-pixel
-alpha. Earlier versions tried to get this out of a web view — transparency there
-still showed the host window's grey background, and clipping with `SetWindowRgn`
-works but is a 1-bit mask, so edges came out hard and a glow was impossible. The
-overlay is click-through and never takes focus. Windows-only; elsewhere it
-degrades to a no-op. Rendered via `pywebview` (the
-OS's own web view, WebView2 on Windows) loading
-`heypeer/tray/webui/conversation.html`, in its own OS process (not just a thread)
-specifically so that if window creation ever hangs or fails on some machine, the
-rest of Hey Peer keeps running unaffected instead of the whole app freezing.
-
-Hey Peer mutes its own wake-word listening (`WakeWordListener.mute()`/`unmute()`) for
-the whole duration of a turn — from the instant a wake word is detected through
-transcription, interpretation, execution, and any spoken narration — not just while
-it's speaking. This is mic *gating*, not true acoustic echo cancellation (nothing is
-cancelled during genuinely simultaneous playback+speech), but it covers both of the
-practical problems it was built for: some headsets otherwise picked Hey Peer's own
-TTS back up as more input, and separately, real logs showed the wake-word listener
-re-triggering on background chatter while a previous turn was still being processed
-— Hey Peer now fully finishes one turn (like Alexa/Siri) before it can hear a new
-"Hey Peer" at all.
-
-Local transcription (`heypeer/wakeword/stt.py`) uses faster-whisper's "small" model
-with a French-biased prompt and voice-activity filtering (`vad_filter=True`) — after
-"base" produced both garbled short words/filenames and outright hallucinated
-sentences over background noise with no real speech in them.
-
-**When you stop talking is measured, not assumed.** The end of a spoken
-instruction is detected relative to the room's own noise floor (sampled from the
-audio just before you started speaking) rather than at a fixed decibel level — a
-fixed cutoff is either too high to hear a quiet speaker or too low to ignore a
-fan, and it was truncating real instructions mid-sentence. Trailing silence has
-to last ~1.2s to end a recording, since people pause naturally between a filename
-and a destination.
-
-**Wake-word detection is a two-stage cascade**, the same architecture real
-always-listening assistants use. The small always-on ONNX detector only *proposes*:
-because it was trained on synthetic speech only (see Status below), it fires on
-plenty of ordinary speech, and no threshold separates that from real activations —
-its false-positive scores are higher than many true positives. So the listener also
-keeps a 2-second rolling prebuffer (the wake word is already over by the time
-detection fires), and `heypeer/wakeword/verify.py` *confirms* against the Whisper
-transcript that the audio really opens with something sounding like "Hey Peer"
-before anything is acted on. Matching is fuzzy and normalized rather than a list of
-spellings, since Whisper renders it "Hey Pierre" / "Hey, Peer." / "hey pir"
-depending on accent and audio quality. The same step strips the wake word out of
-the instruction, which previously leaked into what Nemotron saw.
+Set `HEYPEER_WAKEWORD_DEBUG=1` for a live microphone meter and per-chunk
+detection scores in the console.
 
 ### Personalising the wake word to your voice
 
@@ -392,121 +319,57 @@ negative sets without checking for this).
 
 ## Status
 
-Built incrementally during the hackathon, one commit per stage — see
-[TODO.md](TODO.md) for the detailed build log and what's still open.
+- **1000+ tests** (`pytest`), run on every push by GitHub Actions.
+- The Nemotron client is verified against the **live Nebius endpoint**, not
+  only mocks - two prompt-behaviour bugs were found that way and fixed.
+- Every step of the demo video - FL Studio, mail, the code fix and push,
+  the Spotify playlist sent on WhatsApp, CapCut sound effects - was run end
+  to end on a real Windows machine.
+- See [TODO.md](TODO.md) for the full build log, and [CONTEXT.md](CONTEXT.md)
+  for the original rationale.
 
-All core stages are implemented and unit-tested (`pytest`, 788 tests): wake-word
-training/inference, the Nemotron client (**verified against the live Nebius API**,
-not just mocks), direct file actions (move/rename/create/delete/undo) with
-path-containment safety checks, the tray app, and the on-screen indicator.
+Known limits: Windows only for the full feature set (elsewhere the overlay
+and the cursor degrade to no-ops); Ctrl+C does not reliably stop the tray app
+on Windows - use the tray menu's "Quitter".
 
-Hey Peer holds a **conversation**, not a single command. Nemotron decides whether a
-spoken turn is a file action, an ordinary answer ("comment ça va ?" -> "Très bien,
-et toi ?"), or a question back for a missing piece; every answer says whether the
-exchange is finished, and while it is not, the microphone stays open with no wake
-word needed and the turns so far are replayed on the next one. Verified against the
-live endpoint: `"deplace la facture"` -> *"Vers quel dossier ?"* -> `"dans Archives"`
-resolves to a real move of `facture_mars.pdf`, and `"non merci"` afterwards closes
-the exchange instead of repeating the last action.
+## Feedback on Nebius Token Factory and NVIDIA Nemotron
 
-Beyond files, Hey Peer **starts applications and plays music**. "Lance Spotify"
-opens it *and* presses play — opening the app alone leaves you in silence looking
-at a player that hasn't begun. "Lance Alright par Kendrick Lamar" resolves the
-track through Spotify's search and opens `spotify:track:<id>`, which the desktop
-app plays directly. That search needs only *application* credentials
-(`SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET`, free, no user login, no Premium);
-without them it opens the search results and says so rather than claiming to have
-started the music.
-
-"Quelle est la météo à Paris ?" opens a web search; the query is percent-encoded
-into a fixed search URL rather than the model being asked for an address, because
-a search string can say anything and a URL can *go* anywhere.
-
-Starting an app, playing music and searching the web all **end the turn** — no
-follow-up window. Holding the microphone open after starting playback means
-holding it open over the music, which through a headset is how Hey Peer ended up
-listening to itself.
-
-Apps are launched from a **registry**, not from whatever the model returned —
-`resolve_app` refuses a name it doesn't know. Everything on that path began as a
-speech transcript and then passed through a language model, so "run whatever it
-said" is not an option. "Ouvre Machin" costs one turn to decline.
-
-Two behaviours were found live and fixed in the prompt, both of which the model got
-wrong by default: replaying an action already carried out earlier in the exchange
-(a plain "non merci" came back as a second `delete_file`), and inventing facts it
-cannot check ("quelle heure il est" -> *"Il est 14h"*). Requests outside the action
-list are answered rather than bent into the nearest file action — "ouvre Spotify"
-gets *"Je ne peux pas ouvrir Spotify pour l'instant."*, not a folder named Spotify.
-
-The wake-word model has moved from "never trained" to **actually trained on real
-Piper-synthesized speech**, with a proper (if synthetic-only) held-out streaming
-evaluation — 100% recall / ~6.9% false-accept rate at the shipped 0.9 threshold. Two
-real training bugs were caught by that evaluation (not by held-out clip accuracy
-alone, which looked fine and hid both): missing alignment augmentation, and a
-single voice used in both classes leaking through as a shortcut. See TODO.md for
-the full story — and the model still hasn't been tested against a real human voice.
-
-The tray app + cursor indicator have been smoke-tested on a real Windows machine
-across three rounds, surfacing (and fixing) several real bugs — see TODO.md for the
-full writeup of each:
-- `ActivityWatcher`/`FileOpWatcher` sharing one pattern detector (mouse noise
-  during a drag-and-drop could eat the real file-move pattern)
-- The hand-drawn cursor shape looking wrong (now recolors Windows' own arrow
-  bitmap instead of approximating one)
-- The cursor never being reset on quit
-- A `ctypes.ArgumentError: int too long to convert` crash from undeclared win32
-  `argtypes`/`restype` truncating 64-bit handles
-- The prompt dialog coming up broken (`grab failed`, unresponsive) because it was
-  created from inside pystray's native message-dispatch callback instead of its
-  own thread
-- The confusing "Mode auto" semantics that gated capture, voice, and the cursor
-  together — capture is now native/always-on, the toggle is voice-only (and now
-  starts ON by default)
-- An `OSError: Unexpected color cursor for IDC_ARROW` crash — the extraction code
-  only handled the classic monochrome cursor and hard-failed on the 32bpp color
-  cursor this user's actual Windows theme uses; both are now supported
-
-What's still *not* verified is anything needing real hardware/OS features this dev
-environment doesn't have:
-- `WakeWordListener.start()`'s live mic loop against a **real human voice** —
-  everything so far is synthetic-Piper-voice evaluation
-- The tray "Demander à Hey Peer..." dialog's actual on-screen appearance (fixed
-  the threading bug behind it, but haven't seen it render for real)
-- The orb indicator's actual rendered appearance — real Windows testing has
-  caught two rounds of a "square"/"white rectangle" showing around the circle
-  despite `pywebview`'s own transparency settings; the current fix bypasses
-  that entirely with a direct Win32 color-key layered-window call, unverified
-  since this sandbox has no GTK/WebKit backend for pywebview to render
-  anything with at all — even non-visual construction couldn't be exercised
-  here for real (only through mocks)
-- The recolored-arrow cursor's actual on-screen shape/color — verified logically
-  for both the monochrome and color-cursor extraction paths, not yet seen render
-- **Ctrl+C does not reliably stop the tray app on Windows** — this is a pystray/
-  Win32 message-loop limitation, not a bug to fix; use the tray menu's "Quitter"
-  instead, which also resets the cursor
-- There is still **no cursor-color support at all on macOS/Linux** —
-  `set_active()` there just logs and no-ops
+- **What worked well.** The OpenAI-compatible API made the integration a
+  base URL and a key. Nemotron is fast enough for a voice loop and reliable
+  at strict JSON output, which is what turns speech into actions.
+- **Model lifecycle.** The project started on `nvidia/Nemotron-3-Nano-Omni`,
+  which was removed from Serverless on 2026-08-31. Its replacement,
+  `Nemotron-3_5-Lightning`, does not accept images, so vision moved to Gemma
+  3 27B on the same platform. Earlier notice of retirements would help.
+- **Audio input.** Every audio content-part shape we tried (`input_audio`,
+  `audio_url`, `audio`) was rejected with a 422, so speech is transcribed
+  locally and only text is sent - which turned out to be the better design
+  for privacy anyway.
+- **Images with JSON mode.** An image together with
+  `response_format={"type": "json_object"}` returned a 400 on the earlier
+  Nemotron deployment, while it works on Gemma 3 27B; image calls are
+  therefore kept separate from the classifier call.
+- **Model ids are case-sensitive**, and the catalog's casing has changed
+  over time.
 
 ## Ethics & privacy notes
 
-- The wake-word detector runs **entirely locally**; no audio leaves the machine
-  unless "Hey Peer" is detected.
-- Captured input events carry only what's needed to detect and replay a pattern
-  (event type, app/window, click coordinates, special key names like Enter/Tab,
-  scroll deltas) — never the literal characters typed into a field. Plain
-  character key presses are recorded as a generic marker and the executor
-  refuses to replay them, so no automation can ever retype captured content.
-- **There is no confirmation prompt before an action runs** — removed after
-  real-world testing showed it caused more problems than it solved. In its place:
-  every direct file action (move/rename/create/delete) is checked to resolve to a
-  path *inside a safe zone* before touching the filesystem — your own files
-  anywhere, never the operating system's (see `executor/safe_zones.py`)
-  (`_ensure_within` in `heypeer/executor/runner.py`) — a hallucinated or ambiguous
-  name can't escape it via `../` or an absolute path — and deletes go to the
-  recycle bin/trash (`send2trash`), not a permanent unlink, so at least that
-  action stays reversible.
+- The wake word, speech recognition and speech synthesis run **entirely
+  locally**; no audio ever leaves the machine. What reaches Nebius Token
+  Factory is the transcribed text, plus a screenshot or video frames only
+  when you ask about your screen or a video.
+- Memory, routines and your personal wake-word model are local files, and
+  none of them is committed to git.
+- Every file action is checked to resolve inside a safe zone before it
+  touches the filesystem (`executor/safe_zones.py`, `_ensure_within` in
+  `executor/runner.py`), so a hallucinated or ambiguous name cannot escape
+  through `../` or an absolute path. Deletes go to the recycle bin
+  (`send2trash`), never a permanent unlink.
+- Apps are launched from a registry, never from whatever the model
+  returned: everything on that path began as a speech transcript.
+- Outward actions (pushing code, sending mail or messages) happen only when
+  you ask for them.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
