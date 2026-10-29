@@ -462,3 +462,13 @@ def test_the_commit_is_staged_and_pushed_around_the_agent(tmp_path: Path) -> Non
         peer._run_commit_and_push(None, "en", cwd=str(tmp_path))
     assert calls[0] == ("add", "-A") and calls[1] == "agent"
     assert ("push", "-q") in calls
+
+
+def test_old_reply_drafts_are_discarded_first() -> None:
+    """A draft left by an earlier run stayed in French while the other was rewritten."""
+    assert "discard that draft" in demo.mail_task()
+
+
+def test_the_playlist_is_exactly_five_tracks() -> None:
+    """A run made it ten."""
+    assert "exactly five" in demo.playlist_task()

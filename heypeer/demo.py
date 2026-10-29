@@ -213,16 +213,16 @@ def mail_task() -> str:
     rather than left as "read my mail": an agent given a vague task on
     stage improvises, and improvising means asking questions."""
     if dry_run("mail"):
-        finish = ("Do NOT click Send: leave both replies as drafts. If a reply "
-                  "draft already exists for an email, replace its text instead "
-                  "of starting another one.")
+        finish = ("Do NOT click Send: leave both replies as drafts.")
     else:
         finish = "Send both replies."
     return (
         f"The Gmail label at {mail_url()} is already open in the current tab. "
         "Read its emails. Exactly two of them call for an answer; the other "
         "is an automated message that must be left alone. For each of the "
-        "two: open it, click Reply, and type a short, friendly reply in "
+        "two: open it; if it already has a reply draft, discard that draft "
+        "first with its trash icon (an older run left drafts behind, some in "
+        "the wrong language); then click Reply and type a short, friendly reply in "
         "English - these emails are in English, whatever language Gmail's own "
         "interface is in - signed Tom, with the greeting, the body and "
         "the signature each on its own line. "
@@ -246,8 +246,9 @@ def playlist_task() -> str:
         f"the current tab. If your library already has a playlist named "
         f"\"{playlist_name()}\", delete it first. Then create a new playlist "
         f"named \"{playlist_name()}\" and "
-        "add five well-known chill, laid-back songs to it - music tracks "
-        "only, never podcasts or episodes. Copy the playlist's "
+        "add exactly five well-known chill, laid-back songs to it - music "
+        "tracks only, never podcasts or episodes. Count the tracks on the "
+        "playlist page before going on: five, not more. Copy the playlist's "
         "share link. Then, in the same tab, go to WhatsApp Web "
         f"(https://web.whatsapp.com), open the chat with {contact()} and "
         "write a one-sentence, warm message in English with the link. "
