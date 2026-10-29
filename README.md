@@ -5,6 +5,9 @@
 
 > **Say it. It's done.**
 
+**[Watch the demo video](https://youtu.be/6X-SX24lJrY)** ·
+**[Download the Windows build](https://github.com/Tooom123/Nebius-NVIDIA_Global_AI_Hackathon/releases/tag/v1.0.0)**
+
 **Hey Peer** is an always-on voice assistant for Windows that *acts on your
 machine* rather than telling you how to. No mouse, no keyboard: say "Hey
 Peer", give an instruction - or several in one breath - and it takes the
