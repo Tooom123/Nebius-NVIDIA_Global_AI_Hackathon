@@ -744,7 +744,10 @@ WAKEWORD_DIR = user_data("wakeword")  # the user trains their own model here
 USER_MODEL_PATH = WAKEWORD_DIR / "hey_peer_user.onnx"
 # The generic model shipped in the repository, trained on synthetic speech.
 # Works for anyone, well for no one — a fresh clone has something that runs.
-SHIPPED_MODEL_PATH = WAKEWORD_DIR / "hey_peer.onnx"
+# A bundled resource rather than user data: from a checkout both resolve to
+# data/wakeword/, but a frozen build would otherwise look for it in
+# %LOCALAPPDATA%, where nothing ever puts it.
+SHIPPED_MODEL_PATH = resource("data", "wakeword", "hey_peer.onnx")
 
 
 def default_model_path() -> Path:
