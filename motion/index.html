@@ -163,75 +163,57 @@
         color: var(--muted);
       }
 
-      /* 3. One sentence */
-      #s3-head {
-        top: 240px;
-        font-size: 84px;
-        font-weight: 640;
-        letter-spacing: -0.045em;
-      }
-      #s3-row {
-        top: 430px;
-        left: 160px;
-        width: 1600px;
+      /* 3. No mouse, no keyboard */
+      #s3-tools {
+        top: 230px;
+        left: 0;
+        right: 0;
         display: flex;
-        justify-content: space-between;
+        justify-content: center;
+        gap: 56px;
       }
-      .job {
-        width: 280px;
-        text-align: center;
+      .tool {
         position: relative;
-      }
-      .job .disc {
-        width: 120px;
-        height: 120px;
-        margin: 0 auto 30px;
-        border-radius: 34px;
+        width: 200px;
+        height: 200px;
+        border-radius: 52px;
         border: 1.5px solid var(--line);
         background: var(--card);
         display: flex;
         align-items: center;
         justify-content: center;
-        color: var(--ink);
-        position: relative;
       }
-      .job .disc svg.icon {
-        width: 50px;
-        height: 50px;
-        stroke-width: 1.5;
+      .tool svg.icon {
+        width: 96px;
+        height: 96px;
+        stroke-width: 1.2;
       }
-      .job .check {
+      .tool .strike {
         position: absolute;
-        right: -12px;
-        top: -12px;
-        width: 40px;
-        height: 40px;
-        border-radius: 50%;
-        background: var(--grad);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #000;
+        left: 30px;
+        top: 99px;
+        width: 140px;
+        height: 3px;
+        border-radius: 2px;
+        background: var(--pink);
+        transform: rotate(-35deg);
       }
-      .job .check svg.icon {
-        width: 22px;
-        height: 22px;
-        stroke-width: 2.6;
+      #s3-blob {
+        width: 300px;
+        height: 300px;
+        left: 810px;
+        top: 180px;
       }
-      .job h3 {
-        font-size: 30px;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-      }
-      .job p {
-        margin-top: 8px;
-        font-size: 21px;
-        color: var(--muted);
+      #s3-head {
+        top: 520px;
+        font-size: 92px;
+        font-weight: 650;
+        letter-spacing: -0.045em;
       }
       #s3-foot {
-        top: 800px;
-        font-size: 48px;
-        font-weight: 560;
+        top: 680px;
+        font-size: 52px;
+        font-weight: 540;
         letter-spacing: -0.03em;
       }
 
@@ -397,27 +379,37 @@
         font-size: 16px;
         color: var(--muted);
       }
-      #ret-label {
-        left: 760px;
-        top: 864px;
-        width: 400px;
-        text-align: center;
-        font-family: var(--mono);
-        font-size: 17px;
-        color: var(--muted);
-      }
-      #ret-label span {
-        background: #000;
-        padding: 0 14px;
-      }
-      #txt-label {
+      #txt-label,
+      #back-label {
         left: 598px;
-        top: 472px;
         width: 96px;
         text-align: center;
         font-family: var(--mono);
-        font-size: 15px;
+        font-size: 16px;
         color: var(--cyan);
+      }
+      #txt-label {
+        top: 462px;
+      }
+      #back-label {
+        top: 712px;
+      }
+      #stays {
+        left: 150px;
+        top: 604px;
+        width: 400px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        font-family: var(--mono);
+        font-size: 17px;
+        color: var(--cyan);
+        opacity: 0.85;
+      }
+      #stays svg.icon {
+        width: 22px;
+        height: 22px;
       }
       .packet {
         position: absolute;
@@ -508,13 +500,13 @@
 
       /* 6. Built for real */
       #s6-head {
-        top: 170px;
+        top: 200px;
         font-size: 80px;
         font-weight: 650;
         letter-spacing: -0.045em;
       }
       #s6-row {
-        top: 360px;
+        top: 400px;
         left: 0;
         right: 0;
         display: flex;
@@ -540,13 +532,13 @@
       }
       #s6-divider {
         left: 959px;
-        top: 380px;
+        top: 420px;
         width: 2px;
         height: 170px;
         background: var(--line);
       }
       #s6-badge {
-        top: 680px;
+        top: 740px;
         left: 0;
         right: 0;
         display: flex;
@@ -564,23 +556,6 @@
         font-size: 32px;
         font-weight: 600;
         letter-spacing: -0.015em;
-      }
-      #s6-next {
-        top: 845px;
-        font-size: 24px;
-        color: var(--muted);
-      }
-      #s6-next em {
-        font-style: normal;
-        font-size: 15px;
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        color: var(--cyan);
-        border: 1.5px solid rgba(125, 211, 252, 0.5);
-        border-radius: 8px;
-        padding: 5px 10px;
-        margin-right: 16px;
-        vertical-align: 3px;
       }
 
       /* 7. End */
@@ -602,15 +577,21 @@
         font-weight: 500;
         letter-spacing: -0.025em;
       }
+      #s7-by {
+        top: 790px;
+        font-size: 30px;
+        font-weight: 560;
+        letter-spacing: -0.01em;
+      }
       #s7-url {
-        top: 800px;
+        top: 846px;
         font-family: var(--mono);
-        font-size: 26px;
+        font-size: 24px;
         color: var(--ink);
         opacity: 0.9;
       }
       #s7-track {
-        top: 860px;
+        top: 904px;
         font-size: 22px;
         color: var(--muted);
       }
@@ -654,52 +635,23 @@
         <h2 id="s2-l2" class="abs center-x split-words">Each one wants your clicks.</h2>
       </div>
 
-      <!-- 3. One sentence, five jobs: 9.4 - 13.4 -->
+      <!-- 3. No mouse, no keyboard: 9.4 - 13.4 -->
       <div id="s3" class="scene">
-        <h2 id="s3-head" class="abs center-x"><span class="word">One</span> <span class="word">sentence.</span></h2>
-        <div id="s3-row" class="abs">
-          <div class="job">
-            <div class="disc">
-              <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="4" height="4" rx="1" /><rect x="10" y="4" width="4" height="4" rx="1" /><rect x="17" y="4" width="4" height="4" rx="1" /><rect x="3" y="16" width="4" height="4" rx="1" /><rect x="10" y="16" width="4" height="4" rx="1" /><path d="M3 12h18" /></svg>
-              <div class="check"><svg class="icon" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10" /></svg></div>
-            </div>
-            <h3>Drum pattern</h3>
-            <p>composed for the tempo</p>
+        <div id="s3-tools" class="abs">
+          <div class="tool">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="6" /><path d="M12 7v4" /></svg>
+            <i class="strike"></i>
           </div>
-          <div class="job">
-            <div class="disc">
-              <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5" /><path d="m3.5 7 8.5 6 8.5-6" /></svg>
-              <div class="check"><svg class="icon" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10" /></svg></div>
-            </div>
-            <h3>Email replies</h3>
-            <p>written in the browser</p>
-          </div>
-          <div class="job">
-            <div class="disc">
-              <svg class="icon" viewBox="0 0 24 24"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14" /></svg>
-              <div class="check"><svg class="icon" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10" /></svg></div>
-            </div>
-            <h3>Bug fix</h3>
-            <p>committed &amp; pushed</p>
-          </div>
-          <div class="job">
-            <div class="disc">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="17" cy="16" r="3" /></svg>
-              <div class="check"><svg class="icon" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10" /></svg></div>
-            </div>
-            <h3>Playlist</h3>
-            <p>made &amp; sent to a friend</p>
-          </div>
-          <div class="job">
-            <div class="disc">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2" /></svg>
-              <div class="check"><svg class="icon" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10" /></svg></div>
-            </div>
-            <h3>Sound effects</h3>
-            <p>placed on a video edit</p>
+          <div class="tool">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2.5" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" /></svg>
+            <i class="strike"></i>
           </div>
         </div>
-        <div id="s3-foot" class="abs center-x"><span class="word">Five jobs.</span> <span class="word grad">Done.</span></div>
+        <div id="s3-blob" class="blobwrap">
+          <video id="v-listen" src="assets/blob/listening.mp4" data-start="9.4" data-duration="4" data-track-index="13" muted playsinline></video>
+        </div>
+        <h2 id="s3-head" class="abs center-x"><span class="word">No mouse.</span> <span class="word">No keyboard.</span></h2>
+        <div id="s3-foot" class="abs center-x"><span class="word">Just your voice.</span> <span class="word grad">Hey Peer takes the controls.</span></div>
       </div>
 
       <!-- 4. Pipeline: 13.4 - 34.2 -->
@@ -725,20 +677,20 @@
             </defs>
             <rect id="region-outline" x="111" y="231" width="478" height="598" rx="31" fill="none" stroke="rgba(125,211,252,0.55)" stroke-width="2" stroke-dasharray="6 9" />
             <path class="wire" id="w-ww" d="M350 410 V 450" stroke="#7DD3FC" />
-            <path class="wire" id="w-txt" d="M550 505 H 700" stroke="url(#gw)" />
+            <path class="wire" id="w-txt" d="M550 495 H 700" stroke="url(#gw)" />
+            <path class="wire" id="w-back" d="M700 745 H 550" stroke="url(#gw)" />
             <path class="wire hw" d="M1220 520 C 1275 520, 1275 296, 1330 296" stroke="url(#gw)" />
             <path class="wire hw" d="M1220 520 C 1275 520, 1275 406, 1330 406" stroke="url(#gw)" />
             <path class="wire hw" d="M1220 520 H 1330" stroke="url(#gw)" />
             <path class="wire hw" d="M1220 520 C 1275 520, 1275 626, 1330 626" stroke="url(#gw)" />
             <path class="wire hw" d="M1220 520 C 1275 520, 1275 736, 1330 736" stroke="url(#gw)" />
-            <path class="wire" id="w-ret" d="M1580 782 V 864 Q 1580 880 1564 880 H 366 Q 350 880 350 864 V 810" stroke="url(#gr)" />
           </svg>
 
           <div id="n-wake" class="node dev" style="top: 300px">
             <div class="ic"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg></div>
             <div><h4>Wake word</h4><p>openWakeWord · your voice</p></div>
           </div>
-          <div id="n-stt" class="node dev" style="top: 450px">
+          <div id="n-stt" class="node dev" style="top: 440px">
             <div class="ic"><svg class="icon" viewBox="0 0 24 24"><path d="M3 12h2M7 8v8M11 5v14M15 9v6" /><path d="M18 9h3M18 15h3" /></svg></div>
             <div><h4>Speech to text</h4><p>faster-whisper · Silero VAD</p></div>
           </div>
@@ -748,7 +700,12 @@
             </div>
             <div><h4>Spoken reply</h4><p>Piper · Kokoro</p></div>
           </div>
-          <div id="txt-label" class="abs">text only</div>
+          <div id="txt-label" class="abs">text</div>
+          <div id="back-label" class="abs">text</div>
+          <div id="stays" class="abs">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2" /></svg>
+            audio stays here
+          </div>
 
           <div id="brain">
             <div id="brain-in">
@@ -787,9 +744,9 @@
             <div><h4>Spotify &amp; WhatsApp Web</h4><p>fixed steps · Chrome DevTools</p></div>
           </div>
 
-          <div id="ret-label" class="abs"><span>results, spoken back</span></div>
-          <div id="pk-txt" class="packet" style="left: 550px; top: 505px"></div>
-          <div id="pk-ret" class="packet" style="left: 1580px; top: 782px"></div>
+          <div id="pk-txt" class="packet" style="left: 550px; top: 495px"></div>
+          <div id="pk-res" class="packet" style="left: 1330px; top: 520px"></div>
+          <div id="pk-back" class="packet" style="left: 700px; top: 745px"></div>
         </div>
 
         <div id="s4-title" class="abs label">How it works</div>
@@ -862,7 +819,6 @@
         </div>
         <div id="s6-divider" class="abs"></div>
         <div id="s6-badge" class="abs"><div class="pill"><div>NVIDIA Nemotron · Nebius Token Factory</div></div></div>
-        <div id="s6-next" class="abs center-x"><em>NEXT</em>Production hardening with NemoClaw &amp; OpenShell</div>
       </div>
 
       <!-- 7. End: 50.4 - 57 -->
@@ -872,6 +828,7 @@
         </div>
         <h1 id="s7-name" class="abs center-x split-chars">Hey Peer</h1>
         <div id="s7-tag" class="abs center-x"><span class="word">Say it.</span> <span class="word grad">It's done.</span></div>
+        <div id="s7-by" class="abs center-x">Tom Angles · Paris</div>
         <div id="s7-url" class="abs center-x">github.com/Tooom123/Nebius-NVIDIA_Global_AI_Hackathon</div>
         <div id="s7-track" class="abs center-x">Nebius × NVIDIA Global AI Hackathon · Personal AI track</div>
       </div>
@@ -942,17 +899,19 @@
       tl.to("#s2 .tile", { opacity: 0.35, duration: 0.6 }, 7.0);
       fade(8.95, "#s2", 0.45);
 
-      // 3. One sentence, five jobs.
-      tl.fromTo("#s3-head .word", { opacity: 0, y: 30, filter: "blur(10px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: soft, stagger: 0.18 }, 9.45);
-      tl.fromTo("#s3 .job", { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.7, ease: soft, stagger: 0.14 }, 9.85);
-      tl.fromTo("#s3 .check", { opacity: 0, scale: 0 }, { opacity: 1, scale: 1, duration: 0.45, ease: spring, stagger: 0.16 }, 10.9);
-      tl.fromTo("#s3-foot .word", { opacity: 0, y: 24, filter: "blur(8px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.6, ease: soft, stagger: 0.35 }, 11.8);
+      // 3. No mouse, no keyboard: the tools step aside, the blob listens.
+      tl.fromTo("#s3 .tool", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.7, ease: soft, stagger: 0.12 }, 9.45);
+      tl.fromTo("#s3-head .word", { opacity: 0, y: 30, filter: "blur(10px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: soft, stagger: 0.45 }, 9.6);
+      tl.fromTo("#s3 .strike", { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power2.out", stagger: 0.45 }, 9.95);
+      tl.to("#s3 .tool", { opacity: 0, scale: 0.85, filter: "blur(8px)", duration: 0.6, ease: "power2.in", stagger: 0.08 }, 11.0);
+      tl.fromTo("#s3-blob", { opacity: 0, scale: 0.5 }, { opacity: 1, scale: 1, duration: 1.0, ease: "expo.out" }, 11.3);
+      tl.fromTo("#s3-foot .word", { opacity: 0, y: 24, filter: "blur(8px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: soft, stagger: 0.5 }, 11.4);
       fade(12.95, "#s3", 0.45);
 
       // 4. The pipeline. A camera visits each column, then pulls back.
       const cam = (t, s, x, y, d = 1.1) => tl.to("#stage", { scale: s, x, y, duration: d, ease: glide }, t);
       tl.set("#stage", { scale: 1.2, x: 540, y: -96 }, 13.4);
-      tl.set("#brain, .hand, #ret-label, #txt-label, .packet, #c2, #c3, #c4, #region", { opacity: 0 }, 13.4);
+      tl.set("#brain, .hand, #txt-label, #back-label, .packet, #c2, #c3, #c4, #region", { opacity: 0 }, 13.4);
       rise(13.45, "#s4-title", 0.7, 12);
       tl.to("#region", { opacity: 1, duration: 0.8 }, 13.5);
       tl.fromTo("#region-outline", { opacity: 0 }, { opacity: 1, duration: 0.8 }, 13.5);
@@ -961,6 +920,7 @@
       draw(14.6, "#w-ww", 0.4);
       rise(14.85, "#n-stt");
       rise(15.4, "#n-voice");
+      rise(15.8, "#stays", 0.7, 8);
       tl.fromTo("#c1 .word", { opacity: 0, y: 20, filter: "blur(8px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: soft, stagger: 1.0 }, 16.0);
 
       // Text, and only text, crosses to the brain.
@@ -985,27 +945,20 @@
       tl.fromTo(".hand", { opacity: 0, x: 24 }, { opacity: 1, x: 0, duration: 0.6, ease: soft, stagger: 0.4 }, 25.2);
       rise(25.2, "#c3", 0.7, 16);
 
-      // Pull back: the loop closes with a spoken answer, on-device.
+      // Pull back: results return to Nemotron, its summary comes home as text, and is spoken on-device.
       fade(27.9, "#c3", 0.4);
-      cam(27.9, 0.9, 96, 40, 1.4);
-      draw(29.2, "#w-ret", 1.5);
-      tl.fromTo("#pk-ret", { opacity: 0 }, { opacity: 1, duration: 0.15 }, 29.2);
-      tl.to(
-        "#pk-ret",
-        {
-          keyframes: [
-            { x: 0, y: 98, duration: 0.17 },
-            { x: -1230, y: 98, duration: 1.13 },
-            { x: -1230, y: 28, duration: 0.2 }
-          ],
-          ease: "none"
-        },
-        29.2
-      );
-      tl.to("#pk-ret", { opacity: 0, duration: 0.2 }, 30.7);
-      rise(29.9, "#ret-label", 0.6, 8);
-      tl.to("#n-voice", { borderColor: "rgba(125,211,252,0.9)", duration: 0.4 }, 30.6);
-      tl.fromTo("#c4", { opacity: 0, y: 16, filter: "blur(8px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: soft }, 29.6);
+      cam(27.9, 0.9, 96, 60, 1.4);
+      tl.fromTo("#pk-res", { opacity: 0, x: 0 }, { opacity: 1, duration: 0.15 }, 29.3);
+      tl.to("#pk-res", { x: -110, duration: 0.5, ease: glide }, 29.35);
+      tl.to("#pk-res", { opacity: 0, duration: 0.15 }, 29.8);
+      tl.fromTo("#brain", { boxShadow: "0 0 0 rgba(255,103,120,0)" }, { boxShadow: "0 0 60px rgba(255,103,120,0.45)", duration: 0.4, yoyo: true, repeat: 1 }, 29.8);
+      draw(30.3, "#w-back", 0.6);
+      rise(30.4, "#back-label", 0.5, 8);
+      tl.fromTo("#pk-back", { opacity: 0, x: 0 }, { opacity: 1, duration: 0.15 }, 30.3);
+      tl.to("#pk-back", { x: -150, duration: 0.6, ease: glide }, 30.35);
+      tl.to("#pk-back", { opacity: 0, duration: 0.2 }, 30.95);
+      tl.to("#n-voice", { borderColor: "rgba(125,211,252,0.9)", duration: 0.4 }, 30.9);
+      tl.fromTo("#c4", { opacity: 0, y: 16, filter: "blur(8px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: soft }, 29.4);
       fade(33.7, "#s4", 0.5);
 
       // 5. Personal AI: four cards, each takes the light in turn.
@@ -1028,18 +981,18 @@
       rise(45.3, "#st-tests", 0.8, 36);
       const counter = { v: 0 };
       const countEl = document.getElementById("count");
-      tl.to(counter, { v: 981, duration: 1.4, ease: "power2.out", onUpdate: () => (countEl.textContent = Math.round(counter.v)) }, 45.4);
+      tl.to(counter, { v: 1000, duration: 1.4, ease: "power2.out", onUpdate: () => (countEl.textContent = counter.v >= 1000 ? "1000+" : Math.round(counter.v)) }, 45.4);
       tl.fromTo("#s6-badge .pill", { opacity: 0, scale: 0.92 }, { opacity: 1, scale: 1, duration: 0.7, ease: spring }, 46.6);
-      rise(47.5, "#s6-next", 0.7, 14);
       fade(49.95, "#s6", 0.45);
 
       // 7. End: the blob closes the film.
       tl.fromTo("#s7-blob", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 1.4, ease: "expo.out" }, 50.45);
       tl.fromTo("#s7-name .char", { opacity: 0, y: 50, filter: "blur(12px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.8, ease: soft, stagger: 0.04 }, 50.9);
       tl.fromTo("#s7-tag .word", { opacity: 0, y: 24, filter: "blur(8px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: soft, stagger: 0.4 }, 51.6);
-      rise(52.6, "#s7-url", 0.7, 12);
-      rise(52.9, "#s7-track", 0.7, 12);
-      tl.to("#s7-name, #s7-tag, #s7-url, #s7-track", { opacity: 0, duration: 0.6, ease: "power2.in" }, 55.6);
+      rise(52.5, "#s7-by", 0.7, 12);
+      rise(52.75, "#s7-url", 0.7, 12);
+      rise(53.0, "#s7-track", 0.7, 12);
+      tl.to("#s7-name, #s7-tag, #s7-by, #s7-url, #s7-track", { opacity: 0, duration: 0.6, ease: "power2.in" }, 55.6);
       tl.to("#s7-blob", { y: 180, scale: 1.1, duration: 1.0, ease: glide }, 55.6);
       tl.to("#s7-blob", { opacity: 0, duration: 0.5, ease: "power2.in" }, 56.4);
 
