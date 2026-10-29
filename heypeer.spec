@@ -25,13 +25,17 @@
 # Bundled: the activation chime, and the app's own code. That is all the
 # read-only data this app ships with.
 #
-# NOT bundled, on purpose: the wake-word model and the Piper voices. The
-# wake-word model is trained *on the user's own voice* (see
+# Bundled too: the generic wake-word model, trained on synthetic speech, so
+# that "Hey Peer" works on a fresh machine before anyone records a voice.
+#
+# NOT bundled, on purpose: a personalised wake-word model and the Piper
+# voices. A personalised model is trained *on the user's own voice* (see
 # `wakeword/train.py`) - shipping one trained on someone else's voice would
-# be worse than shipping none. The Piper voices are large and downloaded on
-# first use. Both live under `heypeer.paths.data_root()`, which in a frozen
-# build resolves to %LOCALAPPDATA%\HeyPeer rather than the temporary unpack
-# directory - see that module for why the distinction matters.
+# be worse than shipping the generic one. The Piper voices are large and
+# downloaded on first use. Both live under `heypeer.paths.data_root()`, which
+# in a frozen build resolves to %LOCALAPPDATA%\HeyPeer rather than the
+# temporary unpack directory - see that module for why the distinction
+# matters.
 
 import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
@@ -52,6 +56,7 @@ hidden = [
 
 datas = [
     ("heypeer/assets/activation_chime.wav", "heypeer/assets"),
+    ("data/wakeword/hey_peer.onnx", "data/wakeword"),
 ]
 # openWakeWord ships melspectrogram/embedding ONNX models inside the
 # package; without these the listener cannot featurise audio at all.
@@ -68,8 +73,10 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     # Excluded to keep the build from ballooning: these are development and
-    # training-time dependencies that the shipped app never touches.
-    excludes=["tkinter", "matplotlib", "pytest", "sklearn", "skl2onnx", "scipy"],
+    # training-time dependencies that the shipped app never touches. Not
+    # tkinter: the tray's "Demander a Hey Peer..." dialog and the first-run
+    # colour picker are both tkinter.
+    excludes=["matplotlib", "pytest", "sklearn", "skl2onnx", "scipy"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

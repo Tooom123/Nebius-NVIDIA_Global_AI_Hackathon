@@ -211,20 +211,28 @@ everyone not on Windows.
 
 ## Building a standalone Windows executable
 
-So a demo machine needs neither a git clone nor `pip install`:
+So a test machine needs neither a git clone nor `pip install`. On Windows,
+from a clean virtual environment:
 
-```bash
-pip install pyinstaller
-pyinstaller heypeer.spec     # produces dist/HeyPeer.exe
+```powershell
+py -3.12 -m venv .venv-build
+.venv-build\Scripts\activate
+pip install -r requirements.txt pyinstaller
+pyinstaller heypeer.spec            # produces dist\HeyPeer.exe
 ```
 
-The wake-word model and the Piper voices are deliberately **not** bundled.
-The wake-word model is trained on your own voice, so shipping someone
-else's would be worse than shipping none; the voices are large and
-downloaded on first use. In a frozen build both live in
-`%LOCALAPPDATA%\HeyPeer` rather than beside the executable — see
-`heypeer/paths.py` for why user data and bundled resources resolve
-differently.
+Leave `kokoro` out of that environment: it pulls in PyTorch and multiplies
+the size of the executable, and English simply falls back to Piper.
+
+To run it, put a `.env` file **in the same folder as `HeyPeer.exe`** (copy
+`.env.example` and fill in `NEBIUS_API_KEY`), then double-click the exe. It
+starts in the system tray. The first launch needs an internet connection:
+the speech-recognition model and the Piper voices download themselves.
+
+The generic wake-word model is bundled, so "Hey Peer" works out of the box.
+Your own recordings and personalised model live in `%LOCALAPPDATA%\HeyPeer`
+rather than beside the executable - see `heypeer/paths.py` for why user
+data and bundled resources resolve differently.
 
 ## Starting automatically at login
 
